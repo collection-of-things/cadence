@@ -1,0 +1,64 @@
+/**
+ * The contextBridge surface exposed to the renderer as `window.cadence`.
+ * apps/desktop implements it in preload; apps/ui consumes it (with a mock
+ * implementation for standalone `vite dev`).
+ */
+
+import type {
+  CoordinatorEvent,
+  LibraryAlbum,
+  LibraryQuery,
+  PlaybackCommand,
+  PlaybackSnapshot,
+  QueueState,
+  RouteCapabilities,
+  RouteId,
+  ScanProgress,
+  TrackRef,
+} from "./index.js";
+
+export interface CadenceApi {
+  // --- playback -------------------------------------------------------------
+  sendCommand(cmd: PlaybackCommand): Promise<void>;
+  getSnapshot(): Promise<PlaybackSnapshot>;
+  getQueue(): Promise<QueueState>;
+  getCapabilities(): Promise<RouteCapabilities[]>;
+
+  /** Subscribe to coordinator events. Returns an unsubscribe function. */
+  onEvent(cb: (e: CoordinatorEvent) => void): () => void;
+
+  // --- library ---------------------------------------------------------------
+  library: {
+    tracks(q?: LibraryQuery): Promise<TrackRef[]>;
+    albums(q?: LibraryQuery): Promise<LibraryAlbum[]>;
+    artists(q?: LibraryQuery): Promise<{ name: string; albumCount: number; trackCount: number }[]>;
+    track(id: string): Promise<TrackRef | null>;
+    /** Pick folders via native dialog and start a scan. Returns false if cancelled. */
+    addFoldersAndScan(): Promise<boolean>;
+    scan(paths: string[]): Promise<void>;
+    onScanProgress(cb: (p: ScanProgress) => void): () => void;
+    roots(): Promise<string[]>;
+  };
+
+  // --- routes / providers ------------------------------------------------------
+  routes: {
+    /** Trigger a route's sign-in flow (opens its view/focuses window). */
+    signIn(route: RouteId): Promise<void>;
+    signOut(route: RouteId): Promise<void>;
+  };
+
+  // --- app ---------------------------------------------------------------------
+  app: {
+    minimize(): void;
+    toggleMaximize(): void;
+    close(): void;
+    platform: string;
+    versions: { electron: string; chrome: string; app: string };
+  };
+}
+
+declare global {
+  interface Window {
+    cadence?: CadenceApi;
+  }
+}

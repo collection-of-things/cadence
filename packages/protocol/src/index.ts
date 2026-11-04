@@ -278,3 +278,4 @@ export interface ScanProgress {
 }
 
 export * from "./audio-ipc.js";
+export * from "./cadence-api.js";
