@@ -1,9 +1,21 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { TrackRef } from "@cadence/protocol";
 import { normalizeHit, bestThumb } from "../src/adapters/providers/youtube-music-catalog.js";
+import { YouTubeMusicAdapter } from "../src/adapters/providers/youtube-music.js";
 import { SpotifyLibrespotAdapter, type LibrespotGraph } from "../src/adapters/providers/spotify-librespot.js";
+
+// The adapter imports ProviderSession which touches electron; the cookie
+// partition is stubbed since search tests inject the catalog anyway.
+vi.mock("electron", () => ({
+  session: {
+    fromPartition: () => ({ cookies: { get: async () => [] } }),
+  },
+  BrowserWindow: class {},
+  webContents: {},
+}));
 
 const graph: LibrespotGraph = {
   openStream: async () => ({
@@ -39,6 +51,64 @@ describe("youtube-music-catalog normalizeHit", () => {
 
   it("returns null without a video id", () => {
     expect(normalizeHit({ title: "x" })).toBeNull();
+  });
+});
+
+describe("youtube-music search", () => {
+  const hit: TrackRef = {
+    id: "youtube-music:abc123",
+    route: "youtube-music",
+    provider: "youtube",
+    title: "Song Title",
+    artists: [{ name: "Artist One" }],
+    durationMs: 213_000,
+    source: { kind: "provider", providerItemId: "abc123" },
+    availability: "unknown",
+  };
+
+  it("delegates to the injected catalog and returns TrackRefs", async () => {
+    const calls: string[] = [];
+    const adapter = new YouTubeMusicAdapter({
+      catalog: {
+        searchTracks: async (q) => {
+          calls.push(q);
+          return [hit];
+        },
+      },
+    });
+    const out = await adapter.search("  tessellate  ");
+    expect(calls).toEqual(["tessellate"]);
+    expect(out).toEqual([hit]);
+    await adapter.dispose();
+  });
+
+  it("wraps catalog failures with the real cause", async () => {
+    const adapter = new YouTubeMusicAdapter({
+      catalog: {
+        searchTracks: async () => {
+          throw new Error("innertube exploded");
+        },
+      },
+    });
+    await expect(adapter.search("x")).rejects.toThrow(
+      "YouTube Music search failed: innertube exploded",
+    );
+    await adapter.dispose();
+  });
+
+  it("returns [] for blank queries without touching the catalog", async () => {
+    let called = false;
+    const adapter = new YouTubeMusicAdapter({
+      catalog: {
+        searchTracks: async () => {
+          called = true;
+          return [];
+        },
+      },
+    });
+    expect(await adapter.search("   ")).toEqual([]);
+    expect(called).toBe(false);
+    await adapter.dispose();
   });
 });
 

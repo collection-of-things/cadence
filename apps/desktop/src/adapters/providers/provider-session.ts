@@ -113,6 +113,23 @@ export class ProviderSession {
     return () => this.listeners.delete(cb);
   }
 
+  /**
+   * Cookie header for the provider origin, so catalog clients (InnerTube,
+   * MusicKit) can share the login the view established. Reads the partition
+   * session — no live view required. Returns undefined when no cookies are
+   * stored or the read fails; callers treat that as anonymous access.
+   */
+  async cookieHeader(): Promise<string | undefined> {
+    try {
+      const ses = session.fromPartition(this.partition);
+      const cookies = await ses.cookies.get({ url: this.opts.url });
+      if (!cookies.length) return undefined;
+      return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Destroy the view. The session partition (and login) persists. */
   async release(): Promise<void> {
     if (!this.alive) return;

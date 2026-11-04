@@ -55,6 +55,16 @@ export interface CadenceApi {
     signOut(route: RouteId): Promise<void>;
   };
 
+  // --- search -------------------------------------------------------------------
+  search: {
+    /**
+     * Search a provider's catalog. Rejects when the route has no adapter,
+     * the adapter does not implement search, or the provider call fails —
+     * the UI surfaces the message honestly.
+     */
+    provider(route: RouteId, text: string): Promise<TrackRef[]>;
+  };
+
   // --- app ---------------------------------------------------------------------
   app: {
     minimize(): void;

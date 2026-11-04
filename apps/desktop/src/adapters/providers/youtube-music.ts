@@ -11,10 +11,27 @@
  * parsing breaks, the caller can fall back to the provider page itself.
  */
 
-import type { AdapterEvent, PlaybackLease, QueueItem, RouteCapabilities } from "@cadence/protocol";
+import type {
+  AdapterEvent,
+  PlaybackLease,
+  QueueItem,
+  RouteCapabilities,
+  TrackRef,
+} from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
 import { ProviderSession } from "./provider-session.js";
+import { YouTubeMusicCatalog } from "./youtube-music-catalog.js";
 import { YTM_CONTROLLER_JS } from "./inject/ytm-controller.js";
+
+/** The catalog surface the adapter searches through (injectable for tests). */
+export interface YtmCatalogLike {
+  searchTracks(query: string, limit?: number): Promise<TrackRef[]>;
+}
+
+export interface YouTubeMusicAdapterDeps {
+  /** Injected catalog; defaults to a real YouTubeMusicCatalog. */
+  catalog?: YtmCatalogLike;
+}
 
 interface YtmPlayerState {
   state: "idle" | "playing" | "paused" | "buffering" | "ended";
@@ -29,12 +46,14 @@ interface YtmPlayerState {
 export class YouTubeMusicAdapter extends ProviderViewAdapter {
   readonly route = "youtube-music" as const;
   private session: ProviderSession;
+  private catalog: YtmCatalogLike | null;
   private generation = 0;
   private signedIn: boolean | null = null;
   private destroyed = false;
 
-  constructor() {
+  constructor(deps: YouTubeMusicAdapterDeps = {}) {
     super();
+    this.catalog = deps.catalog ?? null;
     this.session = new ProviderSession({
       partition: "persist:provider-youtube",
       url: "https://music.youtube.com",
@@ -166,6 +185,24 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   async dispose(): Promise<void> {
     this.destroyed = true;
     await this.session.dispose();
+  }
+
+  /**
+   * Catalog search via InnerTube on the same account as playback: cookies
+   * come from the provider partition, and the catalog degrades to an
+   * anonymous client when none are stored yet. No view needed.
+   */
+  async search(text: string): Promise<TrackRef[]> {
+    const query = text.trim();
+    if (!query) return [];
+    this.catalog ??= new YouTubeMusicCatalog({
+      getCookieHeader: () => this.session.cookieHeader(),
+    });
+    try {
+      return await this.catalog.searchTracks(query);
+    } catch (e) {
+      throw new Error(`YouTube Music search failed: ${(e as Error).message}`);
+    }
   }
 
   /** Sign-in flow: reveal the hidden view so the user can authenticate. */

@@ -234,6 +234,13 @@ export interface RouteAdapter {
   prefetch?(item: QueueItem): Promise<void>;
   /** Release idle engine resources without discarding the login session. */
   releaseIdle?(): Promise<void>;
+  /**
+   * Search the provider's catalog. Adapters without a catalog integration
+   * omit this — callers must treat its absence as "search not available".
+   * Expected failures (auth, network, parse) reject with a typed error
+   * describing the real cause.
+   */
+  search?(text: string): Promise<TrackRef[]>;
   /** Trigger the route's sign-in flow (reveal view / open pairing). */
   signIn?(): Promise<void>;
   signOut?(): Promise<void>;
