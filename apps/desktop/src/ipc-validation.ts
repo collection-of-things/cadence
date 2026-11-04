@@ -60,6 +60,20 @@ export function parsePaths(u: unknown): Result<string[], InvalidIpcPayload> {
   return ok(u);
 }
 
+/** Parse a {route, text} payload for provider catalog search. */
+export function parseProviderSearch(
+  u: unknown,
+): Result<{ route: RouteId; text: string }, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("provider search expects {route, text}");
+  const route = parseRouteId(u.route);
+  if (!isOk(route)) return err(route.error);
+  if (typeof u.text !== "string" || u.text.trim().length === 0) {
+    return fail("provider search text must be a non-empty string");
+  }
+  if (u.text.length > 500) return fail("provider search text exceeds 500 chars");
+  return ok({ route: route.value, text: u.text.trim() });
+}
+
 /** Parse a track id for library.track. */
 export function parseEqBands(
   u: unknown,

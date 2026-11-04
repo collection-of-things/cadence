@@ -11,6 +11,7 @@ import {
   parsePaths,
   parsePlaybackCommand,
   parseEqBands,
+  parseProviderSearch,
   parseRouteId,
   parseTrackId,
 } from "./ipc-validation.js";
@@ -96,6 +97,17 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   ipcMain.handle(C.routeSignOut, async (_e, route: unknown) => {
     const r = assertOk(parseRouteId(route));
     if (deps.routeSignOut !== undefined) await deps.routeSignOut(r);
+  });
+
+  // Provider catalog search. Routes whose adapter omits `search` fail
+  // honestly here rather than returning fabricated results.
+  ipcMain.handle(C.searchProvider, async (_e, payload: unknown) => {
+    const { route, text } = assertOk(parseProviderSearch(payload));
+    const adapter = registry.get(route);
+    if (adapter?.search === undefined) {
+      throw new Error(`search is not available for route "${route}"`);
+    }
+    return adapter.search(text);
   });
 
   ipcMain.handle(C.windowMinimize, (e) => {

@@ -54,7 +54,7 @@ export interface UiState {
   generationId: number;
   toasts: Toast[];
   scan: ScanProgress;
-  view: 'now' | 'library';
+  view: 'now' | 'library' | 'sources';
   queueOpen: boolean;
   palette: Rgb[];
   ready: boolean;

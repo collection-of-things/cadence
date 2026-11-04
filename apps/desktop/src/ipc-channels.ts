@@ -18,6 +18,7 @@ export const IpcChannels = {
   scanProgress: "cadence:library:scan-progress",
   routeSignIn: "cadence:routes:sign-in",
   routeSignOut: "cadence:routes:sign-out",
+  searchProvider: "cadence:search:provider",
   windowMinimize: "cadence:window:minimize",
   windowToggleMaximize: "cadence:window:toggle-maximize",
   windowClose: "cadence:window:close",

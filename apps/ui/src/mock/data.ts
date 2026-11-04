@@ -14,7 +14,7 @@ const TITLES_A = ['Midnight', 'Glass', 'Verdant', 'Slow', 'Electric', 'Pale', 'G
 const TITLES_B = ['Cartography', 'Meridian', 'Static', 'Machines', 'Hymn', 'Harbor', 'Signal', 'Weather', 'Bloom', 'Arcade'];
 const TITLES_C = ['II', 'Reprise', 'Interlude', 'Dawn Mix', 'for Two', 'Overture', 'in Rain', 'Epilogue'];
 
-function svgArtwork(seed: number): string {
+export function svgArtwork(seed: number): string {
   const rng = mulberry32(seed);
   const h1 = Math.floor(rng() * 360);
   const h2 = (h1 + 40 + Math.floor(rng() * 120)) % 360;

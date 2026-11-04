@@ -58,6 +58,10 @@ const api: CadenceApi = {
     signOut: (route: RouteId) => invoke(C.routeSignOut, route),
   },
 
+  search: {
+    provider: (route: RouteId, text: string) => invoke(C.searchProvider, { route, text }),
+  },
+
   app: {
     minimize: () => {
       void invoke(C.windowMinimize);
