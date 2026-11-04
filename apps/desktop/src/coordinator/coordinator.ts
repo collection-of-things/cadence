@@ -299,7 +299,9 @@ export class Coordinator {
         return;
       }
       case "setVolume": {
-        this.volume = Math.min(Math.max(cmd.volume, 0), 1);
+        // Engine accepts up to 1.5 (preamp headroom); the UI slider still
+        // presents 0..1.
+        this.volume = Math.min(Math.max(cmd.volume, 0), 1.5);
         if (this.activeRouteValue !== null) {
           this.volumeByRoute.set(this.activeRouteValue, this.volume);
         }

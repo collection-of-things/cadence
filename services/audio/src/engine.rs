@@ -232,14 +232,15 @@ impl OutputCore {
                 self.stalled = false;
             }
         }
-        // volume, fft tap, dump on what was rendered
+        // FFT taps the source level BEFORE volume — muting or turning the
+        // volume down must not starve the visualizer.
+        let _ = self.fft_tap.write(out);
         let vol = self.volume;
         if (vol - 1.0).abs() > f32::EPSILON {
             for s in out.iter_mut() {
                 *s *= vol;
             }
         }
-        let _ = self.fft_tap.write(out);
         if let Some(d) = &self.dump {
             let _ = d.tap.write(out);
         }
@@ -292,13 +293,8 @@ impl OutputCore {
                 self.stalled = false;
             }
         }
-        let vol = self.volume;
-        if (vol - 1.0).abs() > f32::EPSILON {
-            for s in out.iter_mut() {
-                *s = (*s as f64 * vol as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-            }
-        }
-        // tap FFT + dump with f32-converted samples (bounded writes, drop on full)
+        // tap FFT (pre-volume, as in pull_f32) + dump with f32-converted
+        // samples — bounded writes, drop on full.
         let mut tap = [0f32; 2048];
         let mut i = 0;
         while i < out.len() {
@@ -307,10 +303,24 @@ impl OutputCore {
                 tap[j] = out[i + j] as f32 / i32::MAX as f32;
             }
             let _ = self.fft_tap.write(&tap[..n]);
-            if let Some(d) = &self.dump {
-                let _ = d.tap.write(&tap[..n]);
-            }
             i += n;
+        }
+        let vol = self.volume;
+        if (vol - 1.0).abs() > f32::EPSILON {
+            for s in out.iter_mut() {
+                *s = (*s as f64 * vol as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+            }
+        }
+        if let Some(d) = &self.dump {
+            let mut i = 0;
+            while i < out.len() {
+                let n = (out.len() - i).min(tap.len());
+                for j in 0..n {
+                    tap[j] = out[i + j] as f32 / i32::MAX as f32;
+                }
+                let _ = d.tap.write(&tap[..n]);
+                i += n;
+            }
         }
     }
 
@@ -1000,8 +1010,11 @@ impl Engine {
                 device_name: caps.name(),
             }
         };
+        // Capture position before the rebuild clears the pipeline —
+        // respawn resumes from there, not 0.
+        let pos = self.core.lock().unwrap().position_ms();
         self.rebuild_stream(&neg)?;
-        self.respawn_pipelines();
+        self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
     }
@@ -1011,9 +1024,10 @@ impl Engine {
         json!({ "devices": caps.list() })
     }
 
-    /// After a stream rebuild: restart current track at its position and the
-    /// prefetched successor from 0 (same device stream params permitting).
-    fn respawn_pipelines(&self) {
+    /// After a stream rebuild: restart the current track at `position_ms`
+    /// and the prefetched successor from 0 (same device stream params
+    /// permitting).
+    fn respawn_pipelines(&self, position_ms: u64) {
         let (cur, prefetch) = {
             let st = self.state.lock().unwrap();
             (
@@ -1025,9 +1039,8 @@ impl Engine {
         };
         if let Some((qid, src)) = cur {
             let (pos, rg) = {
-                let core = self.core.lock().unwrap();
                 let st = self.state.lock().unwrap();
-                (core.position_ms(), st.replay_gain_db)
+                (position_ms, st.replay_gain_db)
             };
             match self.spawn_pipeline(&qid, src, pos, rg, true) {
                 Ok((reader, handle, dur, bypass)) => {
@@ -1277,7 +1290,8 @@ impl Engine {
             self.state.lock().unwrap().fidelity = enabled;
         }
         // Rebuild current + prefetch pipelines under the new rules.
-        self.respawn_pipelines();
+        let pos = self.core.lock().unwrap().position_ms();
+        self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
     }
@@ -1288,7 +1302,8 @@ impl Engine {
         // at its position to apply changes immediately. Skipped on bypass.
         let bypass = self.state.lock().unwrap().fidelity_bypass;
         if !bypass {
-            self.respawn_pipelines();
+            let pos = self.core.lock().unwrap().position_ms();
+            self.respawn_pipelines(pos);
         }
         Ok(json!({ "ok": true }))
     }
@@ -1561,6 +1576,27 @@ impl Engine {
 
             // device loss -> honest error + stop
             if let Some(msg) = self.caps.lock().unwrap().device_error() {
+                // Try the default output once — an unplugged headphone
+                // shouldn't end the session when speakers are available.
+                let was_default = {
+                    let caps = self.caps.lock().unwrap();
+                    caps.list().iter().any(|d| d.is_default && d.name == caps.name())
+                };
+                if !self.cfg.null_sink && !was_default {
+                    match self.set_device(None) {
+                        Ok(_) => {
+                            self.emit_error(
+                                None,
+                                &format!("output device lost ({msg}); fell back to default"),
+                                true,
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!("device fallback failed: {e:#}");
+                        }
+                    }
+                }
                 self.emit_error(None, &format!("output device lost: {msg}"), false);
                 {
                     let mut core = self.core.lock().unwrap();
