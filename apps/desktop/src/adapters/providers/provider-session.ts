@@ -114,7 +114,14 @@ export class ProviderSession {
   /** Run a command inside the page world. Serialized + validated strings only. */
   async eval<T = unknown>(expression: string): Promise<T> {
     if (!this.alive) throw new Error(`provider session ${this.partition} is not alive`);
-    return (await this.win!.webContents.executeJavaScript(expression, true)) as T;
+    // A wedged provider page must not stall the coordinator chain.
+    const result = await Promise.race([
+      this.win!.webContents.executeJavaScript(expression, true),
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error(`provider eval timed out on ${this.partition}`)), 10_000),
+      ),
+    ]);
+    return result as T;
   }
 
   onEvent(cb: (e: { name: string; data: unknown }) => void): () => void {
@@ -150,6 +157,13 @@ export class ProviderSession {
   async dispose(): Promise<void> {
     await this.release();
     this.listeners.clear();
+  }
+
+  /** Hard mute the page — real silence even if JS-level pause fails. */
+  setAudioMuted(muted: boolean): void {
+    if (this.win !== null && !this.win.webContents.isDestroyed()) {
+      this.win.webContents.setAudioMuted(muted);
+    }
   }
 
   /** Show the view (sign-in flow). Caller decides how to surface it. */

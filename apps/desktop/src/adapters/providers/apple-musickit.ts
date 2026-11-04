@@ -89,6 +89,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
+    this.session.setAudioMuted(false);
     this.generation = lease.generationId;
     await this.prepare();
     if (item.track.source.kind !== "provider") throw new Error("not a provider track");
@@ -115,6 +116,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async stop(lease: PlaybackLease): Promise<void> {
+    this.session.setAudioMuted(true);
     if (lease.generationId !== this.generation) return;
     // The coordinator's handoff counts on confirmed silence — propagate
     // failures instead of leaving a second source audible.
@@ -166,7 +168,12 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.authorized = s.isAuthorized;
       this.emit({ kind: "capabilitiesChanged" });
     }
-    if (s.state === "stopped") return;
+    if (s.state === "stopped") {
+      // MusicKit reports stopped at end-of-track AND after our own stop() —
+      // the coordinator's generation gate dedupes the latter.
+      this.emit({ kind: "ended", generationId });
+      return;
+    }
     this.emit({ kind: "position", positionMs: s.positionMs, atMs: Date.now(), generationId });
     this.emit({
       kind: "state",

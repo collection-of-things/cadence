@@ -70,6 +70,11 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     await library.scan(assertOk(parsePaths(paths)));
   });
   ipcMain.handle(C.libraryRoots, () => library.roots());
+  ipcMain.handle(C.libraryRemoveRoots, (_e, paths: unknown) => {
+    const parsed = parsePaths(paths);
+    if (isOk(parsed)) library.removeRoots(parsed.value);
+    return parsed;
+  });
 
   if (deps.audio !== undefined) {
     const audio = deps.audio;

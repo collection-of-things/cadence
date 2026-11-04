@@ -102,13 +102,17 @@ describe("AudioServiceClient", () => {
     expect(client.isUp()).toBe(false);
   });
 
-  it("openStream negotiates a pcm-stream source (fifoPath on posix, opt-in)", async () => {
+  it("openStream always uses the audio.feed pcm-stream source", async () => {
+    // The fifo fast path is absent until the service implements fifoPath —
+    // an armed flag would silently deadlock. Even CADENCE_AUDIO_FIFO=1 must
+    // produce a plain pcm-stream source with no fifoPath.
     process.env.CADENCE_AUDIO_FIFO = "1";
     try {
       const { client, services } = makeClient();
       await client.start();
       const svc = lastService(services);
       svc.handlers.set("audio.load", () => ({}));
+      svc.handlers.set("audio.feed", () => ({}));
       const stream = await client.openStream({
         queueId: "q9",
         generationId: 3,
@@ -120,9 +124,7 @@ describe("AudioServiceClient", () => {
       expect(load).toBeDefined();
       const source = (load?.params as { source: { kind: string; fifoPath?: string } }).source;
       expect(source.kind).toBe("pcm-stream");
-      if (process.platform !== "win32") {
-        expect(source.fifoPath).toMatch(/cadence-pcm-/);
-      }
+      expect(source.fifoPath).toBeUndefined();
       await stream.end();
       await client.dispose();
     } finally {

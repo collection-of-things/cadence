@@ -68,6 +68,7 @@ export class SpotifyWebAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease): Promise<void> {
+    this.session.setAudioMuted(false);
     this.generation = lease.generationId;
     this.error("Spotify web route cannot play in an unsigned build", false, "drm-unsigned");
     throw new Error("spotify-web unavailable");
@@ -88,6 +89,7 @@ export class SpotifyWebAdapter extends ProviderViewAdapter {
   }
 
   async stop(lease: PlaybackLease): Promise<void> {
+    this.session.setAudioMuted(true);
     // Confirmed silence propagates (unlike the cosmetic pause/resume evals).
     if (lease.generationId !== this.generation) return;
     await this.session

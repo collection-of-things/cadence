@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import { stat } from "node:fs/promises";
 import type {
   LibraryAlbum,
@@ -90,6 +91,13 @@ export class LibraryService {
     this.addRoots(picked.value);
     void this.scan(picked.value);
     return true;
+  }
+
+  /** Drop roots, persist, prune their tracks, and (re)start watching. */
+  removeRoots(paths: string[]): void {
+    const dropping = new Set(paths);
+    this.store.saveSection("library", { roots: this.roots().filter((r) => !dropping.has(r)) });
+    this.startWatcher();
   }
 
   /** Merge new roots, persist, and (re)start watching. */
@@ -223,7 +231,8 @@ export class LibraryService {
 
 /** Append a trailing separator so `/music` does not match `/music2/x`. */
 function withSep(root: string): string {
-  return root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`;
+  // Windows roots use "\"; POSIX uses "/". Accept either trailing sep.
+  return root.endsWith("/") || root.endsWith("\\") ? root : root + sep;
 }
 
 /** Default chokidar-backed watcher factory for production wiring. */

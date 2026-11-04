@@ -249,7 +249,9 @@ function buildWhere(q: LibraryQuery): { where: string; params: Record<string, un
     params.fts = ftsQuery(text);
   }
   if (q.artist !== undefined && q.artist !== "") {
-    clauses.push("instr(artists_text, @artist) > 0");
+    // Exact artist match within the "; "-delimited field — "Air" must not
+    // match "Airbag". Pad the ends so first/last entries also match.
+    clauses.push("instr(';' || artists_text || ';', ';' || @artist || ';') > 0");
     params.artist = q.artist;
   }
   if (q.album !== undefined && q.album !== "") {

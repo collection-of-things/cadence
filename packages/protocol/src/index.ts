@@ -236,6 +236,8 @@ export interface RouteAdapter {
   prefetch?(item: QueueItem): Promise<void>;
   /** Release idle engine resources without discarding the login session. */
   releaseIdle?(): Promise<void>;
+  /** Apply the user's fidelity-mode preference (no-op where unsupported). */
+  setFidelityMode?(enabled: boolean): Promise<void>;
   /**
    * Search the provider's catalog. Adapters without a catalog integration
    * omit this — callers must treat its absence as "search not available".

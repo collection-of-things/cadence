@@ -4,7 +4,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 fail=0
 step() { echo; echo "=== $* ==="; }
-step "pnpm install (frozen)" && timeout 300 pnpm install --prefer-offline || fail=1
+step "pnpm install (frozen)" && timeout 300 pnpm install --prefer-offline --frozen-lockfile || fail=1
 step "typecheck" && timeout 300 pnpm -r typecheck || fail=1
 step "build" && timeout 300 pnpm -r build || fail=1
 step "unit tests" && timeout 300 pnpm -r test || fail=1

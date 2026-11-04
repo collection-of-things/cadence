@@ -52,7 +52,13 @@ export class AdapterRegistry {
     return Promise.all(
       this.list().map(async (adapter) => {
         try {
-          return await adapter.capabilities();
+          // One hung route must not block the whole capability fan-in.
+          return await Promise.race([
+            adapter.capabilities(),
+            new Promise<never>((_, rej) =>
+              setTimeout(() => rej(new Error("capabilities() timed out")), 10_000),
+            ),
+          ]);
         } catch (cause) {
           return errorCapabilities(adapter.route, cause);
         }

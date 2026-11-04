@@ -81,4 +81,4 @@ echo
 echo "PROBE-AUDIO: PASS"
 
 echo "== extended checks (probe-audio.mjs) =="
-node scripts/probe-audio.mjs "$BIN" || true
+node scripts/probe-audio.mjs "$BIN"

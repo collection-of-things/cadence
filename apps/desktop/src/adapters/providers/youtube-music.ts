@@ -129,6 +129,7 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
+    this.session.setAudioMuted(false);
     this.generation = lease.generationId;
     await this.prepare();
     if (item.track.source.kind !== "provider") throw new Error("not a provider track");
@@ -163,6 +164,7 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
 
   /** Confirmed silence: pause the media element. Session stays logged in. */
   async stop(lease: PlaybackLease): Promise<void> {
+    this.session.setAudioMuted(true);
     if (lease.generationId !== this.generation) return;
     // The coordinator's handoff counts on confirmed silence — propagate
     // failures instead of leaving a second source audible.

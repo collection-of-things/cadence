@@ -274,8 +274,13 @@ export class AudioServiceClient implements PcmStreamSink {
   }
 
   /** List available output devices. */
-  async listDevices(): Promise<unknown> {
-    return this.request("audio.listDevices", {});
+  async listDevices(): Promise<Array<{ name: string; isDefault: boolean }>> {
+    // Engine returns { devices: [...] }; the IPC contract is the array.
+    const res = (await this.request("audio.listDevices", {})) as
+      | { devices?: Array<{ name: string; isDefault: boolean }> }
+      | Array<{ name: string; isDefault: boolean }>;
+    if (Array.isArray(res)) return res;
+    return Array.isArray(res.devices) ? res.devices : [];
   }
 
   /** Select an output device (null = default). */
@@ -303,26 +308,9 @@ export class AudioServiceClient implements PcmStreamSink {
       channels: input.channels,
       bitDepth: input.bitDepth,
     };
-    // fifoPath fast path requires service-side fifo reading; the current
-    // service build implements audio.feed only, so the fifo path is opt-in
-    // (CADENCE_AUDIO_FIFO=1) until the service gains fifoPath support.
-    if (process.platform !== "win32" && process.env.CADENCE_AUDIO_FIFO === "1") {
-      const fifoPath = join(tmpdir(), `cadence-pcm-${process.pid}-${(this.streamSeq += 1)}.fifo`);
-      try {
-        await execFileAsync("mkfifo", [fifoPath]);
-        await this.load({
-          queueId: input.queueId,
-          generationId: input.generationId,
-          source: { ...sourceBase, fifoPath },
-        });
-        // O_RDWR opens without a peer so we never block waiting for the reader.
-        const fd = await promisify(open)(fifoPath, "r+");
-        return new FifoPcmStream(input.queueId, fifoPath, fd);
-      } catch (e) {
-        await unlinkAsync(fifoPath).catch(() => undefined);
-        this.onLog?.(`pcm fifo path failed, falling back to audio.feed: ${String(e)}`);
-      }
-    }
+    // The service implements audio.feed only — a fifoPath source would be
+    // ignored service-side and silently deadlock, so the fifo fast path is
+    // intentionally absent until `fifoPath` lands in the service contract.
     await this.load({
       queueId: input.queueId,
       generationId: input.generationId,

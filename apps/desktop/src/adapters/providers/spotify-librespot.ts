@@ -241,7 +241,7 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
       audio: {
         pcmAccess: binaryAvailable && posix ? "yes" : "unknown",
         eq: binaryAvailable && posix ? "yes" : "unknown",
-        replayGain: "yes",
+        replayGain: "unknown", // librespot/Spotify supplies no per-track gain
         qualityCeiling: "Ogg Vorbis 320kbps (Premium)",
       },
       visuals: { kind: binaryAvailable && posix ? "pcm-fft" : "ambient" },
@@ -391,6 +391,17 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
 
   async setVolume(volume: number): Promise<void> {
     await this.deps.graph.setVolume(volume).catch(() => {});
+  }
+
+  /** No interactive sign-in — credentials live in the environment. The
+   * Sources view calls this from its Sign-in button; give the user real
+   * instructions instead of a generic "no flow" failure. */
+  async signIn(): Promise<void> {
+    throw new Error(
+      "Spotify (librespot) uses environment credentials — set " +
+        "CADENCE_SPOTIFY_TOKEN or CADENCE_SPOTIFY_USERNAME + " +
+        "CADENCE_SPOTIFY_PASSWORD and restart Cadence.",
+    );
   }
 
   async dispose(): Promise<void> {

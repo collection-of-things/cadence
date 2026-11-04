@@ -118,21 +118,26 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
                             .context("file source missing path")?,
                     ),
                 },
-                Some("pcm-stream") => SourceSpec::PcmStream {
-                    sample_rate_hz: source
+                Some("pcm-stream") => {
+                    let rate = source
                         .get("sampleRateHz")
                         .and_then(|v| v.as_u64())
-                        .context("pcm-stream missing sampleRateHz")?
-                        as u32,
-                    channels: source
+                        .context("pcm-stream missing sampleRateHz")?;
+                    let ch = source
                         .get("channels")
                         .and_then(|v| v.as_u64())
-                        .context("pcm-stream missing channels")?
-                        as u32,
-                    bit_depth: parse_bit_depth(
-                        source.get("bitDepth").context("pcm-stream missing bitDepth")?,
-                    )?,
-                },
+                        .context("pcm-stream missing channels")?;
+                    if rate == 0 || rate > 384_000 || ch == 0 || ch > 16 {
+                        bail!("pcm-stream out-of-range sampleRateHz/channels");
+                    }
+                    SourceSpec::PcmStream {
+                        sample_rate_hz: rate as u32,
+                        channels: ch as u32,
+                        bit_depth: parse_bit_depth(
+                            source.get("bitDepth").context("pcm-stream missing bitDepth")?,
+                        )?,
+                    }
+                }
                 other => bail!("unknown source kind {other:?}"),
             };
             engine.load(LoadParams {
@@ -196,11 +201,15 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
         // little-endian PCM in the depth declared at audio.load.
         "audio.feed" => {
             use base64::Engine as _;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(get_str(p, "dataBase64")?)
-                .context("bad dataBase64")?;
+            // dataBase64 is optional for control-only frames (final/abort).
             let fin = p.get("final").and_then(|v| v.as_bool()).unwrap_or(false);
             let abort = p.get("abort").and_then(|v| v.as_bool()).unwrap_or(false);
+            let bytes = match p.get("dataBase64") {
+                None | Some(serde_json::Value::Null) => Vec::new(),
+                Some(v) => base64::engine::general_purpose::STANDARD
+                    .decode(v.as_str().context("bad dataBase64")?)
+                    .context("bad dataBase64")?,
+            };
             engine.feed(get_str(p, "queueId")?, &bytes, fin, abort)
         }
         "audio.shutdown" => Ok(json!({ "ok": true })),

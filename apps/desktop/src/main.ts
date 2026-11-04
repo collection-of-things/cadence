@@ -38,6 +38,7 @@ import { registerMediaKeys } from "./media-keys.js";
 const appDir = app.getAppPath();
 const repoRoot = join(appDir, "..", "..");
 const distDir = join(appDir, "dist");
+let uiRootPath: string | null = null;
 
 // Artwork is served to the sandboxed renderer over a narrow scheme instead
 // of raw file:// (blocked under http dev origins and future served UI).
@@ -45,6 +46,13 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: "cadence-art",
     privileges: { supportFetchAPI: true, stream: true, bypassCSP: false },
+  },
+  {
+    // The UI bundle loads over this scheme: <script type="module"> is
+    // CORS-blocked over file://, and a real origin also unblocks fonts,
+    // workers, and fetch(). cadence-app://ui/index.html maps to uiRoot.
+    scheme: "cadence-app",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
   },
 ]);
 
@@ -70,11 +78,12 @@ function createWindow(): BrowserWindow {
     void win.loadURL(devUrl);
     return win;
   }
-  const uiBundle = app.isPackaged
-    ? join(process.resourcesPath, "ui", "index.html")
-    : join(repoRoot, "apps", "ui", "dist", "index.html");
-  if (existsSync(uiBundle)) {
-    void win.loadFile(uiBundle);
+  const uiRoot = app.isPackaged
+    ? join(process.resourcesPath, "ui")
+    : join(repoRoot, "apps", "ui", "dist");
+  if (existsSync(join(uiRoot, "index.html"))) {
+    uiRootPath = uiRoot;
+    void win.loadURL("cadence-app://ui/index.html");
   } else {
     // The UI workstream builds apps/ui in parallel; until then the shell
     // still boots and window.cadence is live for manual probing.
@@ -95,6 +104,7 @@ async function main(): Promise<void> {
     const win = BrowserWindow.getAllWindows()[0];
     if (win !== undefined) {
       if (win.isMinimized()) win.restore();
+      if (!win.isVisible()) win.show();
       win.focus();
     }
   });
@@ -122,6 +132,14 @@ async function main(): Promise<void> {
   } catch {
     /* thumbnails dir may not exist until the first scan */
   }
+  protocol.handle("cadence-app", (request) => {
+    // Serves the built UI bundle; module scripts need a real origin.
+    const u = new URL(request.url);
+    if (u.host !== "ui" || uiRootPath === null) return new Response(null, { status: 404 });
+    const candidate = resolve(join(uiRootPath, decodeURIComponent(u.pathname).replace(/^\//, "")));
+    if (!candidate.startsWith(uiRootPath + sep)) return new Response(null, { status: 403 });
+    return net.fetch(pathToFileURL(candidate).toString());
+  });
   protocol.handle("cadence-art", (request) => {
     const u = new URL(request.url);
     if (u.host !== "artwork") return new Response(null, { status: 404 });
@@ -178,6 +196,13 @@ async function main(): Promise<void> {
   });
   audioClient.onRestarted(() => {
     void coordinator.notifyEngineRestarted(coordinator.activeRoute ?? "local");
+  });
+  // Service loss is a route-local failure of whichever engine route owns the
+  // shared graph — surface it immediately, not only after a respawn.
+  audioClient.onStateChange((s) => {
+    if (s === "down" || s === "failed") {
+      coordinator.notifyEngineUnavailable(coordinator.activeRoute ?? "local");
+    }
   });
 
   // Sleep/wake: pause on suspend so nothing keeps sounding over a lid-close
@@ -282,7 +307,9 @@ async function main(): Promise<void> {
     tray = null;
     coordinator.dispose();
     void library.dispose();
-    void localAdapter.dispose();
+    for (const adapter of registry.list()) {
+      void adapter.dispose();
+    }
     void audioClient.dispose();
   });
 }

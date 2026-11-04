@@ -45,6 +45,7 @@ const api: CadenceApi = {
     scan: (paths: string[]) => invoke(C.libraryScan, paths),
     onScanProgress: (cb: (p: ScanProgress) => void) => subscribe(C.scanProgress, cb),
     roots: () => invoke(C.libraryRoots),
+    removeRoots: (paths: string[]) => invoke(C.libraryRemoveRoots, paths),
   },
 
   audio: {

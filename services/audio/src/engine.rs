@@ -434,15 +434,16 @@ impl Feed {
     /// How long a push may wait for drain before erroring.
     const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-    /// Append bytes, blocking while the buffer is at CAP. Errors on timeout
-    /// or once the feed is closed/aborted; a timeout may leave a prefix of
-    /// `bytes` appended.
+    /// Append bytes atomically, blocking while the buffer is at CAP. On
+    /// timeout the appended prefix is rolled back — a partially-accepted
+    /// chunk would misalign every later byte in the stream.
     fn push(&self, bytes: &[u8]) -> Result<()> {
         let mut buf = self.buf.lock().unwrap();
         let deadline = std::time::Instant::now() + Self::PUSH_TIMEOUT;
         let mut off = 0;
         while off < bytes.len() {
             if self.closed.load(Ordering::Acquire) {
+                buf.drain(..off);
                 bail!("feed closed");
             }
             let space = Self::CAP.saturating_sub(buf.len());
@@ -455,11 +456,13 @@ impl Feed {
             }
             let now = std::time::Instant::now();
             if now >= deadline {
+                buf.drain(..off);
                 bail!("feed full: no drain within {}ms", Self::PUSH_TIMEOUT.as_millis());
             }
             let (g, t) = self.cv.wait_timeout(buf, deadline - now).unwrap();
             buf = g;
             if t.timed_out() {
+                buf.drain(..off);
                 bail!("feed full: no drain within {}ms", Self::PUSH_TIMEOUT.as_millis());
             }
         }
@@ -858,11 +861,21 @@ impl Engine {
         let bypass = plan.bypass;
 
         {
+            // A missing/dead sink (open failed earlier) must retry the open —
+            // otherwise load reports success while rendering nothing.
+            let sink_unhealthy = self
+                .sink
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.is_dead())
+                .unwrap_or(true);
             let core = self.core.lock().unwrap();
-            if core.negotiated != neg {
+            let format_differs = core.negotiated != neg;
+            if format_differs || sink_unhealthy {
                 let (cur_rate, cur_kind) = (core.negotiated.rate, core.negotiated.kind);
                 drop(core);
-                if !rebuild_ok {
+                if !rebuild_ok && format_differs {
                     bail!(
                         "incompatible format for seamless transition: \
                          track wants {}Hz/{:?}, stream is {}Hz/{:?}",
@@ -885,22 +898,42 @@ impl Engine {
         let neg2 = neg.clone();
         let qid = queue_id.to_string();
 
-        // S16 output still runs the internal f32 pipeline (f32 holds 16-bit
-        // sources exactly); the i16 conversion happens at pull_s16.
-        let (reader, join) = match neg.kind {
-            PcmKind::F32 | PcmKind::S16 => {
+        // The s32 producer is fidelity-only: no resampler, no EQ, no
+        // ReplayGain. Selecting it by negotiated kind alone would bypass all
+        // DSP on every I32-default device — wrong rate, wrong pitch, lying
+        // capability reports. Non-bypass S32 output runs the f32 graph and
+        // converts at pull_s32.
+        let use_bypass_s32 = bypass && neg.kind == PcmKind::S32;
+        let (reader, join) = match (use_bypass_s32, neg.kind) {
+            (false, _) => {
                 let (prod, cons) = ringbuf::channel::<f32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
                 let r = ready.clone();
                 let qid_c = qid.clone();
+                let emit_c = Arc::clone(&self.emit);
+                let prod_ret = prod.clone();
                 let join = std::thread::Builder::new()
                     .name(format!("decode:{qid}"))
                     .spawn(move || {
-                        if let Err(e) = run_producer_f32(
+                        let res = run_producer_f32(
                             &*decoder, src2, seek_ms, &neg2, rplan, eq, rg_db, feed, prod, r,
-                        ) {
+                        );
+                        if let Err(e) = res {
                             eprintln!("producer {qid_c}: {e:#}");
+                            (emit_c)(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "method": "event.error",
+                                "params": {
+                                    "queueId": qid_c,
+                                    "message": format!("decode failed: {e:#}"),
+                                    "retriable": true,
+                                },
+                            }));
                         }
+                        // A dead producer must still close the ring — else
+                        // the consumer buffers forever and the boundary
+                        // reports a false gapless promotion.
+                        prod_ret.finish();
                     })?;
                 (
                     TrackReader {
@@ -913,19 +946,31 @@ impl Engine {
                     join,
                 )
             }
-            PcmKind::S32 => {
+            (true, _) => {
                 let (prod, cons) = ringbuf::channel::<i32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
                 let r = ready.clone();
                 let qid_c = qid.clone();
+                let emit_c = Arc::clone(&self.emit);
+                let prod_ret = prod.clone();
                 let join = std::thread::Builder::new()
                     .name(format!("decode:{qid}"))
                     .spawn(move || {
-                        if let Err(e) =
-                            run_producer_s32(&*decoder, src2, seek_ms, &neg2, feed, prod, r)
-                        {
+                        let res =
+                            run_producer_s32(&*decoder, src2, seek_ms, &neg2, feed, prod, r);
+                        if let Err(e) = res {
                             eprintln!("producer {qid_c}: {e:#}");
+                            (emit_c)(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "method": "event.error",
+                                "params": {
+                                    "queueId": qid_c,
+                                    "message": format!("decode failed: {e:#}"),
+                                    "retriable": true,
+                                },
+                            }));
                         }
+                        prod_ret.finish();
                     })?;
                 (
                     TrackReader {
@@ -1044,6 +1089,12 @@ impl Engine {
             )
         };
         if let Some((qid, src)) = cur {
+            // A live pcm-stream can't be respawned mid-flow — the byte source
+            // belongs to the original load. Report and leave the stream dead.
+            if matches!(src, SourceSpec::PcmStream { .. }) {
+                self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
+                return;
+            }
             let (pos, rg) = {
                 let st = self.state.lock().unwrap();
                 (position_ms, st.replay_gain_db)
@@ -1060,7 +1111,10 @@ impl Engine {
             }
         }
         if let Some((qid, src, rg)) = prefetch {
-            match self.spawn_pipeline(&qid, src.clone(), 0, rg, true) {
+            // rebuild_ok:false — a format-mismatched prefetch must NOT swap
+            // the stream (that would erase the active track we just set);
+            // the boundary reopen path handles it honestly instead.
+            match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
                 Ok((reader, handle, _dur, _bypass)) => {
                     let ready = reader.ready.clone();
                     self.core.lock().unwrap().set_next(reader);
@@ -1397,6 +1451,7 @@ impl Engine {
         let mut last_pos_emit = std::time::Instant::now();
         let mut mono_buf = Vec::with_capacity(8192);
         let mut tap_buf = vec![0f32; 8192];
+        let mut monitor_stalled = false;
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1542,15 +1597,23 @@ impl Engine {
                 }
             }
 
-            // underrun -> buffering (once per stall)
+            // underrun -> buffering (once per stall), then a state=playing
+            // event when the stall clears so the UI never sticks on buffering.
             {
-                let (underrun, qid) = {
+                let (underrun, stall_cleared, qid, playing) = {
                     let core = self.core.lock().unwrap();
                     let st = self.state.lock().unwrap();
-                    (core.underrun, st.queue_id.clone())
+                    let cleared = monitor_stalled && !core.stalled;
+                    monitor_stalled = core.stalled;
+                    (
+                        core.underrun,
+                        cleared,
+                        st.queue_id.clone(),
+                        st.state == PlayState::Playing,
+                    )
                 };
                 if underrun {
-                    if let Some(q) = qid {
+                    if let Some(q) = qid.clone() {
                         let gen = self.state.lock().unwrap().generation;
                         self.emit(
                             "event.buffering",
@@ -1558,6 +1621,10 @@ impl Engine {
                         );
                         self.core.lock().unwrap().underrun = false;
                     }
+                }
+                if stall_cleared && playing {
+                    let gen = self.state.lock().unwrap().generation;
+                    self.emit("event.state", json!({ "generationId": gen, "status": "playing" }));
                 }
             }
 

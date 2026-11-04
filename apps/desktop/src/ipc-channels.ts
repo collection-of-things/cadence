@@ -15,6 +15,7 @@ export const IpcChannels = {
   libraryAddFolders: "cadence:library:add-folders",
   libraryScan: "cadence:library:scan",
   libraryRoots: "cadence:library:roots",
+  libraryRemoveRoots: "cadence:library:remove-roots",
   scanProgress: "cadence:library:scan-progress",
   routeSignIn: "cadence:routes:sign-in",
   routeSignOut: "cadence:routes:sign-out",

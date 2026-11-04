@@ -436,6 +436,7 @@ export class MockCadenceApi implements CadenceApi {
       return () => this.scanListeners.delete(cb);
     },
     roots: async () => ['/home/xdd/Music', '/mnt/media/flac'],
+    removeRoots: async (paths: string[]) => ({ removed: paths.length }),
   };
 
   private simulateScan() {

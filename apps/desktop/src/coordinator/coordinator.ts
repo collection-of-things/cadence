@@ -178,6 +178,8 @@ export class Coordinator {
         } else {
           await this.teardownActive();
           this.status = "stopped";
+          this.lease = null; // clear so late events can't act on the new queue
+          this.activeRouteValue = null;
           this.positionMs = 0;
           this.emitSnapshot();
         }
@@ -368,6 +370,17 @@ export class Coordinator {
    * WITHOUT autoplay: the item is re-loaded paused at its last position and
    * playback only resumes on an explicit user command.
    */
+  /** The shared audio engine went down or failed — mark the owning route
+   * unhealthy immediately instead of reporting phantom playback. */
+  notifyEngineUnavailable(route: RouteId): void {
+    // Only engine-backed routes depend on the shared service; provider DOM
+    // engines keep playing through the outage.
+    if (route !== "local" && route !== "spotify-librespot") return;
+    if (this.activeRoute !== route) return;
+    this.emitError(route, this.lease?.queueId, "audio engine unavailable (service down)", true);
+    this.emitSnapshot();
+  }
+
   notifyEngineRestarted(route: RouteId): void {
     // Route through the serialized chain — a startItem in flight must not
     // see generation/lease mutated underneath it.
@@ -414,7 +427,10 @@ export class Coordinator {
    * deliberate `switchRoute` fallback.
    */
   /** Serialize an engine/event-driven start onto the same chain as commands. */
-  private enqueueStart(index: number, opts: { positionMs?: number; routeOverride?: RouteId } = {}): void {
+  private enqueueStart(
+    index: number,
+    opts: { positionMs?: number; routeOverride?: RouteId; adoptPromotion?: boolean } = {},
+  ): void {
     this.chain = this.chain.then(() => this.startItem(index, opts)).then(
       () => undefined,
       () => undefined,
@@ -438,7 +454,7 @@ export class Coordinator {
 
   private async startItem(
     index: number,
-    opts: { positionMs?: number; routeOverride?: RouteId },
+    opts: { positionMs?: number; routeOverride?: RouteId; adoptPromotion?: boolean },
   ): Promise<void> {
     const item = this.queue.items[index];
     if (item === undefined) return;
@@ -452,7 +468,10 @@ export class Coordinator {
     // generation here would desync event stamping and gated commands.
     // The guard is spent once an `ended` for the promoted item is on record,
     // so repeat-one replays and manual re-plays still issue a real play.
+    // adoptPromotion limits this to engine-advance starts — an explicit
+    // user "play this track" must really play it.
     if (
+      opts.adoptPromotion === true &&
       adapter !== undefined &&
       this.promotedQueueId === item.queueId &&
       adapter === this.activeAdapter &&
@@ -542,8 +561,16 @@ export class Coordinator {
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
     try {
+      // Apply the user's fidelity mode before load — the persisted setting
+      // must reach the adapter even when it was toggled while stopped.
+      if (adapter.setFidelityMode !== undefined) {
+        await adapter.setFidelityMode(this.fidelityMode);
+      }
       await this.withTimeout(adapter.play(item, lease, playOpts), 20_000, "adapter.play");
     } catch (cause) {
+      // A timed-out play may still have started audio underneath us — issue
+      // a real stop so the failure path owns silence, not optimism.
+      await this.withTimeout(adapter.stop(lease), 8_000, "cleanup.stop").catch(() => undefined);
       this.failStart(route, item.queueId, `play failed: ${msg(cause)}`, true);
       return;
     }
@@ -569,7 +596,7 @@ export class Coordinator {
     this.activeAdapter = null;
     if (adapter !== null && lease !== null) {
       try {
-        await adapter.stop(lease);
+        await this.withTimeout(adapter.stop(lease), 8_000, "teardown.stop");
       } catch (cause) {
         this.emitError(lease.route, lease.queueId, `stop failed: ${msg(cause)}`, true);
       }
@@ -640,7 +667,7 @@ export class Coordinator {
   private async guarded(call: () => Promise<void>, op: string): Promise<boolean> {
     const lease = this.lease;
     try {
-      await call();
+      await this.withTimeout(call(), 10_000, op);
       return true;
     } catch (cause) {
       const route = lease?.route ?? this.activeRouteValue ?? "local";
@@ -682,8 +709,11 @@ export class Coordinator {
         .catch(() => undefined);
       return;
     }
-    // Generation-gated events below.
+    // Generation-gated events below; they must also come from the route that
+    // owns the lease — a late event from a torn-down outgoing route can
+    // otherwise advance the queue over an explicit handoff.
     if (this.lease === null || e.generationId !== this.lease.generationId) return;
+    if (route !== this.lease.route) return;
     switch (e.kind) {
       case "started": {
         // Engine self-promotion: a started whose queueId is not the item we
@@ -753,7 +783,7 @@ export class Coordinator {
             if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
             if (fallbackQueueId === undefined) return;
             const nowIdx = this.queue.items.findIndex((it) => it.queueId === fallbackQueueId);
-            if (nowIdx >= 0) this.enqueueStart(nowIdx);
+            if (nowIdx >= 0) this.enqueueStart(nowIdx, { adoptPromotion: true });
           }, 600);
           return;
         }
@@ -762,7 +792,9 @@ export class Coordinator {
           if (nextQueueId === undefined) return;
           this.chain = this.chain.then(() => {
             const nowIdx = this.queue.items.findIndex((it) => it.queueId === nextQueueId);
-            return nowIdx >= 0 ? this.startItem(nowIdx, {}) : Promise.resolve();
+            return nowIdx >= 0
+              ? this.startItem(nowIdx, { adoptPromotion: true })
+              : Promise.resolve();
           });
         }
         return;

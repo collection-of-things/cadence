@@ -56,7 +56,7 @@ export function parsePersistedPlayback(u: unknown): PersistedPlayback | null {
     version: 1,
     queue: p.queue,
     positionMs: typeof p.positionMs === "number" && Number.isFinite(p.positionMs) ? p.positionMs : 0,
-    volume: typeof p.volume === "number" && Number.isFinite(p.volume) ? Math.min(Math.max(p.volume, 0), 1) : 1,
+    volume: typeof p.volume === "number" && Number.isFinite(p.volume) ? Math.min(Math.max(p.volume, 0), 1.5) : 1,
     muted: p.muted === true,
     fidelityMode: p.fidelityMode === true,
     volumeByRoute,

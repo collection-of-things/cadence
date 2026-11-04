@@ -38,6 +38,7 @@ export interface CadenceApi {
     scan(paths: string[]): Promise<void>;
     onScanProgress(cb: (p: ScanProgress) => void): () => void;
     roots(): Promise<string[]>;
+    removeRoots(paths: string[]): Promise<unknown>;
   };
 
   // --- audio engine ------------------------------------------------------------

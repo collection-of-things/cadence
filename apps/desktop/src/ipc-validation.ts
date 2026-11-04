@@ -157,10 +157,10 @@ export function parsePlaybackCommand(u: unknown): Result<PlaybackCommand, Invali
       return ok({ kind: "remove", queueIds: u.queueIds });
     }
     case "move": {
-      if (typeof u.fromIndex !== "number" || typeof u.toIndex !== "number") {
-        return fail("move requires numeric fromIndex/toIndex");
+      if (!Number.isInteger(u.fromIndex) || !Number.isInteger(u.toIndex)) {
+        return fail("move requires integer fromIndex/toIndex");
       }
-      return ok({ kind: "move", fromIndex: u.fromIndex, toIndex: u.toIndex });
+      return ok({ kind: "move", fromIndex: u.fromIndex as number, toIndex: u.toIndex as number });
     }
     case "play": {
       const cmd: Extract<PlaybackCommand, { kind: "play" }> = { kind: "play" };

@@ -55,6 +55,11 @@ pub trait DeviceCaps: Send + Sync {
 
 pub trait Sink: Send {
     fn stop(&mut self);
+    /// A dead sink never renders — loads over it must retry the open, not
+    /// succeed silently into nothing.
+    fn is_dead(&self) -> bool {
+        false
+    }
 }
 
 // ------------------------------- null device -------------------------------
@@ -415,6 +420,9 @@ impl DeviceCaps for UnavailableCaps {
 pub struct DeadSink;
 impl Sink for DeadSink {
     fn stop(&mut self) {}
+    fn is_dead(&self) -> bool {
+        true
+    }
 }
 
 /// Build the right caps + initial sink for the configured mode.
