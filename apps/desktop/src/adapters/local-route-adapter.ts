@@ -169,6 +169,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   /** Reload the item paused at a position after an engine restart. No autoplay. */
   async restoreAfterEngineRestart(item: QueueItem, positionMs: number): Promise<void> {
     const source = fileSourceOf(item);
+    this.knownQueueIds.add(item.queueId);
     await this.client.load({
       queueId: item.queueId,
       generationId: this.lastLoadGeneration,
