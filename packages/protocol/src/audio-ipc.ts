@@ -36,8 +36,14 @@ export type AudioRpcRequest =
       };
     }
   | { method: "audio.prefetch"; params: { queueId: string; path: string; replayGainDb?: number } }
-  /** Push a PCM chunk into the current pcm-stream source (base64). Alternative to fifoPath. */
-  | { method: "audio.feed"; params: { generationId: number; dataBase64: string; endOfStream?: boolean } }
+  /** Push a PCM chunk into the pcm-stream source opened under `queueId`
+   *  (base64 little-endian interleaved frames in the declared depth).
+   *  `final` marks end-of-stream (remaining buffered audio plays out);
+   *  `abort` discards the stream immediately. */
+  | {
+      method: "audio.feed";
+      params: { queueId: string; dataBase64: string; final?: boolean; abort?: boolean };
+    }
   | { method: "audio.play"; params: { generationId: number } }
   | { method: "audio.pause"; params: { generationId: number } }
   | { method: "audio.stop"; params: { generationId: number } }

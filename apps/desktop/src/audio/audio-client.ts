@@ -303,7 +303,10 @@ export class AudioServiceClient implements PcmStreamSink {
       channels: input.channels,
       bitDepth: input.bitDepth,
     };
-    if (process.platform !== "win32") {
+    // fifoPath fast path requires service-side fifo reading; the current
+    // service build implements audio.feed only, so the fifo path is opt-in
+    // (CADENCE_AUDIO_FIFO=1) until the service gains fifoPath support.
+    if (process.platform !== "win32" && process.env.CADENCE_AUDIO_FIFO === "1") {
       const fifoPath = join(tmpdir(), `cadence-pcm-${process.pid}-${(this.streamSeq += 1)}.fifo`);
       try {
         await execFileAsync("mkfifo", [fifoPath]);
@@ -618,14 +621,14 @@ class FeedPcmStream implements PcmStream {
 
   constructor(
     readonly streamId: string,
-    private readonly feed: (params: { queueId: string; data?: string; end?: boolean; abort?: boolean }) => Promise<unknown>,
+    private readonly feed: (params: { queueId: string; dataBase64?: string; final?: boolean; abort?: boolean }) => Promise<unknown>,
   ) {}
 
   /** Push one PCM chunk as a base64 audio.feed request; ack = backpressure. */
   write(chunk: Uint8Array): Promise<void> {
     if (this.closed) return Promise.reject(new AudioServiceDown("pcm stream closed"));
     const data = Buffer.from(chunk).toString("base64");
-    const p = this.tail.then(() => this.feed({ queueId: this.streamId, data }));
+    const p = this.tail.then(() => this.feed({ queueId: this.streamId, dataBase64: data }));
     this.tail = p.then(
       () => undefined,
       () => undefined,
@@ -638,7 +641,7 @@ class FeedPcmStream implements PcmStream {
     if (this.closed) return;
     this.closed = true;
     await this.tail;
-    await this.feed({ queueId: this.streamId, end: true });
+    await this.feed({ queueId: this.streamId, final: true });
   }
 
   /** Abort the stream. */
