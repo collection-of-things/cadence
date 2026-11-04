@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, powerMonitor } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { AdapterRegistry } from "./adapters/registry.js";
@@ -136,7 +136,23 @@ async function main(): Promise<void> {
     graphEvents: audioClient,
   });
   audioClient.onRestarted(() => {
-    void coordinator.notifyEngineRestarted("local");
+    void coordinator.notifyEngineRestarted(coordinator.activeRoute ?? "local");
+  });
+
+  // Sleep/wake: pause on suspend so nothing keeps sounding over a lid-close
+  // or a hung device path; resume only when we were the ones who paused.
+  let suspendPaused = false;
+  powerMonitor.on("suspend", () => {
+    if (coordinator.getSnapshot().status === "playing") {
+      suspendPaused = true;
+      void coordinator.handleCommand({ kind: "pause" });
+    }
+  });
+  powerMonitor.on("resume", () => {
+    if (suspendPaused) {
+      suspendPaused = false;
+      void coordinator.handleCommand({ kind: "resume" });
+    }
   });
 
   const db = new LibraryDb(join(userData, "library.db"));

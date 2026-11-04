@@ -44,6 +44,8 @@ export interface LibrespotGraph {
   pause(generationId: number): Promise<unknown>;
   stop(generationId: number): Promise<unknown>;
   setVolume(volume: number): Promise<unknown>;
+  /** Engine events (position/trackEnded) for the pcm-stream this adapter feeds. */
+  onEvent?(cb: (e: { method: string; params: Record<string, unknown> }) => void): () => void;
 }
 
 export interface LibrespotAdapterDeps {
@@ -70,6 +72,24 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
 
   constructor(private deps: LibrespotAdapterDeps) {
     super();
+    // Engine-side position/trackEnded for the pcm-stream we feed keeps the
+    // seek bar and auto-advance alive on this route.
+    this.deps.graph.onEvent?.((e) => {
+      const generationId = this.generation;
+      if (e.method === "event.position") {
+        const p = e.params as { positionMs?: number; atMs?: number; generationId?: number };
+        if (p.generationId !== generationId || p.positionMs === undefined) return;
+        this.emit({ kind: "position", positionMs: p.positionMs, atMs: p.atMs ?? Date.now(), generationId });
+      }
+      if (e.method === "event.trackEnded") {
+        const p = e.params as { generationId?: number };
+        if (p.generationId === generationId) this.emit({ kind: "ended", generationId });
+      }
+      if (e.method === "event.error") {
+        const p = e.params as { message?: string; retriable?: boolean };
+        this.error(p.message ?? "audio graph error", p.retriable ?? true);
+      }
+    });
   }
 
   private binary(): string {

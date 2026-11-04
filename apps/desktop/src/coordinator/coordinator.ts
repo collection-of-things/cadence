@@ -66,7 +66,7 @@ export class Coordinator {
   private generation = 0;
   private queueIdSeq = 0;
   private activeAdapter: RouteAdapter | null = null;
-  private activeRoute: RouteId | null = null;
+  private activeRouteValue: RouteId | null = null;
   private status: PlaybackStatus = "stopped";
   private positionMs = 0;
   private positionAtMs = 0;
@@ -131,6 +131,11 @@ export class Coordinator {
   /** Current queue state for `window.cadence.getQueue()`. */
   getQueue(): QueueState {
     return this.queue;
+  }
+
+  /** The route currently holding the lease, for restart/restore decisions. */
+  get activeRoute(): RouteId | null {
+    return this.activeRouteValue;
   }
 
   /** Capability fan-in across all registered route adapters. */
@@ -216,7 +221,7 @@ export class Coordinator {
         if (cmd.queueId !== undefined) {
           const idx = this.queue.items.findIndex((it) => it.queueId === cmd.queueId);
           if (idx === -1) {
-            this.emitError(this.activeRoute ?? "local", cmd.queueId, "play: queueId not in queue", false);
+            this.emitError(this.activeRouteValue ?? "local", cmd.queueId, "play: queueId not in queue", false);
             return;
           }
           await this.startItem(idx, {});
@@ -295,8 +300,8 @@ export class Coordinator {
       }
       case "setVolume": {
         this.volume = Math.min(Math.max(cmd.volume, 0), 1);
-        if (this.activeRoute !== null) {
-          this.volumeByRoute.set(this.activeRoute, this.volume);
+        if (this.activeRouteValue !== null) {
+          this.volumeByRoute.set(this.activeRouteValue, this.volume);
         }
         await this.applyEffectiveVolume();
         this.emitSnapshot();
@@ -351,7 +356,7 @@ export class Coordinator {
    */
   async notifyEngineRestarted(route: RouteId): Promise<void> {
     const item = QueueOps.currentItem(this.queue);
-    if (item === null || this.activeRoute !== route) return;
+    if (item === null || this.activeRouteValue !== route) return;
     this.generation += 1;
     const adapter = this.registry.get(route);
     this.lease = null;
@@ -482,7 +487,7 @@ export class Coordinator {
     }
 
     this.activeAdapter = adapter;
-    this.activeRoute = route;
+    this.activeRouteValue = route;
     // Per-route conservative volume memory: the incoming engine gets back
     // whatever level the user last set on this route.
     this.volume = this.volumeByRoute.get(route) ?? this.volume;
@@ -568,7 +573,7 @@ export class Coordinator {
       await call();
       return true;
     } catch (cause) {
-      const route = lease?.route ?? this.activeRoute ?? "local";
+      const route = lease?.route ?? this.activeRouteValue ?? "local";
       this.emitError(route, lease?.queueId, `${op} failed: ${msg(cause)}`, true);
       return false;
     }

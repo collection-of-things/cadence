@@ -59,9 +59,12 @@ function Artwork() {
 }
 
 export function NowPlaying() {
-  const snapshot = useUi((s) => s.snapshot);
+  // Narrow selectors: position/fft updates at 2-20Hz must not re-render this
+  // tree — the seek bar and Pixi layer read those off-store.
+  const status = useUi((s) => s.snapshot.status);
+  const lastError = useUi((s) => s.snapshot.lastError);
   const palette = useUi((s) => s.palette);
-  const track = snapshot.current?.track;
+  const track = useUi((s) => s.snapshot.current?.track);
 
   return (
     <div className="np">
@@ -91,9 +94,9 @@ export function NowPlaying() {
                 </>
               )}
             </div>
-            {snapshot.status === 'error' && snapshot.lastError && (
+            {status === 'error' && lastError && (
               <div className="np-error" role="alert">
-                {snapshot.lastError.message}
+                {lastError.message}
               </div>
             )}
             <CapabilityChips />

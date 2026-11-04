@@ -11,9 +11,11 @@ function triLabel(tri: 'yes' | 'no' | 'unknown', label: string): { label: string
 
 /** Honest capability readout for the active route plus negotiated output. */
 export function CapabilityChips() {
-  const snapshot = useUi((s) => s.snapshot);
+  const leaseRoute = useUi((s) => s.snapshot.lease?.route);
+  const trackRoute = useUi((s) => s.snapshot.current?.track.route);
+  const output = useUi((s) => s.snapshot.output);
   const capabilities = useUi((s) => s.capabilities);
-  const route = snapshot.lease?.route ?? snapshot.current?.track.route;
+  const route = leaseRoute ?? trackRoute;
   if (!route) return null;
   const cap: RouteCapabilities | undefined = capabilities.find((c) => c.route === route);
 
@@ -33,10 +35,10 @@ export function CapabilityChips() {
     }
     if (cap.audio.qualityCeiling) chips.push({ key: 'q', label: cap.audio.qualityCeiling, tone: 'dim' });
   }
-  if (snapshot.output) {
-    chips.push({ key: 'out', label: formatOutput(snapshot.output), tone: 'ok', title: snapshot.output.deviceName });
-    if (snapshot.output.fidelityBypass) chips.push({ key: 'fid', label: 'Fidelity bypass', tone: 'ok' });
-    if (snapshot.output.exclusive) chips.push({ key: 'exo', label: 'Exclusive output', tone: 'ok' });
+  if (output) {
+    chips.push({ key: 'out', label: formatOutput(output), tone: 'ok', title: output.deviceName });
+    if (output.fidelityBypass) chips.push({ key: 'fid', label: 'Fidelity bypass', tone: 'ok' });
+    if (output.exclusive) chips.push({ key: 'exo', label: 'Exclusive output', tone: 'ok' });
   }
 
   return (
