@@ -234,6 +234,9 @@ export interface RouteAdapter {
   prefetch?(item: QueueItem): Promise<void>;
   /** Release idle engine resources without discarding the login session. */
   releaseIdle?(): Promise<void>;
+  /** Trigger the route's sign-in flow (reveal view / open pairing). */
+  signIn?(): Promise<void>;
+  signOut?(): Promise<void>;
   dispose(): Promise<void>;
   /** Adapter -> coordinator event sink. */
   onEvent(cb: (e: AdapterEvent) => void): void;
