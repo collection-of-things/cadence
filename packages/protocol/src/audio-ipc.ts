@@ -20,7 +20,15 @@ export type AudioRpcRequest =
         generationId: number;
         source:
           | { kind: "file"; path: string }
-          | { kind: "pcm-stream"; sampleRateHz: number; channels: number; bitDepth: number | "float" };
+          /** Streaming PCM source (e.g. librespot pipe sink). Either the service
+           *  reads `fifoPath` itself, or chunks are pushed via audio.feed. */
+          | {
+              kind: "pcm-stream";
+              sampleRateHz: number;
+              channels: number;
+              bitDepth: number | "float";
+              fifoPath?: string;
+            };
         /** Start paused at this position instead of playing. */
         startPaused?: boolean;
         positionMs?: number;
@@ -28,6 +36,8 @@ export type AudioRpcRequest =
       };
     }
   | { method: "audio.prefetch"; params: { queueId: string; path: string; replayGainDb?: number } }
+  /** Push a PCM chunk into the current pcm-stream source (base64). Alternative to fifoPath. */
+  | { method: "audio.feed"; params: { generationId: number; dataBase64: string; endOfStream?: boolean } }
   | { method: "audio.play"; params: { generationId: number } }
   | { method: "audio.pause"; params: { generationId: number } }
   | { method: "audio.stop"; params: { generationId: number } }
