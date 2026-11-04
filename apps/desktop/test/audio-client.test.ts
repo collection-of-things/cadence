@@ -102,26 +102,59 @@ describe("AudioServiceClient", () => {
     expect(client.isUp()).toBe(false);
   });
 
-  it("openStream negotiates a pcm-stream source (fifoPath on posix)", async () => {
+  it("openStream negotiates a pcm-stream source (fifoPath on posix, opt-in)", async () => {
+    process.env.CADENCE_AUDIO_FIFO = "1";
+    try {
+      const { client, services } = makeClient();
+      await client.start();
+      const svc = lastService(services);
+      svc.handlers.set("audio.load", () => ({}));
+      const stream = await client.openStream({
+        queueId: "q9",
+        generationId: 3,
+        sampleRateHz: 44_100,
+        channels: 2,
+        bitDepth: "float",
+      });
+      const load = svc.received.find((r) => r.method === "audio.load");
+      expect(load).toBeDefined();
+      const source = (load?.params as { source: { kind: string; fifoPath?: string } }).source;
+      expect(source.kind).toBe("pcm-stream");
+      if (process.platform !== "win32") {
+        expect(source.fifoPath).toMatch(/cadence-pcm-/);
+      }
+      await stream.end();
+      await client.dispose();
+    } finally {
+      delete process.env.CADENCE_AUDIO_FIFO;
+    }
+  });
+
+  it("openStream defaults to the audio.feed path", async () => {
     const { client, services } = makeClient();
     await client.start();
     const svc = lastService(services);
     svc.handlers.set("audio.load", () => ({}));
+    svc.handlers.set("audio.feed", () => ({}));
     const stream = await client.openStream({
-      queueId: "q9",
-      generationId: 3,
+      queueId: "q10",
+      generationId: 4,
       sampleRateHz: 44_100,
       channels: 2,
-      bitDepth: "float",
+      bitDepth: 16,
     });
     const load = svc.received.find((r) => r.method === "audio.load");
-    expect(load).toBeDefined();
     const source = (load?.params as { source: { kind: string; fifoPath?: string } }).source;
     expect(source.kind).toBe("pcm-stream");
-    if (process.platform !== "win32") {
-      expect(source.fifoPath).toMatch(/cadence-pcm-/);
-    }
+    expect(source.fifoPath).toBeUndefined();
+    await stream.write(new Uint8Array(8));
+    const feed = svc.received.find((r) => r.method === "audio.feed");
+    expect(feed).toBeDefined();
+    expect((feed?.params as { queueId: string }).queueId).toBe("q10");
+    expect(typeof (feed?.params as { dataBase64?: string }).dataBase64).toBe("string");
     await stream.end();
+    const finalFeed = svc.received.filter((r) => r.method === "audio.feed").at(-1);
+    expect((finalFeed?.params as { final?: boolean }).final).toBe(true);
     await client.dispose();
   });
 });
