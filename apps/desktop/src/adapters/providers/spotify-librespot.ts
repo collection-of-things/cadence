@@ -15,7 +15,7 @@
  * binary, missing credentials, audio-key refusal (upstream), process exit.
  */
 
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createReadStream, existsSync, type ReadStream } from "node:fs";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -98,7 +98,13 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
 
   private binaryAvailable(): boolean {
     const b = this.binary();
-    return b === "librespot" || existsSync(b); // PATH resolution happens in spawn
+    if (b !== "librespot") return existsSync(b);
+    try {
+      execFileSync("which", ["librespot"], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async prepare(): Promise<void> {
@@ -132,6 +138,11 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
       return;
     }
     this.keyRefused = false;
+    this.proc.on("error", (e) => {
+      this.proc = null;
+      this.error(`librespot spawn failed: ${e.message}`, false, "spawn-failed");
+      this.emit({ kind: "capabilitiesChanged" });
+    });
     this.proc.on("exit", (code) => {
       this.proc = null;
       if (code !== 0 && code !== null) {
@@ -257,14 +268,26 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
     this.emit({ kind: "started", generationId: lease.generationId, durationMs: item.track.durationMs });
   }
 
+  private pumpTail: Promise<unknown> = Promise.resolve();
   private startForwarding(): void {
     if (!this.fifoPath || !this.stream) return;
     this.fifoReader?.destroy();
     const rs = createReadStream(this.fifoPath);
     this.fifoReader = rs;
+    // Sequential pump: each write is awaited through a promise tail so fifo
+    // reads pause when the graph's feed buffer applies backpressure.
     rs.on("data", (chunk: Buffer) => {
-      // Fire-and-forget with backpressure via the stream's own queue.
-      this.stream?.write(chunk).catch(() => rs.pause());
+      const stream = this.stream;
+      if (!stream) return;
+      rs.pause();
+      this.pumpTail = this.pumpTail
+        .then(() => stream.write(chunk))
+        .then(() => {
+          if (this.fifoReader === rs) rs.resume();
+        })
+        .catch(() => {
+          /* stream closed; stop() tears down */
+        });
     });
     rs.on("error", () => this.error("librespot fifo read failed", true));
     rs.on("end", () => {
@@ -290,8 +313,8 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
       const devices = (await this.webApi("/me/player/devices")) as {
         devices?: { id: string; name: string }[];
       } | null;
-      const me = devices?.devices?.find((d) => d.name === "Cadence") ?? devices?.devices?.[0];
-      if (!me) return false;
+      const me = devices?.devices?.find((d) => d.name === "Cadence");
+      if (!me) return false; // never start playback on someone else's device
       this.deviceId = me.id;
       await this.webApi("/me/player", { method: "PUT", body: { device_ids: [me.id], play: false } });
       await this.webApi("/me/player/play", {

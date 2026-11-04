@@ -1,0 +1,69 @@
+# Packaging config for Cadence.
+#
+# Tonight this is config + hooks only: producing a signed ECS artifact
+# requires Castlabs EVS signing (no accounts tonight). The `dist` script and
+# the hooks below make signing slot in without restructuring:
+#   1. `pnpm electron:ecs` swaps stock Electron for the Castlabs build.
+#   2. `EVS_SIGNING_ACCOUNT`/`EVS_SIGNING_PASSWORD`/`EVS_API_URL` env vars drive
+#      Castlabs' electron-packager EVS integration in the package step.
+#   3. macOS/Windows codesigning env vars (CSC_LINK, CSC_KEY_PASSWORD,
+#      WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD) are picked up by electron-builder.
+#
+# The audio service binary and ffmpeg must ship inside the package:
+#   - services/audio is compiled per target (cross-compilation or CI matrix)
+#     into services/audio/bin/{platform}-{arch}/cadence-audio[.exe]
+#   - ffmpeg/ffprobe are expected as sibling binaries in the same dir
+#     (or system ffmpeg — resolveAudioBinary + resolveFfmpeg check PATH first).
+#   - asarUnpack keeps them executable from within the packaged app.
+
+appId: dev.cadence.player
+productName: Cadence
+copyright: Copyright © 2026 Cadence contributors
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+  - "!**/*.map"
+extraResources:
+  - from: "../../services/audio/bin"
+    to: "audio"
+    filter: ["**/*"]
+  - from: "../../apps/ui/dist"
+    to: "ui"
+asarUnpack:
+  - "resources/audio/**"
+npmRebuild: true
+# better-sqlite3 is native — rebuilt against the app's Electron ABI here.
+nativeRebuilder: sequential
+
+linux:
+  target:
+    - AppImage
+  category: Audio
+  executableName: cadence
+  synopsis: Cadence — local + streaming music player
+  description: Local library (FLAC/WAV/MP3/ALAC) and provider playback through one audio graph.
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.music
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Widevine CDM + media playback need these entitlements when signed.
+
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+# EVS signing hook (Castlabs): when producing Widevine-enabled builds, run
+# `pnpm electron:ecs` first and set EVS_SIGNING_ACCOUNT/EVS_SIGNING_PASSWORD.
+# electron-packager-based EVS signing wraps the downloaded CDM — see
+# https://github.com/castlabs/electron-releases/wiki/EVS

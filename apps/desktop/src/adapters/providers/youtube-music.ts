@@ -42,9 +42,27 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     });
   }
 
+  /** Ensure the injected controller exists, reinstalling after navigations. */
+  private async ensureController(timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const ok = await this.session.eval<boolean>(
+          `typeof window.__cadenceCtl === "object" && window.__cadenceCtl !== null`,
+        );
+        if (ok) return;
+        await this.session.eval(YTM_CONTROLLER_JS);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    throw new Error("YouTube Music controller did not install within 10s");
+  }
+
   async prepare(): Promise<void> {
     await this.session.prepare();
-    await this.session.eval(YTM_CONTROLLER_JS);
+    await this.ensureController();
     try {
       this.signedIn = await this.session.eval<boolean>(`window.__cadenceCtl.isSignedIn()`);
       this.emit({ kind: "capabilitiesChanged" });
@@ -97,6 +115,13 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     if (item.track.source.kind !== "provider") throw new Error("not a provider track");
     const id = item.track.source.providerItemId;
     try {
+      // Navigate from main (bounded): eval into a page that is being torn
+      // down by its own navigation races with the load. Then reinstall the
+      // controller and ask it to play — it stays put when already there.
+      await this.session.eval(
+        `location.assign('https://music.youtube.com/watch?v=${id.replace(/'/g, "")}')`,
+      ).catch(() => undefined);
+      await this.ensureController(20_000);
       await this.session.eval(
         `window.__cadenceCtl.play(${JSON.stringify(id)}, ${opts.positionMs ?? 0})`,
       );

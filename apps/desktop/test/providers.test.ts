@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { normalizeHit, bestThumb } from "../src/adapters/providers/youtube-music-catalog.js";
 import { SpotifyLibrespotAdapter, type LibrespotGraph } from "../src/adapters/providers/spotify-librespot.js";
@@ -50,18 +53,26 @@ describe("spotify-librespot capabilities", () => {
   });
 
   it("reports unauthenticated when binary exists but no credentials", async () => {
-    const a = new SpotifyLibrespotAdapter({
-      graph,
-      binaryPath: "librespot",
-      getCredentials: async () => null,
-    });
-    const caps = await a.capabilities();
-    if (process.platform === "win32") {
-      expect(caps.state).toBe("unavailable");
-    } else {
-      expect(caps.state).toBe("unauthenticated");
-      expect(caps.audio.pcmAccess).toBe("yes"); // binary resolvable via PATH
-      expect(caps.visuals.kind).toBe("pcm-fft");
+    // A real executable file stands in for the librespot binary.
+    const dir = mkdtempSync(join(tmpdir(), "cadence-lsp-"));
+    const bin = join(dir, "librespot");
+    writeFileSync(bin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    try {
+      const a = new SpotifyLibrespotAdapter({
+        graph,
+        binaryPath: bin,
+        getCredentials: async () => null,
+      });
+      const caps = await a.capabilities();
+      if (process.platform === "win32") {
+        expect(caps.state).toBe("unavailable");
+      } else {
+        expect(caps.state).toBe("unauthenticated");
+        expect(caps.audio.pcmAccess).toBe("yes");
+        expect(caps.visuals.kind).toBe("pcm-fft");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

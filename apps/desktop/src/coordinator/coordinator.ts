@@ -444,8 +444,12 @@ export class Coordinator {
 
     const outgoing = this.activeAdapter !== null && this.activeAdapter !== adapter ? this.activeAdapter : null;
     const outgoingLease = this.lease;
-    this.lease = lease;
-    if (this.queue.currentIndex !== index) {
+    const previousIndex = this.queue.currentIndex;
+    // Intent shows in the queue before the lease commits: the incoming route
+    // must prove it can start (prepare) before it owns the generation. Until
+    // then the outgoing adapter keeps its lease — its events stay valid and
+    // it remains controllable if the handoff fails.
+    if (previousIndex !== index) {
       this.queue = { ...this.queue, currentIndex: index };
       this.emitQueue();
     }
@@ -457,6 +461,9 @@ export class Coordinator {
     try {
       await this.withTimeout(adapter.prepare(), 15_000, "adapter.prepare");
     } catch (cause) {
+      // Roll back: outgoing keeps its lease, adapter and queue position.
+      this.queue = { ...this.queue, currentIndex: previousIndex };
+      this.emitQueue();
       this.failStart(route, item.queueId, `prepare failed: ${msg(cause)}`, true);
       return;
     }
@@ -467,6 +474,7 @@ export class Coordinator {
     if (outgoing !== null && outgoingLease !== null) {
       try {
         await this.withTimeout(outgoing.stop(outgoingLease), 8_000, "outgoing.stop");
+        this.activeAdapter = null;
       } catch (cause) {
         this.emitError(
           outgoing.route,
@@ -477,6 +485,9 @@ export class Coordinator {
       }
     }
 
+    // The incoming route is ready and the outgoing one silent — commit the
+    // lease only now, so a failed prepare above left the old route intact.
+    this.lease = lease;
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
     try {

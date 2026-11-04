@@ -48,7 +48,9 @@ export function PixiBackground({ palette }: { palette: Rgb[] }) {
           backgroundAlpha: 0,
           antialias: false,
           autoDensity: true,
-          resolution: Math.min(window.devicePixelRatio || 1, 1.75),
+          // The ambient field is soft; render at <=1.25x to protect the frame
+          // budget on integrated GPUs. Adaptive step-down below.
+          resolution: Math.min(window.devicePixelRatio || 1, 1.25),
         });
         if (dead) {
           a.destroy(true);
@@ -92,6 +94,17 @@ export function PixiBackground({ palette }: { palette: Rgb[] }) {
         }
         const uniforms = (shader.resources.uAmbient as UniformGroup).uniforms as unknown as AmbientUniforms;
         const idlePhase = { t: 0 };
+        // Adaptive resolution: if the rolling frame time stays above ~19ms
+        // (≈52fps), step resolution down toward 0.5x — an ambient blur can
+        // lose pixels more gracefully than it can lose frames.
+        let frameCost = 16.7;
+        a.ticker.add((ticker) => {
+          frameCost = frameCost * 0.95 + ticker.deltaMS * 0.05;
+          if (frameCost > 19 && a.renderer.resolution > 0.5) {
+            a.renderer.resolution = Math.max(0.5, a.renderer.resolution - 0.25);
+            a.renderer.resize(host.clientWidth, host.clientHeight);
+          }
+        });
         a.ticker.add((ticker) => {
           const u = uniforms;
           u.uTime += ticker.deltaMS;

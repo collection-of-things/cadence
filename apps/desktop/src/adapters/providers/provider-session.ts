@@ -10,10 +10,14 @@
  */
 
 import { BrowserWindow, session, webContents, type WebContents } from "electron";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
+// Works under both the bundled CJS build (tsup emits __dirname) and ESM.
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : dirname(fileURLToPath(import.meta.url));
 
 export interface ProviderSessionOptions {
   /** Session partition key, e.g. "persist:provider-youtube". */
@@ -59,7 +63,7 @@ export class ProviderSession {
         height: 800,
         webPreferences: {
           session: ses,
-          preload: this.opts.preloadPath ?? join(__dirname, "provider-preload.cjs"),
+          preload: this.opts.preloadPath ?? join(moduleDir, "provider-preload.cjs"),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
