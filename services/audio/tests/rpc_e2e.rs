@@ -140,9 +140,21 @@ fn rpc_gapless_playback_over_stdio() {
     let r = rpc.response(id, Duration::from_secs(10));
     assert!(r.get("result").is_some(), "load failed: {r}");
 
+    // Stale-generation prefetch must be rejected (generation-gated like
+    // play/pause/stop: a skip must never install the wrong track).
     let id = rpc.send(
         "audio.prefetch",
-        serde_json::json!({"queueId": "qb", "path": b.to_str().unwrap()}),
+        serde_json::json!({"queueId": "qb", "path": b.to_str().unwrap(), "generationId": 999}),
+    );
+    let r = rpc.response(id, Duration::from_secs(5));
+    assert!(
+        r.get("error").is_some(),
+        "stale-generation prefetch was honored: {r}"
+    );
+
+    let id = rpc.send(
+        "audio.prefetch",
+        serde_json::json!({"queueId": "qb", "path": b.to_str().unwrap(), "generationId": 11}),
     );
     let r = rpc.response(id, Duration::from_secs(10));
     assert!(r.get("result").is_some(), "prefetch failed: {r}");
