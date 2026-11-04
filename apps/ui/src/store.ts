@@ -192,6 +192,9 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     const s = get();
     switch (e.kind) {
       case 'snapshot': {
+        // Snapshots with an older lease generation are stale too — a dying
+        // route must not reclaim playback after a handoff.
+        if (e.snapshot.lease && e.snapshot.lease.generationId < s.generationId) break;
         const gen = e.snapshot.lease?.generationId ?? s.generationId;
         set({ snapshot: e.snapshot, generationId: Math.max(gen, s.generationId) });
         syncClock(e.snapshot);

@@ -160,6 +160,18 @@ describe('stale generation handling', () => {
     session.dispatch({ kind: 'trackEnded', queueId: 'q-a', generationId: 4 });
     expect(session.store.getState().snapshot.current?.queueId).toBe('q-a');
   });
+
+  it('rejects snapshots carrying an older lease generation', () => {
+    session.dispatch({ kind: 'snapshot', snapshot: snap({ lease: { generationId: 5, route: 'local', queueId: 'q-a', issuedAtMs: 0 }, status: 'paused' }) });
+    session.dispatch({
+      kind: 'snapshot',
+      snapshot: snap({ lease: { generationId: 3, route: 'local', queueId: 'q-a', issuedAtMs: 0 }, status: 'playing', positionMs: 42 }),
+    });
+    expect(session.store.getState().snapshot.status).toBe('paused');
+    // lease-less snapshots are always accepted (coordinator stopped state)
+    session.dispatch({ kind: 'snapshot', snapshot: snap({ lease: null, status: 'stopped', current: null }) });
+    expect(session.store.getState().snapshot.status).toBe('stopped');
+  });
 });
 
 describe('trackEnded advance', () => {

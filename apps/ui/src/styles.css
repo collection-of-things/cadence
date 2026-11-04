@@ -234,6 +234,7 @@ input:focus-visible,
   padding: clamp(24px, 4vw, 56px) clamp(28px, 6vw, 88px);
   max-width: 1240px;
   margin: 0 auto;
+  overflow-y: auto;
 }
 
 .np-art {
@@ -1060,7 +1061,7 @@ input:focus-visible,
 
 .tr-row-wrap {
   position: absolute;
-  top: 34px;
+  top: 0;
   left: 0;
   right: 0;
 }
