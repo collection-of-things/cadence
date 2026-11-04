@@ -3,6 +3,7 @@ import { session } from './app';
 import { LibraryView } from './components/LibraryView';
 import { NowPlaying } from './components/NowPlaying';
 import { QueuePanel } from './components/QueuePanel';
+import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
 import { positionNow, useUi } from './hooks';
 import { QueueIcon } from './icons';
@@ -21,6 +22,9 @@ function TopBar() {
         </button>
         <button className={`nav-btn ${view === 'library' ? 'on' : ''}`} onClick={() => session.setView('library')}>
           Library
+        </button>
+        <button className={`nav-btn ${view === 'sources' ? 'on' : ''}`} onClick={() => session.setView('sources')}>
+          Sources
         </button>
       </nav>
       <button
@@ -102,7 +106,9 @@ export function App() {
   return (
     <div className="app">
       <TopBar />
-      <main className="main">{view === 'library' ? <LibraryView /> : <NowPlaying />}</main>
+      <main className="main">
+        {view === 'library' ? <LibraryView /> : view === 'sources' ? <SourcesView /> : <NowPlaying />}
+      </main>
       <QueuePanel />
       <Toasts />
     </div>

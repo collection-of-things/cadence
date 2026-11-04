@@ -13,7 +13,7 @@ import type {
   ScanProgress,
   TrackRef,
 } from '@cadence/protocol';
-import { makeCapabilities, makeLibrary } from './data';
+import { makeCapabilities, makeLibrary, svgArtwork } from './data';
 
 const FFT_BANDS = 48;
 
@@ -448,6 +448,42 @@ export class MockCadenceApi implements CadenceApi {
     };
     this.later(step, 150);
   }
+
+  /**
+   * Provider catalog search. Only youtube-music has a catalog in the mock —
+   * matching the real adapters, every other route rejects so the UI's
+   * 'search not available' path stays exercised.
+   */
+  search = {
+    provider: async (route: RouteId, text: string): Promise<TrackRef[]> => {
+      await new Promise((r) => setTimeout(r, 140));
+      if (route !== 'youtube-music') {
+        throw new Error(`search is not available for route "${route}"`);
+      }
+      const cap = this.routeCaps('youtube-music');
+      if (cap && cap.state === 'unauthenticated') {
+        throw new Error('YouTube Music is not signed in — sign in to search the catalog.');
+      }
+      const q = text.trim();
+      if (!q) return [];
+      const seed = [...q].reduce((a, c) => a + c.charCodeAt(0), 0);
+      const suffixes = ['(Official Audio)', '— Live Session', '— Remastered'];
+      return suffixes.map(
+        (s, i): TrackRef => ({
+          id: `youtube-music:mock-${q.toLowerCase().replace(/\s+/g, '-')}-${i}`,
+          route: 'youtube-music',
+          provider: 'youtube',
+          title: `${q} ${s}`,
+          artists: [{ name: 'Tessellate' }],
+          album: 'Slow Machines',
+          durationMs: (150 + ((seed + i * 67) % 180)) * 1000,
+          artwork: { url: svgArtwork(seed * 31 + i * 97 + 3), width: 600, height: 600 },
+          source: { kind: 'provider', providerItemId: `mock-ytm-${seed}-${i}` },
+          availability: 'available',
+        }),
+      );
+    },
+  };
 
   routes = {
     signIn: async (route: RouteId) => {
