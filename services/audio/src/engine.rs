@@ -359,6 +359,11 @@ impl Feed {
         self.closed.store(true, Ordering::Release);
         self.cv.notify_all();
     }
+    /// Discard buffered bytes and close immediately.
+    fn abort(&self) {
+        self.buf.lock().unwrap().clear();
+        self.close();
+    }
     /// Blocking read of up to `n` bytes; returns <n only at close.
     fn read(&self, out: &mut [u8]) -> usize {
         let mut buf = self.buf.lock().unwrap();
@@ -1116,16 +1121,20 @@ impl Engine {
         Ok(json!({ "ok": true }))
     }
 
-    pub fn feed(&self, queue_id: &str, data: &[u8], is_final: bool) -> Result<Value> {
+    pub fn feed(&self, queue_id: &str, data: &[u8], is_final: bool, abort: bool) -> Result<Value> {
         let feed = {
             let st = self.state.lock().unwrap();
             st.feeds.get(queue_id).cloned()
         };
         match feed {
             Some(f) => {
-                f.push(data);
-                if is_final {
-                    f.close();
+                if abort {
+                    f.abort();
+                } else {
+                    f.push(data);
+                    if is_final {
+                        f.close();
+                    }
                 }
                 Ok(json!({ "ok": true }))
             }

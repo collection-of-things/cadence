@@ -199,7 +199,8 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
                 .decode(get_str(p, "dataBase64")?)
                 .context("bad dataBase64")?;
             let fin = p.get("final").and_then(|v| v.as_bool()).unwrap_or(false);
-            engine.feed(get_str(p, "queueId")?, &bytes, fin)
+            let abort = p.get("abort").and_then(|v| v.as_bool()).unwrap_or(false);
+            engine.feed(get_str(p, "queueId")?, &bytes, fin, abort)
         }
         "audio.shutdown" => Ok(json!({ "ok": true })),
         other => bail!("unknown method {other}"),
