@@ -469,6 +469,16 @@ export class MockCadenceApi implements CadenceApi {
     },
   };
 
+  audio = {
+    setEq: async (_bands: { freqHz: number; gainDb: number }[]): Promise<void> => {},
+    listDevices: async () => [
+      { name: 'Mock Speakers', isDefault: true },
+      { name: 'Mock Headphones', isDefault: false },
+      { name: 'Mock DAC', isDefault: false },
+    ],
+    setDevice: async (_name: string | null): Promise<void> => {},
+  };
+
   app = {
     minimize() {},
     toggleMaximize() {},
