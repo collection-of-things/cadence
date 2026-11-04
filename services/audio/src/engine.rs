@@ -1427,9 +1427,6 @@ fn run_producer_f32(
     prod: Producer<f32>,
     ready: Arc<AtomicBool>,
 ) -> Result<()> {
-    let bypass = matches!(rplan, ResamplePlan::Passthrough) && eq_bands.is_empty() && rg_db.is_none();
-    let _ = bypass;
-
     let mut resampler = match rplan {
         ResamplePlan::Passthrough => None,
         ResamplePlan::Resample { from, to } => {
