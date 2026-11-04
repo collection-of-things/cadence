@@ -33,6 +33,9 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   private readonly listeners = new Set<(e: AdapterEvent) => void>();
   private lastLoadGeneration = 0;
   private lastLoadedQueueId: string | null = null;
+  /** queueIds this adapter loaded or prefetched — engine events for other
+   * queueIds (e.g. a librespot pcm-stream sharing the graph) are ignored. */
+  private knownQueueIds = new Set<string>();
   private fidelityMode = false;
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
@@ -95,6 +98,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     const source = fileSourceOf(item);
     this.lastLoadGeneration = lease.generationId;
     this.lastLoadedQueueId = item.queueId;
+    this.knownQueueIds.add(item.queueId);
     const params: Parameters<AudioServiceClient["load"]>[0] = {
       queueId: item.queueId,
       generationId: lease.generationId,
@@ -102,8 +106,10 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     };
     if (opts.positionMs !== undefined) params.positionMs = opts.positionMs;
     if (item.track.replayGainDb !== undefined) params.replayGainDb = item.track.replayGainDb;
-    await this.client.load(params);
+    // Apply fidelity before load — setFidelityMode after load rebuilds the
+    // just-started pipeline (audible blip).
     if (this.fidelityMode) await this.client.setFidelityMode(true);
+    await this.client.load(params);
   }
 
   /** Pause under the lease's generation. */
@@ -143,6 +149,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   /** Prefetch a successor file for the gapless boundary. */
   async prefetch(item: QueueItem): Promise<void> {
     if (item.track.source.kind !== "file") return;
+    this.knownQueueIds.add(item.queueId);
     const params: Parameters<AudioServiceClient["prefetch"]>[0] = {
       queueId: item.queueId,
       path: item.track.source.path,
@@ -196,6 +203,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   private translateEvent(e: AudioRpcEvent): void {
     switch (e.method) {
       case "event.trackStarted": {
+        if (!this.knownQueueIds.has(e.params.queueId)) return; // another route's stream
         if (e.params.gapless) this.observedGapless = true;
         // Engine self-promotion: a trackStarted whose queueId we did not load
         // means the engine advanced into its prefetch on its own (seamless or
@@ -230,8 +238,15 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
         return;
       }
       case "event.trackEnded": {
+        if (!this.knownQueueIds.has(e.params.queueId)) return; // another route's stream
         if (e.params.gapless) this.observedGapless = true;
-        this.emit({ kind: "ended", generationId: e.params.generationId, gapless: e.params.gapless });
+        const ended: AdapterEvent = {
+          kind: "ended",
+          generationId: e.params.generationId,
+          gapless: e.params.gapless,
+        };
+        if (e.params.queueId !== undefined) (ended as { queueId?: string }).queueId = e.params.queueId;
+        this.emit(ended);
         return;
       }
       case "event.buffering": {

@@ -324,7 +324,10 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     playQueueId: (queueId) => cmd({ kind: 'play', queueId }),
     signInRoute(route) {
       if (!api.routes) return;
-      void api.routes.signIn(route).catch(() => pushToast(route, 'Sign-in failed', true));
+      void api.routes.signIn(route).catch((e: unknown) => {
+        const m = e instanceof Error ? e.message : 'Sign-in failed';
+        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
+      });
     },
     setFidelityMode: (enabled) => cmd({ kind: 'setFidelityMode', enabled }),
     setEq(bands) {

@@ -164,8 +164,10 @@ export interface PlaybackSnapshot {
   /** Position updates are timestamped; providers may report coarsely. */
   positionAtMs: number;
   durationMs: number;
-  volume: number; // 0..1, remembered per route conservatively
+  volume: number; // 0..1.5 (UI presents 0..1), remembered per route conservatively
   muted: boolean;
+  /** The user's fidelity-mode toggle (independent of what the engine negotiated). */
+  fidelityMode?: boolean;
   output?: ActiveOutput;
   /** Per-route error, kept local to the route — never takes others down. */
   lastError?: { route: RouteId; queueId: string; message: string; retriable: boolean };
@@ -264,6 +266,8 @@ export type AdapterEvent =
   | {
       kind: "ended";
       generationId: number;
+      /** Track that ended (lets the coordinator dedupe fan-in paths). */
+      queueId?: string;
       /** true when the engine started the successor seamlessly itself. */
       gapless?: boolean;
     }

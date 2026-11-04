@@ -88,7 +88,10 @@ export class SpotifyWebAdapter extends ProviderViewAdapter {
   }
 
   async stop(lease: PlaybackLease): Promise<void> {
-    return this.pause(lease);
+    // Confirmed silence propagates (unlike the cosmetic pause/resume evals).
+    if (lease.generationId !== this.generation) return;
+    await this.session
+      .eval(`(document.querySelector('video')||document.querySelector('audio'))?.pause?.()`);
   }
 
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {

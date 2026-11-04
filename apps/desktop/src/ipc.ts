@@ -107,7 +107,13 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     if (adapter?.search === undefined) {
       throw new Error(`search is not available for route "${route}"`);
     }
-    return adapter.search(text);
+    // Bound catalog calls — a hung provider page must not wedge the UI.
+    return Promise.race([
+      adapter.search(text),
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error(`search on route "${route}" timed out`)), 15_000),
+      ),
+    ]);
   });
 
   ipcMain.handle(C.windowMinimize, (e) => {

@@ -983,10 +983,16 @@ impl Engine {
         {
             let mut core = self.core.lock().unwrap();
             core.clear_all();
-            core.negotiated = neg.clone();
         }
         let caps = Arc::clone(&self.caps.lock().unwrap());
+        // Open BEFORE committing negotiated: on failure the core keeps the
+        // old negotiation so the next load still attempts a rebuild instead
+        // of rendering into a dead sink.
         let new_sink = crate::sink::open_sink(&self.cfg, caps, neg, &self.core)?;
+        {
+            let mut core = self.core.lock().unwrap();
+            core.negotiated = neg.clone();
+        }
         *self.sink.lock().unwrap() = Some(new_sink);
         Ok(())
     }
@@ -1443,9 +1449,14 @@ impl Engine {
                                 "gapless": true,
                             }),
                         );
-                        // promoted prefetch slot consumed
+                        // promoted prefetch slot consumed — its source and
+                        // ReplayGain become the CURRENT track's so seeks and
+                        // stream rebuilds respawn the right file.
                         let mut st = self.state.lock().unwrap();
-                        st.prefetch = None;
+                        if let Some(pf) = st.prefetch.take() {
+                            st.source = Some(pf.source);
+                            st.replay_gain_db = pf.replay_gain_db;
+                        }
                         st.reported_prefetch_ready = false;
                     }
                     CoreEvent::Ended { queue_id } => {
@@ -1469,6 +1480,18 @@ impl Engine {
                         if let Some(pf) = pf {
                             match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true) {
                                 Ok((reader, handle, dur, bypass)) => {
+                                    // A concurrent audio.load may have landed
+                                    // while we decoded — don't install a
+                                    // stale pipeline over the fresh track.
+                                    let stale = {
+                                        let st = self.state.lock().unwrap();
+                                        st.generation != gen || st.queue_id.is_some()
+                                    };
+                                    if stale {
+                                        eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
+                                        let _ = handle;
+                                        continue;
+                                    }
                                     {
                                         let mut core = self.core.lock().unwrap();
                                         core.set_active(reader);

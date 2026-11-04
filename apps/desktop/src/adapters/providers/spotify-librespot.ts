@@ -64,6 +64,7 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
   readonly route = "spotify-librespot" as const;
   private proc: ChildProcess | null = null;
   private generation = 0;
+  private currentQueueId: string | null = null;
   private fifoPath: string | null = null;
   private fifoReader: ReadStream | null = null;
   private stream: PcmStreamLike | null = null;
@@ -82,8 +83,13 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
         this.emit({ kind: "position", positionMs: p.positionMs, atMs: p.atMs ?? Date.now(), generationId });
       }
       if (e.method === "event.trackEnded") {
-        const p = e.params as { generationId?: number };
-        if (p.generationId === generationId) this.emit({ kind: "ended", generationId });
+        const p = e.params as { generationId?: number; queueId?: string };
+        if (p.generationId === generationId)
+          this.emit({
+            kind: "ended",
+            generationId,
+            ...(p.queueId !== undefined ? { queueId: p.queueId } : {}),
+          });
       }
       if (e.method === "event.error") {
         const p = e.params as { message?: string; retriable?: boolean };
@@ -123,7 +129,9 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
       "--format", "S16",
       "--bitrate", "320",
       "--disable-audio-cache",
-      // Player events -> stdout lines we can read for track state.
+      // Player events -> stderr lines (Stopped/Playing/Paused/etc.) that we
+      // can read for track state. Pipe output itself carries no end marker.
+      "--emit-sink-events",
       "--verbose",
     ];
     if (creds.accessToken) args.push("--access-token", creds.accessToken);
@@ -163,6 +171,20 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
       }
       const dev = line.match(/device[_ ]id[:\s]+([0-9a-f]{16,})/i);
       if (dev?.[1]) this.deviceId = dev[1];
+      // --emit-sink-events: track lifecycle for auto-advance and state.
+      if (/"sink_event":\s*"Playing"|sinkEvent.*Playing/i.test(line)) {
+        this.emit({ kind: "state", status: "playing", generationId: this.generation });
+      }
+      if (/"sink_event":\s*"Paused"|sinkEvent.*Paused/i.test(line)) {
+        this.emit({ kind: "state", status: "paused", generationId: this.generation });
+      }
+      if (/"sink_event":\s*"Stopped"|sinkEvent.*(Stopped|EndOfTrack)/i.test(line)) {
+        this.emit({
+          kind: "ended",
+          generationId: this.generation,
+          ...(this.currentQueueId !== null ? { queueId: this.currentQueueId } : {}),
+        });
+      }
     });
     this.proc.stdout?.on("data", (d: Buffer) => {
       // librespot --verbose logs track events on stdout; surface coarse state.
@@ -234,6 +256,7 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
     this.generation = lease.generationId;
+    this.currentQueueId = item.queueId;
     await this.prepare();
     if (!this.proc || !this.fifoPath) {
       this.error("librespot is not running (missing binary or credentials)", false);
@@ -291,7 +314,11 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
     });
     rs.on("error", () => this.error("librespot fifo read failed", true));
     rs.on("end", () => {
-      this.emit({ kind: "ended", generationId: this.generation });
+      this.emit({
+        kind: "ended",
+        generationId: this.generation,
+        ...(this.currentQueueId !== null ? { queueId: this.currentQueueId } : {}),
+      });
     });
   }
 

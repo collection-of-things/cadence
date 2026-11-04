@@ -85,6 +85,10 @@ export class Coordinator {
   private pendingPrefetch: string | null = null;
   /** Set after an engine `ended` while we wait for a self-promoted started. */
   private promotionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ended events already handled, keyed `${generation}:${queueId}`. */
+  private handledEnded = new Set<string>();
+  /** queueId the engine self-promoted for the current lease (tail-race guard). */
+  private promotedQueueId: string | null = null;
 
   constructor(deps: CoordinatorDeps) {
     this.registry = deps.registry;
@@ -123,6 +127,7 @@ export class Coordinator {
       durationMs: this.durationMs,
       volume: this.volume,
       muted: this.muted,
+      fidelityMode: this.fidelityMode,
       ...(this.output !== null ? { output: this.output } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
     };
@@ -183,6 +188,7 @@ export class Coordinator {
           cmd.items.map((it) => this.stampQueueId(it)),
         );
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         return;
       }
@@ -192,6 +198,7 @@ export class Coordinator {
           cmd.items.map((it) => this.stampQueueId(it)),
         );
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         return;
       }
@@ -201,6 +208,7 @@ export class Coordinator {
           cmd.queueIds.includes(QueueOps.currentItem(this.queue)?.queueId ?? "");
         this.queue = QueueOps.removeByQueueIds(this.queue, cmd.queueIds);
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         if (removedCurrent) {
           await this.teardownActive();
@@ -214,6 +222,7 @@ export class Coordinator {
       case "move": {
         this.queue = QueueOps.move(this.queue, cmd.fromIndex, cmd.toIndex);
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         return;
       }
@@ -320,12 +329,14 @@ export class Coordinator {
       case "setRepeat": {
         this.queue = { ...this.queue, repeat: cmd.repeat };
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         return;
       }
       case "setShuffle": {
         this.queue = QueueOps.setShuffle(this.queue, cmd.shuffle, this.rand);
         this.emitQueue();
+        this.refreshPrefetch();
         this.persistSoon();
         return;
       }
@@ -447,6 +458,8 @@ export class Coordinator {
     const outgoing = this.activeAdapter !== null && this.activeAdapter !== adapter ? this.activeAdapter : null;
     const outgoingLease = this.lease;
     const previousIndex = this.queue.currentIndex;
+    const previousDuration = this.durationMs;
+    const previousPosition = this.positionMs;
     // Intent shows in the queue before the lease commits: the incoming route
     // must prove it can start (prepare) before it owns the generation. Until
     // then the outgoing adapter keeps its lease — its events stay valid and
@@ -465,6 +478,8 @@ export class Coordinator {
     } catch (cause) {
       // Roll back: outgoing keeps its lease, adapter and queue position.
       this.queue = { ...this.queue, currentIndex: previousIndex };
+      this.durationMs = previousDuration;
+      this.positionMs = previousPosition;
       this.emitQueue();
       this.failStart(route, item.queueId, `prepare failed: ${msg(cause)}`, true);
       return;
@@ -487,9 +502,25 @@ export class Coordinator {
       }
     }
 
+    // Tail of the promotion race: the engine may have started this exact
+    // track itself after our 600ms fallback already enqueued. Re-pointing is
+    // enough — a play call here would restart a track already sounding.
+    const alreadyPromoted =
+      this.promotedQueueId === item.queueId &&
+      adapter === this.activeAdapter;
     // The incoming route is ready and the outgoing one silent — commit the
     // lease only now, so a failed prepare above left the old route intact.
+    this.handledEnded.clear();
     this.lease = lease;
+    if (alreadyPromoted) {
+      this.status = "playing";
+      this.lastError = undefined;
+      this.emitSnapshot();
+      this.persistSoon();
+      this.refreshPrefetch();
+      return;
+    }
+    this.promotedQueueId = null;
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
     try {
@@ -535,6 +566,14 @@ export class Coordinator {
     this.emitError(route, queueId, message, retriable);
     this.emitSnapshot();
     this.persistSoon();
+  }
+
+  /** Queue changed — an installed engine prefetch may now be stale. Re-issue
+   * for the actual successor (the engine overwrites its `next` slot). */
+  private refreshPrefetch(): void {
+    if (this.status !== "playing" || this.activeAdapter?.prefetch === undefined) return;
+    this.pendingPrefetch = null;
+    void this.prefetchSuccessor(this.activeAdapter);
   }
 
   /** Best-effort gapless: prefetch the next same-route item on the active adapter. */
@@ -662,7 +701,14 @@ export class Coordinator {
         return;
       }
       case "ended": {
-        const queueId = this.lease.queueId;
+        // Dedupe: a track's end can arrive via several paths (engine event
+        // fan-in across adapters sharing the graph). Ended events carry the
+        // ended track's queueId — the same track ending twice under the same
+        // generation is always a duplicate.
+        const endedKey = `${e.generationId}:${e.queueId ?? this.lease.queueId}`;
+        if (this.handledEnded.has(endedKey)) return;
+        this.handledEnded.add(endedKey);
+        const queueId = e.queueId ?? this.lease.queueId;
         this.emit({ kind: "trackEnded", queueId, generationId: e.generationId });
         const idx = QueueOps.nextIndexAfterEnd(this.queue);
         if (idx === null) {
@@ -729,10 +775,25 @@ export class Coordinator {
     if (idx < 0 && this.pendingPrefetch !== null) {
       idx = this.queue.items.findIndex((it) => it.queueId === this.pendingPrefetch);
     }
+    if (queueId !== undefined && idx < 0) {
+      // The engine promoted a successor we no longer know (queue was edited
+      // after the prefetch installed). Honest state: keep the lease on the
+      // playing track's queueId, warn, and let the next end recover intent.
+      this.pendingPrefetch = null;
+      this.emitError(
+        this.lease?.route ?? "local",
+        this.lease?.queueId ?? queueId,
+        "engine promoted a track that left the queue — playback continues, queue intent resumes at next boundary",
+        true,
+      );
+      if (this.lease !== null) this.lease = { ...this.lease, queueId };
+      return;
+    }
     if (idx < 0) idx = QueueOps.nextIndexAfterEnd(this.queue) ?? -1;
     this.pendingPrefetch = null;
     const item = idx >= 0 ? this.queue.items[idx] : undefined;
     if (this.lease === null || item === undefined) return;
+    this.promotedQueueId = item.queueId;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
     if (this.queue.currentIndex !== idx) {
       this.queue = { ...this.queue, currentIndex: idx };

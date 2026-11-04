@@ -2,11 +2,6 @@ import { session } from '../app';
 import { useUi } from '../hooks';
 import { MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, QueueIcon, RepeatIcon, ShuffleIcon, VolumeIcon } from '../icons';
 
-function capForRoute() {
-  const s = session.store.getState();
-  const route = s.snapshot.lease?.route ?? s.snapshot.current?.track.route;
-  return s.capabilities.find((c) => c.route === route);
-}
 
 export function VolumeControl() {
   const volume = useUi((s) => s.snapshot.volume);
@@ -56,7 +51,10 @@ export function Transport() {
   const status = useUi((s) => s.snapshot.status);
   const repeat = useUi((s) => s.queue.repeat);
   const shuffle = useUi((s) => s.queue.shuffle);
-  const cap = capForRoute();
+  // Reactive selectors — capability changes update the controls immediately.
+  const route = useUi((s) => s.snapshot.lease?.route ?? s.snapshot.current?.track.route);
+  const capabilities = useUi((s) => s.capabilities);
+  const cap = capabilities.find((c) => c.route === route);
   const playing = status === 'playing';
   const busy = status === 'loading' || status === 'buffering';
   const canSkip = cap ? cap.playback.canNextPrevious : true;

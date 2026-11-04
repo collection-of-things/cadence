@@ -9,8 +9,8 @@ import {
   protocol,
   Tray,
 } from "electron";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
@@ -70,7 +70,9 @@ function createWindow(): BrowserWindow {
     void win.loadURL(devUrl);
     return win;
   }
-  const uiBundle = join(repoRoot, "apps", "ui", "dist", "index.html");
+  const uiBundle = app.isPackaged
+    ? join(process.resourcesPath, "ui", "index.html")
+    : join(repoRoot, "apps", "ui", "dist", "index.html");
   if (existsSync(uiBundle)) {
     void win.loadFile(uiBundle);
   } else {
@@ -114,17 +116,28 @@ async function main(): Promise<void> {
 
   const userData = app.getPath("userData");
   const thumbDir = join(userData, "thumbnails");
+  let thumbRoot = resolve(thumbDir);
+  try {
+    thumbRoot = realpathSync(thumbDir);
+  } catch {
+    /* thumbnails dir may not exist until the first scan */
+  }
   protocol.handle("cadence-art", (request) => {
     const u = new URL(request.url);
     if (u.host !== "artwork") return new Response(null, { status: 404 });
-    const filePath = decodeURIComponent(u.pathname.slice(1));
-    if (!filePath.startsWith(thumbDir)) return new Response(null, { status: 403 });
-    return net.fetch(pathToFileURL(filePath).toString());
+    const candidate = resolve(decodeURIComponent(u.pathname.slice(1)));
+    if (!candidate.startsWith(thumbRoot + sep)) return new Response(null, { status: 403 });
+    return net.fetch(pathToFileURL(candidate).toString());
   });
   const store = new SettingsStore(settingsPath(userData));
 
   const audioClient = new AudioServiceClient({
-    binaryPath: () => resolveAudioBinary(process.env, repoRoot),
+    binaryPath: () =>
+      resolveAudioBinary(
+        process.env,
+        repoRoot,
+        app.isPackaged ? process.resourcesPath : undefined,
+      ),
     onLog: (line) => console.error(`[cadence-audio] ${line}`),
   });
   const localAdapter = new LocalRouteAdapter(audioClient);
