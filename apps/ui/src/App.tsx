@@ -3,6 +3,7 @@ import { session } from './app';
 import { LibraryView } from './components/LibraryView';
 import { NowPlaying } from './components/NowPlaying';
 import { QueuePanel } from './components/QueuePanel';
+import { SettingsSheet } from './components/SettingsSheet';
 import { Toasts } from './components/Toasts';
 import { positionNow, useUi } from './hooks';
 import { QueueIcon } from './icons';
@@ -32,6 +33,7 @@ function TopBar() {
         <QueueIcon size={19} />
         {count > 0 && <span className="q-count">{count}</span>}
       </button>
+      <SettingsSheet />
     </header>
   );
 }

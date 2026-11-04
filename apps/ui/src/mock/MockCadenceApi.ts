@@ -38,6 +38,13 @@ export class MockCadenceApi implements CadenceApi {
   private generation = 1;
   private fftPhase = 0;
   private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Last EQ band set applied via audio.setEq (inspectable in tests). */
+  eqBands: { freqHz: number; gainDb: number }[] = [];
+  private devices = [
+    { name: 'Default Output (PipeWire)', isDefault: true },
+    { name: 'SMSL M500 USB DAC', isDefault: false },
+    { name: 'HDMI Audio Output', isDefault: false },
+  ];
 
   constructor() {
     const { tracks, albums } = makeLibrary();
@@ -448,6 +455,19 @@ export class MockCadenceApi implements CadenceApi {
     };
     this.later(step, 150);
   }
+
+  audio = {
+    setEq: async (bands: { freqHz: number; gainDb: number }[]) => {
+      this.eqBands = clone(bands);
+    },
+    listDevices: async () => clone(this.devices),
+    setDevice: async (name: string | null) => {
+      const dev = (name ? this.devices.find((d) => d.name === name) : undefined) ?? this.devices[0]!;
+      if (!this.snapshot.output) return;
+      this.snapshot.output = { ...this.snapshot.output, deviceName: dev.name };
+      this.emit({ kind: 'output', output: clone(this.snapshot.output) });
+    },
+  };
 
   routes = {
     signIn: async (route: RouteId) => {
