@@ -23,7 +23,9 @@ function AlbumsGrid({ query }: { query: string }) {
   if (!albums.length) return <div className="lib-status">No albums match.</div>;
 
   const play = async (album: LibraryAlbum) => {
-    const tracks = await api.library.tracks({ album: album.title });
+    // Filter by album artist too — a bare title merges same-name albums by
+    // different artists into one queue.
+    const tracks = await api.library.tracks({ album: album.title, artist: album.artist });
     session.playTracks(tracks, 0, { kind: 'album', id: album.id, name: album.title });
   };
 
