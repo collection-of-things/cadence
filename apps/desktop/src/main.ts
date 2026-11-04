@@ -1,6 +1,17 @@
-import { app, BrowserWindow, dialog, powerMonitor } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  Menu,
+  nativeImage,
+  net,
+  powerMonitor,
+  protocol,
+  Tray,
+} from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
 import { makePlaceholderAdapter, providerRoutes } from "./adapters/placeholders.js";
@@ -27,6 +38,15 @@ import { registerMediaKeys } from "./media-keys.js";
 const appDir = app.getAppPath();
 const repoRoot = join(appDir, "..", "..");
 const distDir = join(appDir, "dist");
+
+// Artwork is served to the sandboxed renderer over a narrow scheme instead
+// of raw file:// (blocked under http dev origins and future served UI).
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "cadence-art",
+    privileges: { supportFetchAPI: true, stream: true, bypassCSP: false },
+  },
+]);
 
 process.env.CADENCE_APP_VERSION = app.getVersion();
 
@@ -93,6 +113,14 @@ async function main(): Promise<void> {
   }
 
   const userData = app.getPath("userData");
+  const thumbDir = join(userData, "thumbnails");
+  protocol.handle("cadence-art", (request) => {
+    const u = new URL(request.url);
+    if (u.host !== "artwork") return new Response(null, { status: 404 });
+    const filePath = decodeURIComponent(u.pathname.slice(1));
+    if (!filePath.startsWith(thumbDir)) return new Response(null, { status: 403 });
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
   const store = new SettingsStore(settingsPath(userData));
 
   const audioClient = new AudioServiceClient({
@@ -156,7 +184,16 @@ async function main(): Promise<void> {
   });
 
   const db = new LibraryDb(join(userData, "library.db"));
-  const scanner = new LibraryScanner(join(userData, "thumbnails"));
+  const scanner = new LibraryScanner(thumbDir, {
+    // Downscale embedded art once at scan time — lists decode 512px, not the
+    // original 5-15MB masters.
+    resize: async (data) => {
+      const img = nativeImage.createFromBuffer(Buffer.from(data));
+      if (img.isEmpty()) return null;
+      const resized = img.resize({ width: 512, quality: "good" });
+      return new Uint8Array(resized.toPNG());
+    },
+  });
   const library = new LibraryService({
     db,
     scanner,
@@ -173,6 +210,7 @@ async function main(): Promise<void> {
     coordinator,
     library,
     registry,
+    audio: audioClient,
     routeSignIn: async (route) => {
       const adapter = registry.get(route);
       if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
@@ -184,22 +222,56 @@ async function main(): Promise<void> {
   });
   const unregisterKeys = registerMediaKeys(coordinator);
 
+  // Close-to-tray: the window hides, playback continues — per the v3 design
+  // provider playback must survive the main window closing. Explicit Quit
+  // only from the tray menu (or app.quit() paths like single-instance).
+  let quitting = false;
+  let tray: Tray | null = null;
+  const win = createWindow();
+  win.on("close", (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    win.hide();
+  });
+
+  // 16x16 dark rounded-square with a C — enough for a tray icon.
+  const trayIcon = nativeImage.createFromDataURL(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAM0lEQVR4nGNgGAWDHjAyMDAw/P//nxGXAgYGhv+EVcAwCoZ0YBgFgx0YRsFgB4ZRMPCBAQD//wMAaWkX7v8fXv0AAAAASUVORK5CYII=",
+  );
+  tray = new Tray(trayIcon);
+  tray.setToolTip("Cadence");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Show Cadence", click: () => win.show() },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          quitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on("click", () => win.show());
+
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    win.show();
   });
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    // Intentionally empty: windows hide instead of closing; the app exits
+    // only through the explicit Quit path above.
   });
   app.on("will-quit", () => {
     unregisterKeys();
     unbindEvents();
+    tray?.destroy();
+    tray = null;
     coordinator.dispose();
     void library.dispose();
     void localAdapter.dispose();
     void audioClient.dispose();
   });
-
-  createWindow();
 }
 
 void main();

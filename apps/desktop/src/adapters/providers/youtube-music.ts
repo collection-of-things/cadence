@@ -120,7 +120,9 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   /** Confirmed silence: pause the media element. Session stays logged in. */
   async stop(lease: PlaybackLease): Promise<void> {
     if (lease.generationId !== this.generation) return;
-    await this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
+    // The coordinator's handoff counts on confirmed silence — propagate
+    // failures instead of leaving a second source audible.
+    await this.session.eval(`window.__cadenceCtl.pause()`);
   }
 
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {

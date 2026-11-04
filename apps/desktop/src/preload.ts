@@ -47,6 +47,12 @@ const api: CadenceApi = {
     roots: () => invoke(C.libraryRoots),
   },
 
+  audio: {
+    setEq: (bands: { freqHz: number; gainDb: number }[]) => invoke(C.audioSetEq, bands),
+    listDevices: () => invoke(C.audioListDevices),
+    setDevice: (name: string | null) => invoke(C.audioSetDevice, name),
+  },
+
   routes: {
     signIn: (route: RouteId) => invoke(C.routeSignIn, route),
     signOut: (route: RouteId) => invoke(C.routeSignOut, route),

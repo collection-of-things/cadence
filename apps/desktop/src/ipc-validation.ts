@@ -61,6 +61,24 @@ export function parsePaths(u: unknown): Result<string[], InvalidIpcPayload> {
 }
 
 /** Parse a track id for library.track. */
+export function parseEqBands(
+  u: unknown,
+): Result<{ freqHz: number; gainDb: number }[], InvalidIpcPayload> {
+  if (!Array.isArray(u) || u.length > 32) return fail(`eq bands: expected array of <=32`);
+  for (const b of u) {
+    if (
+      typeof b !== "object" || b === null ||
+      typeof (b as { freqHz?: unknown }).freqHz !== "number" ||
+      typeof (b as { gainDb?: unknown }).gainDb !== "number" ||
+      !Number.isFinite((b as { freqHz: number }).freqHz) ||
+      !Number.isFinite((b as { gainDb: number }).gainDb)
+    ) {
+      return fail("eq band: expected {freqHz:number, gainDb:number}");
+    }
+  }
+  return ok(u as { freqHz: number; gainDb: number }[]);
+}
+
 export function parseTrackId(u: unknown): Result<string, InvalidIpcPayload> {
   if (typeof u === "string" && u.length > 0) return ok(u);
   return fail("expected a non-empty track id");

@@ -21,4 +21,7 @@ export const IpcChannels = {
   windowMinimize: "cadence:window:minimize",
   windowToggleMaximize: "cadence:window:toggle-maximize",
   windowClose: "cadence:window:close",
+  audioSetEq: "cadence:audio:set-eq",
+  audioListDevices: "cadence:audio:list-devices",
+  audioSetDevice: "cadence:audio:set-device",
 } as const;

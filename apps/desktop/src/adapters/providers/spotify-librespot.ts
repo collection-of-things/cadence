@@ -322,7 +322,9 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
     this.fifoReader = null;
     await this.stream?.end().catch(() => {});
     this.stream = null;
-    await this.deps.graph.stop(lease.generationId).catch(() => {});
+    // Confirmed silence propagates: the coordinator waits on this before
+    // starting the next source.
+    await this.deps.graph.stop(lease.generationId);
     await this.webApi("/me/player/pause", { method: "PUT" }).catch(() => {});
   }
 

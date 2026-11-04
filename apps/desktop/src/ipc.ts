@@ -10,6 +10,7 @@ import {
   parseLibraryQuery,
   parsePaths,
   parsePlaybackCommand,
+  parseEqBands,
   parseRouteId,
   parseTrackId,
 } from "./ipc-validation.js";
@@ -22,6 +23,12 @@ export interface IpcDeps {
   /** Route sign-in hooks; real provider adapters wire theirs in later. */
   readonly routeSignIn?: (route: RouteId) => Promise<void>;
   readonly routeSignOut?: (route: RouteId) => Promise<void>;
+  /** Engine passthrough for EQ + output-device control. */
+  readonly audio?: {
+    setEq(bands: { freqHz: number; gainDb: number }[]): Promise<unknown>;
+    listDevices(): Promise<unknown>;
+    setDevice(name: string | null): Promise<unknown>;
+  };
 }
 
 function assertOk<T>(r: { _tag: string; value?: T; error?: unknown }): T {
@@ -62,6 +69,20 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     await library.scan(assertOk(parsePaths(paths)));
   });
   ipcMain.handle(C.libraryRoots, () => library.roots());
+
+  if (deps.audio !== undefined) {
+    const audio = deps.audio;
+    ipcMain.handle(C.audioSetEq, async (_e, payload: unknown) => {
+      const bands = assertOk(parseEqBands(payload));
+      await audio.setEq(bands);
+    });
+    ipcMain.handle(C.audioListDevices, () => audio.listDevices());
+    ipcMain.handle(C.audioSetDevice, async (_e, payload: unknown) => {
+      if (payload !== null && typeof payload !== "string")
+        throw new InvalidIpcPayload("setDevice expects a device name or null");
+      await audio.setDevice(payload as string | null);
+    });
+  }
 
   ipcMain.handle(C.routeSignIn, async (_e, route: unknown) => {
     const r = assertOk(parseRouteId(route));

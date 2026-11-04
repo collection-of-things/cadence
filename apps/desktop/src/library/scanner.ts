@@ -34,7 +34,13 @@ const MIME_EXT: Record<string, string> = {
  * Electron concerns so tests drive it directly.
  */
 export class LibraryScanner {
-  constructor(private readonly thumbnailDir: string) {}
+  constructor(
+    private readonly thumbnailDir: string,
+    private readonly opts: {
+      /** Downscale embedded art to a cache-friendly size; null keeps original. */
+      resize?: (data: Uint8Array, format: string) => Promise<Uint8Array | null>;
+    } = {},
+  ) {}
 
   /** Recursively yield audio files under a file or directory path. */
   async *walkAudioFiles(root: string): AsyncGenerator<string> {
@@ -125,8 +131,12 @@ export class LibraryScanner {
   /** Write embedded artwork to the thumbnail cache; returns its path. */
   private async cacheArtwork(path: string, picture: { format: string; data: Uint8Array } | undefined): Promise<string | null> {
     if (picture === undefined || picture.data.byteLength === 0) return null;
-    const ext = MIME_EXT[picture.format] ?? ".img";
-    const out = join(this.thumbnailDir, `${createHash("sha1").update(path).digest("hex")}${ext}`);
+    const hash = createHash("sha1").update(path).digest("hex");
+    const resized = this.opts.resize
+      ? await this.opts.resize(picture.data, picture.format).catch(() => null)
+      : null;
+    const ext = resized !== null ? ".png" : (MIME_EXT[picture.format] ?? ".img");
+    const out = join(this.thumbnailDir, `${hash}${ext}`);
     try {
       await stat(out);
       return out; // already cached
@@ -134,7 +144,7 @@ export class LibraryScanner {
       // not cached yet
     }
     await mkdir(this.thumbnailDir, { recursive: true });
-    await writeFile(out, picture.data).catch(() => undefined);
+    await writeFile(out, resized ?? picture.data).catch(() => undefined);
     return out;
   }
 }

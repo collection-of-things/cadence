@@ -81,8 +81,11 @@ describe("library: scanning + FTS5", () => {
     expect(tagged?.source.kind).toBe("file");
     expect(tagged?.availability).toBe("available");
     // Embedded artwork extracted to the thumbnail cache.
-    expect(tagged?.artwork?.url).toMatch(/^file:\/\//);
-    expect(existsSync(tagged?.artwork?.url.replace("file://", "") ?? "")).toBe(true);
+    expect(tagged?.artwork?.url).toMatch(/^cadence-art:\/\/artwork\//);
+    const artPath = decodeURIComponent(
+      new URL(tagged?.artwork?.url ?? "").pathname.slice(1),
+    );
+    expect(existsSync(artPath)).toBe(true);
     await r.service.dispose();
   });
 

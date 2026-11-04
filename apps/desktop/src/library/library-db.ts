@@ -276,7 +276,10 @@ export function ftsQuery(text: string): string {
 }
 
 function fileArtwork(path: string): ArtworkRef {
-  return { url: `file://${path}` };
+  // Served by the cadence-art:// protocol handler registered in main.ts —
+  // works from any renderer origin (file:// bundle or http dev server)
+  // without exposing arbitrary file:// reads.
+  return { url: `cadence-art://artwork/${encodeURIComponent(path)}` };
 }
 
 function rowToTrackRef(row: TrackRow): TrackRef {

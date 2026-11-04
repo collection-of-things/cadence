@@ -40,6 +40,14 @@ export interface CadenceApi {
     roots(): Promise<string[]>;
   };
 
+  // --- audio engine ------------------------------------------------------------
+  audio: {
+    /** Parametric EQ bands (center freq Hz + gain dB). Empty array = flat. */
+    setEq(bands: { freqHz: number; gainDb: number }[]): Promise<void>;
+    listDevices(): Promise<{ name: string; isDefault: boolean }[]>;
+    setDevice(name: string | null): Promise<void>;
+  };
+
   // --- routes / providers ------------------------------------------------------
   routes: {
     /** Trigger a route's sign-in flow (opens its view/focuses window). */
