@@ -29,7 +29,7 @@ export function VolumeControl() {
         min={0}
         max={100}
         value={Math.round(shown * 100)}
-        onInput={(e) => session.setVolume(Number(e.currentTarget.value) / 100)}
+        onChange={(e) => session.setVolume(Number(e.currentTarget.value) / 100)}
         style={{ ['--p' as string]: shown }}
       />
     </div>

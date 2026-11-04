@@ -75,7 +75,7 @@ export function SeekBar() {
           step={250}
           defaultValue={0}
           disabled={disabled}
-          onInput={(e) => {
+          onChange={(e) => {
             const wrap = wrapRef.current;
             const v = Number(e.currentTarget.value);
             scrubbing.current = true;
