@@ -1,0 +1,302 @@
+import type {
+  ArtistRef,
+  ArtworkRef,
+  LibraryQuery,
+  PlaybackCommand,
+  ProviderId,
+  QueueItem,
+  QueueState,
+  RouteId,
+  TrackRef,
+  TrackSource,
+} from "@cadence/protocol";
+import { err, isOk, ok, type Result } from "./result.js";
+
+/**
+ * Boundary parsers for inbound IPC payloads. Everything crossing from the
+ * renderer is `unknown` until proven otherwise — these functions parse into
+ * contract types or return a typed failure. Rejections never carry renderer
+ * secrets; payloads are plain data.
+ */
+
+/** An IPC payload failed shape checks. */
+export class InvalidIpcPayload extends Error {
+  readonly _tag = "InvalidIpcPayload" as const;
+  constructor(readonly detail: string) {
+    super(`invalid IPC payload: ${detail}`);
+  }
+}
+
+const ROUTE_IDS: ReadonlySet<string> = new Set([
+  "local",
+  "spotify-librespot",
+  "spotify-web",
+  "apple-musickit",
+  "youtube-music",
+]);
+
+const PROVIDER_IDS: ReadonlySet<string> = new Set(["local", "spotify", "apple", "youtube"]);
+const REPEAT_MODES: ReadonlySet<string> = new Set(["off", "all", "one"]);
+
+function isObj(u: unknown): u is Record<string, unknown> {
+  return typeof u === "object" && u !== null && !Array.isArray(u);
+}
+
+function fail(detail: string): Result<never, InvalidIpcPayload> {
+  return err(new InvalidIpcPayload(detail));
+}
+
+/** Parse a route id string. */
+export function parseRouteId(u: unknown): Result<RouteId, InvalidIpcPayload> {
+  if (typeof u === "string" && ROUTE_IDS.has(u)) return ok(u as RouteId);
+  return fail(`expected a route id, got ${JSON.stringify(u)}`);
+}
+
+/** Parse a list of filesystem paths (scan targets). */
+export function parsePaths(u: unknown): Result<string[], InvalidIpcPayload> {
+  if (!Array.isArray(u) || !u.every((p) => typeof p === "string")) {
+    return fail("expected an array of path strings");
+  }
+  return ok(u);
+}
+
+/** Parse a track id for library.track. */
+export function parseTrackId(u: unknown): Result<string, InvalidIpcPayload> {
+  if (typeof u === "string" && u.length > 0) return ok(u);
+  return fail("expected a non-empty track id");
+}
+
+/** Parse a LibraryQuery (all fields optional, type-checked). */
+export function parseLibraryQuery(u: unknown): Result<LibraryQuery, InvalidIpcPayload> {
+  if (u === undefined || u === null) return ok({});
+  if (!isObj(u)) return fail("library query must be an object");
+  const q: LibraryQuery = {};
+  for (const key of ["text", "artist", "album", "genre"] as const) {
+    const v = u[key];
+    if (v !== undefined) {
+      if (typeof v !== "string") return fail(`library query ${key} must be a string`);
+      q[key] = v;
+    }
+  }
+  for (const key of ["limit", "offset"] as const) {
+    const v = u[key];
+    if (v !== undefined) {
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        return fail(`library query ${key} must be a non-negative number`);
+      }
+      q[key] = Math.floor(v);
+    }
+  }
+  return ok(q);
+}
+
+// --- PlaybackCommand -----------------------------------------------------------
+
+/** Parse a PlaybackCommand; all inbound commands pass through here. */
+export function parsePlaybackCommand(u: unknown): Result<PlaybackCommand, InvalidIpcPayload> {
+  if (!isObj(u) || typeof u.kind !== "string") return fail("command must be an object with a kind");
+  switch (u.kind) {
+    case "setQueue": {
+      const items = parseQueueItemArray(u.items);
+      if (!isOk(items)) return err(items.error);
+      const cmd: Extract<PlaybackCommand, { kind: "setQueue" }> = { kind: "setQueue", items: items.value };
+      if (u.startIndex !== undefined) {
+        if (typeof u.startIndex !== "number" || !Number.isInteger(u.startIndex)) {
+          return fail("setQueue.startIndex must be an integer");
+        }
+        cmd.startIndex = u.startIndex;
+      }
+      if (u.autoplay !== undefined) {
+        if (typeof u.autoplay !== "boolean") return fail("setQueue.autoplay must be a boolean");
+        cmd.autoplay = u.autoplay;
+      }
+      return ok(cmd);
+    }
+    case "insertNext":
+    case "append": {
+      const items = parseQueueItemArray(u.items);
+      if (!isOk(items)) return err(items.error);
+      return ok({ kind: u.kind, items: items.value });
+    }
+    case "remove": {
+      if (!Array.isArray(u.queueIds) || !u.queueIds.every((id) => typeof id === "string")) {
+        return fail("remove.queueIds must be an array of strings");
+      }
+      return ok({ kind: "remove", queueIds: u.queueIds });
+    }
+    case "move": {
+      if (typeof u.fromIndex !== "number" || typeof u.toIndex !== "number") {
+        return fail("move requires numeric fromIndex/toIndex");
+      }
+      return ok({ kind: "move", fromIndex: u.fromIndex, toIndex: u.toIndex });
+    }
+    case "play": {
+      const cmd: Extract<PlaybackCommand, { kind: "play" }> = { kind: "play" };
+      if (u.queueId !== undefined) {
+        if (typeof u.queueId !== "string") return fail("play.queueId must be a string");
+        cmd.queueId = u.queueId;
+      }
+      return ok(cmd);
+    }
+    case "pause":
+    case "resume":
+    case "stop":
+    case "next":
+    case "previous":
+      return ok({ kind: u.kind });
+    case "seek": {
+      if (typeof u.positionMs !== "number" || !Number.isFinite(u.positionMs)) {
+        return fail("seek.positionMs must be a finite number");
+      }
+      return ok({ kind: "seek", positionMs: u.positionMs });
+    }
+    case "setVolume": {
+      if (typeof u.volume !== "number" || !Number.isFinite(u.volume)) {
+        return fail("setVolume.volume must be a finite number");
+      }
+      return ok({ kind: "setVolume", volume: u.volume });
+    }
+    case "setMuted": {
+      if (typeof u.muted !== "boolean") return fail("setMuted.muted must be a boolean");
+      return ok({ kind: "setMuted", muted: u.muted });
+    }
+    case "setRepeat": {
+      if (typeof u.repeat !== "string" || !REPEAT_MODES.has(u.repeat)) {
+        return fail("setRepeat.repeat must be off|all|one");
+      }
+      return ok({ kind: "setRepeat", repeat: u.repeat as QueueState["repeat"] });
+    }
+    case "setShuffle": {
+      if (typeof u.shuffle !== "boolean") return fail("setShuffle.shuffle must be a boolean");
+      return ok({ kind: "setShuffle", shuffle: u.shuffle });
+    }
+    case "switchRoute": {
+      const route = parseRouteId(u.route);
+      if (!isOk(route)) return err(route.error);
+      if (typeof u.queueId !== "string") return fail("switchRoute.queueId must be a string");
+      return ok({ kind: "switchRoute", queueId: u.queueId, route: route.value });
+    }
+    case "setFidelityMode": {
+      if (typeof u.enabled !== "boolean") return fail("setFidelityMode.enabled must be a boolean");
+      return ok({ kind: "setFidelityMode", enabled: u.enabled });
+    }
+    default:
+      return fail(`unknown command kind ${JSON.stringify(u.kind)}`);
+  }
+}
+
+function isOk_<T>(r: Result<T, InvalidIpcPayload>): r is { _tag: "ok"; value: T } {
+  return r._tag === "ok";
+}
+
+function parseQueueItemArray(u: unknown): Result<QueueItem[], InvalidIpcPayload> {
+  if (!Array.isArray(u)) return fail("items must be an array");
+  const items: QueueItem[] = [];
+  for (const raw of u) {
+    const item = parseQueueItem(raw);
+    if (!isOk(item)) return err(item.error);
+    items.push(item.value);
+  }
+  return ok(items);
+}
+
+function parseQueueItem(u: unknown): Result<QueueItem, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("queue item must be an object");
+  const track = parseTrackRef(u.track);
+  if (!isOk(track)) return err(track.error);
+  const item: QueueItem = {
+    queueId: typeof u.queueId === "string" ? u.queueId : "",
+    track: track.value,
+  };
+  if (isObj(u.origin)) {
+    const kind = u.origin.kind;
+    if (kind === "album" || kind === "playlist" || kind === "manual" || kind === "provider") {
+      const origin: NonNullable<QueueItem["origin"]> = { kind };
+      if (typeof u.origin.id === "string") origin.id = u.origin.id;
+      if (typeof u.origin.name === "string") origin.name = u.origin.name;
+      item.origin = origin;
+    }
+  }
+  return ok(item);
+}
+
+function parseTrackRef(u: unknown): Result<TrackRef, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("track must be an object");
+  if (typeof u.id !== "string" || u.id === "") return fail("track.id must be a non-empty string");
+  const route = parseRouteId(u.route);
+  if (!isOk(route)) return err(route.error);
+  if (typeof u.provider !== "string" || !PROVIDER_IDS.has(u.provider)) {
+    return fail("track.provider must be a provider id");
+  }
+  if (typeof u.title !== "string") return fail("track.title must be a string");
+  if (typeof u.durationMs !== "number" || !Number.isFinite(u.durationMs) || u.durationMs < 0) {
+    return fail("track.durationMs must be a non-negative number");
+  }
+  const source = parseTrackSource(u.source);
+  if (!isOk(source)) return err(source.error);
+  const track: TrackRef = {
+    id: u.id,
+    route: route.value,
+    provider: u.provider as ProviderId,
+    title: u.title,
+    artists: parseArtists(u.artists),
+    durationMs: u.durationMs,
+    source: source.value,
+    availability:
+      u.availability === "unavailable" || u.availability === "unknown" ? u.availability : "available",
+  };
+  if (typeof u.album === "string") track.album = u.album;
+  if (typeof u.trackNumber === "number") track.trackNumber = u.trackNumber;
+  if (typeof u.discNumber === "number") track.discNumber = u.discNumber;
+  if (typeof u.year === "number") track.year = u.year;
+  if (Array.isArray(u.genre)) track.genre = u.genre.filter((g): g is string => typeof g === "string");
+  const artwork = parseArtwork(u.artwork);
+  if (artwork !== null) track.artwork = artwork;
+  if (typeof u.replayGainDb === "number" && Number.isFinite(u.replayGainDb)) {
+    track.replayGainDb = u.replayGainDb;
+  }
+  if (typeof u.availabilityDetail === "string") track.availabilityDetail = u.availabilityDetail;
+  return ok(track);
+}
+
+function parseArtists(u: unknown): ArtistRef[] {
+  if (!Array.isArray(u)) return [];
+  const out: ArtistRef[] = [];
+  for (const a of u) {
+    if (!isObj(a) || typeof a.name !== "string") continue;
+    const ref: ArtistRef = { name: a.name };
+    if (typeof a.providerId === "string") ref.providerId = a.providerId;
+    out.push(ref);
+  }
+  return out;
+}
+
+function parseArtwork(u: unknown): ArtworkRef | null {
+  if (!isObj(u) || typeof u.url !== "string") return null;
+  const ref: ArtworkRef = { url: u.url };
+  if (typeof u.width === "number") ref.width = u.width;
+  if (typeof u.height === "number") ref.height = u.height;
+  return ref;
+}
+
+function parseTrackSource(u: unknown): Result<TrackSource, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("track.source must be an object");
+  if (u.kind === "file") {
+    if (typeof u.path !== "string" || u.path === "") return fail("file source requires a path");
+    const src: { kind: "file"; path: string; format?: string } = { kind: "file", path: u.path };
+    if (typeof u.format === "string") src.format = u.format;
+    return ok(src);
+  }
+  if (u.kind === "provider") {
+    if (typeof u.providerItemId !== "string" || u.providerItemId === "") {
+      return fail("provider source requires providerItemId");
+    }
+    const src: { kind: "provider"; providerItemId: string; uri?: string } = {
+      kind: "provider",
+      providerItemId: u.providerItemId,
+    };
+    if (typeof u.uri === "string") src.uri = u.uri;
+    return ok(src);
+  }
+  return fail(`unknown source kind ${JSON.stringify(u.kind)}`);
+}
