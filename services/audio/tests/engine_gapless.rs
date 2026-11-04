@@ -238,3 +238,58 @@ fn fidelity_mode_bypasses_and_reports_honestly() {
     assert!(ended, "24/96 track never ended on bypass path");
     engine.shutdown();
 }
+
+#[test]
+fn fidelity_format_mismatch_boundary_is_honest_not_gapless() {
+    let dir = fixtures_dir();
+    let a = dir.join("gapless-a.flac"); // 44.1k
+    let b = dir.join("tone-330-24bit96k.flac"); // 96k/24-bit
+    let dump = std::env::temp_dir().join(format!("cadence-mix-{}.f32le", std::process::id()));
+    let (engine, events) = make_engine(dump, 44100);
+    engine.set_fidelity_mode(true).unwrap();
+    engine
+        .load(LoadParams {
+            queue_id: "qa".into(),
+            generation_id: 5,
+            source: SourceSpec::File { path: a },
+            start_paused: false,
+            position_ms: 0,
+            replay_gain_db: None,
+        })
+        .unwrap();
+    // 96k successor can't render on the 44.1k stream in strict fidelity.
+    engine.prefetch("qb", b.to_str().unwrap(), None).unwrap();
+
+    let ended_b = wait_for(
+        &events,
+        |v| {
+            is_method(v, "event.trackEnded")
+                && v["params"]["queueId"].as_str() == Some("qb")
+        },
+        Duration::from_secs(20),
+    );
+    assert!(ended_b, "qb never played after reopen");
+
+    let evs = events.lock().unwrap();
+    for v in evs.iter() {
+        if is_method(v, "event.trackEnded") && v["params"]["queueId"].as_str() == Some("qa") {
+            assert_eq!(
+                v["params"]["gapless"],
+                Value::Bool(false),
+                "format reopen falsely reported gapless"
+            );
+        }
+        if is_method(v, "event.trackStarted") && v["params"]["queueId"].as_str() == Some("qb") {
+            assert_eq!(v["params"]["gapless"], Value::Bool(false));
+        }
+    }
+    // The reopened stream must run at the successor's native rate.
+    let last_out = evs
+        .iter()
+        .rev()
+        .find(|v| is_method(v, "event.output"))
+        .expect("no event.output after reopen");
+    assert_eq!(last_out["params"]["sampleRateHz"], Value::from(96000));
+    assert_eq!(last_out["params"]["fidelityBypass"], Value::Bool(true));
+    engine.shutdown();
+}

@@ -75,7 +75,7 @@ fn run(cli: Cli) -> Result<i32> {
     serve(cli)
 }
 
-fn probe(path: &PathBuf) -> Result<i32> {
+fn probe(path: &std::path::Path) -> Result<i32> {
     let dec = FfmpegDecoder;
     match dec.probe(path) {
         Ok(info) => {
@@ -101,7 +101,7 @@ fn probe(path: &PathBuf) -> Result<i32> {
 
 /// decode -> (optional graph resample) -> f32le file. No device involved.
 fn decode_file(
-    path: &PathBuf,
+    path: &std::path::Path,
     out: &PathBuf,
     rate: Option<u32>,
     channels: Option<u32>,
@@ -110,7 +110,7 @@ fn decode_file(
     let info = dec.probe(path)?;
     let ch = channels.unwrap_or(info.channels);
     let mut stream = dec.open(&DecodeRequest {
-        path: path.clone(),
+        path: path.to_path_buf(),
         seek_ms: 0,
         kind: PcmKind::F32,
         channels: Some(ch),

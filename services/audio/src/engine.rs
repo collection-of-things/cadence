@@ -440,6 +440,20 @@ struct PrefetchState {
 /// Producer thread bookkeeping (join handle kept so abort can detach cleanly).
 type ProducerHandle = std::thread::JoinHandle<()>;
 
+/// Negotiated stream params + source meta for a track, without spawning.
+struct TrackPlan {
+    #[allow(dead_code)]
+    src_rate: u32,
+    #[allow(dead_code)]
+    src_channels: u32,
+    #[allow(dead_code)]
+    src_depth: BitDepth,
+    duration_ms: u64,
+    neg: Negotiated,
+    rplan: ResamplePlan,
+    bypass: bool,
+}
+
 pub struct Engine {
     emit: Arc<dyn Fn(Value) + Send + Sync>,
     decoder: Arc<dyn Decoder>,
@@ -622,16 +636,8 @@ impl Engine {
         )
     }
 
-    /// Spawn a producer thread for `src`.
-    /// Returns (reader, handle, duration_ms, fidelity_bypass).
-    fn spawn_pipeline(
-        &self,
-        queue_id: &str,
-        src: SourceSpec,
-        seek_ms: u64,
-        rg_db: Option<f64>,
-    ) -> Result<(TrackReader, ProducerHandle, u64, bool)> {
-        let (src_rate, src_channels, src_depth, duration_ms, codec) = match &src {
+    fn plan_track(&self, src: &SourceSpec, seek_ms: u64) -> Result<TrackPlan> {
+        let (src_rate, src_channels, src_depth, duration_ms) = match src {
             SourceSpec::File { path } => {
                 let info = self.decoder.probe(path)?;
                 (
@@ -639,34 +645,70 @@ impl Engine {
                     info.channels,
                     info.bit_depth,
                     info.duration_ms.saturating_sub(seek_ms),
-                    Some(info.codec.clone()),
                 )
             }
             SourceSpec::PcmStream {
                 sample_rate_hz,
                 channels,
                 bit_depth,
-            } => (*sample_rate_hz, *channels, *bit_depth, 0, None),
+            } => (*sample_rate_hz, *channels, *bit_depth, 0),
         };
-        let _ = codec;
 
         let (neg, mut bypass) = self.negotiate(src_rate, src_channels, src_depth);
         if !src_depth.preserved_by(neg.kind) {
             // negotiated format can't carry source bit-exactly -> not bypass
             bypass = false;
         }
-
-        // Rebuild the output stream if negotiation changed it.
-        {
-            let mut core = self.core.lock().unwrap();
-            if core.negotiated != neg {
-                self.rebuild_stream_locked(&mut core, &neg)?;
-            }
-        }
-
         let (rplan, plan_bypass) =
             resample_plan(src_rate, neg.rate, self.state.lock().unwrap().fidelity, bypass);
         let bypass = bypass && plan_bypass;
+        Ok(TrackPlan {
+            src_rate,
+            src_channels,
+            src_depth,
+            duration_ms,
+            neg,
+            rplan,
+            bypass,
+        })
+    }
+
+    /// Spawn a producer thread for `src`.
+    /// When `rebuild_ok` is false and the track negotiates a different stream
+    /// format than the live one, this fails with an "incompatible" error
+    /// instead of rebuilding (used for prefetched successors: a format
+    /// change there means the boundary can't be seamless).
+    /// Returns (reader, handle, duration_ms, fidelity_bypass).
+    fn spawn_pipeline(
+        &self,
+        queue_id: &str,
+        src: SourceSpec,
+        seek_ms: u64,
+        rg_db: Option<f64>,
+        rebuild_ok: bool,
+    ) -> Result<(TrackReader, ProducerHandle, u64, bool)> {
+        let plan = self.plan_track(&src, seek_ms)?;
+        let duration_ms = plan.duration_ms;
+        let neg = plan.neg;
+        let rplan = plan.rplan;
+        let bypass = plan.bypass;
+
+        {
+            let mut core = self.core.lock().unwrap();
+            if core.negotiated != neg {
+                if !rebuild_ok {
+                    bail!(
+                        "incompatible format for seamless transition: \
+                         track wants {}Hz/{:?}, stream is {}Hz/{:?}",
+                        neg.rate,
+                        neg.kind,
+                        core.negotiated.rate,
+                        core.negotiated.kind
+                    );
+                }
+                self.rebuild_stream_locked(&mut core, &neg)?;
+            }
+        }
 
         let capacity = (neg.rate as f32 * self.cfg.buffer_secs) as usize * neg.channels as usize;
 
@@ -820,7 +862,7 @@ impl Engine {
                 let st = self.state.lock().unwrap();
                 (core.position_ms(), st.replay_gain_db)
             };
-            match self.spawn_pipeline(&qid, src, pos, rg) {
+            match self.spawn_pipeline(&qid, src, pos, rg, true) {
                 Ok((reader, handle, dur, bypass)) => {
                     self.core.lock().unwrap().set_active(reader);
                     *self.producer.lock().unwrap() = Some(handle);
@@ -832,7 +874,7 @@ impl Engine {
             }
         }
         if let Some((qid, src, rg)) = prefetch {
-            match self.spawn_pipeline(&qid, src.clone(), 0, rg) {
+            match self.spawn_pipeline(&qid, src.clone(), 0, rg, true) {
                 Ok((reader, handle, _dur, _bypass)) => {
                     let ready = reader.ready.clone();
                     self.core.lock().unwrap().set_next(reader);
@@ -865,6 +907,10 @@ impl Engine {
             st.queue_id = Some(p.queue_id.clone());
             st.source = Some(p.source.clone());
             st.replay_gain_db = p.replay_gain_db;
+            // Unblock any producer still waiting on a previous feed.
+            for (_, f) in st.feeds.drain() {
+                f.close();
+            }
         }
         self.emit_state(None);
 
@@ -876,6 +922,7 @@ impl Engine {
             p.source.clone(),
             p.position_ms,
             p.replay_gain_db,
+            true,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -931,25 +978,40 @@ impl Engine {
     }
 
     pub fn prefetch(&self, queue_id: &str, path: &str, rg_db: Option<f64>) -> Result<Value> {
-        let (reader, handle, _duration_ms, _bypass) = self.spawn_pipeline(
-            queue_id,
-            SourceSpec::File { path: PathBuf::from(path) },
-            0,
-            rg_db,
-        )?;
-        let ready = reader.ready.clone();
-        {
-            let mut core = self.core.lock().unwrap();
-            core.set_next(reader);
-        }
-        *self.prefetch_producer.lock().unwrap() = Some(handle);
-        {
+        let src = SourceSpec::File { path: PathBuf::from(path) };
+        // If the successor negotiates a different stream format (strict
+        // fidelity + a native format the stream can't take), it cannot
+        // render seamlessly — keep it as a reopen-on-boundary prefetch and
+        // report gapless:false honestly when the time comes.
+        let compatible = {
+            let plan = self.plan_track(&src, 0)?;
+            self.core.lock().unwrap().negotiated == plan.neg
+        };
+        if compatible {
+            let (reader, handle, _dur, _bypass) =
+                self.spawn_pipeline(queue_id, src.clone(), 0, rg_db, false)?;
+            let ready = reader.ready.clone();
+            {
+                let mut core = self.core.lock().unwrap();
+                core.set_next(reader);
+            }
+            *self.prefetch_producer.lock().unwrap() = Some(handle);
             let mut st = self.state.lock().unwrap();
             st.prefetch = Some(PrefetchState {
                 queue_id: queue_id.to_string(),
-                source: SourceSpec::File { path: PathBuf::from(path) },
+                source: src,
                 replay_gain_db: rg_db,
                 ready,
+            });
+            st.reported_prefetch_ready = false;
+        } else {
+            let mut st = self.state.lock().unwrap();
+            st.prefetch = Some(PrefetchState {
+                queue_id: queue_id.to_string(),
+                source: src,
+                replay_gain_db: rg_db,
+                // "ready" in the control sense: validated and reproducible
+                ready: Arc::new(AtomicBool::new(true)),
             });
             st.reported_prefetch_ready = false;
         }
@@ -993,6 +1055,9 @@ impl Engine {
             st.queue_id = None;
             st.source = None;
             st.duration_ms = 0;
+            for (_, f) in st.feeds.drain() {
+                f.close();
+            }
         }
         self.set_state(PlayState::Stopped);
         self.emit_state(None);
@@ -1009,7 +1074,7 @@ impl Engine {
             }
         };
         let (reader, handle, duration_ms, bypass) =
-            self.spawn_pipeline(&queue_id, src, position_ms, rg)?;
+            self.spawn_pipeline(&queue_id, src, position_ms, rg, true)?;
         {
             let mut core = self.core.lock().unwrap();
             core.set_active(reader);
@@ -1198,6 +1263,45 @@ impl Engine {
                                 "gapless": false,
                             }),
                         );
+                        // A prefetched successor that couldn't share the
+                        // stream (format reopen required) starts here —
+                        // honestly NOT gapless.
+                        let pf = self.state.lock().unwrap().prefetch.take();
+                        if let Some(pf) = pf {
+                            match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true) {
+                                Ok((reader, handle, dur, bypass)) => {
+                                    {
+                                        let mut core = self.core.lock().unwrap();
+                                        core.set_active(reader);
+                                        core.paused = false;
+                                    }
+                                    *self.producer.lock().unwrap() = Some(handle);
+                                    {
+                                        let mut st = self.state.lock().unwrap();
+                                        st.queue_id = Some(pf.queue_id.clone());
+                                        st.source = Some(pf.source);
+                                        st.duration_ms = dur;
+                                        st.fidelity_bypass = bypass;
+                                        st.state = PlayState::Playing;
+                                    }
+                                    self.emit_state(None);
+                                    self.emit_output();
+                                    self.emit(
+                                        "event.trackStarted",
+                                        json!({
+                                            "generationId": gen,
+                                            "queueId": pf.queue_id,
+                                            "durationMs": dur,
+                                            "gapless": false,
+                                        }),
+                                    );
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.emit_error(Some(&pf.queue_id), &format!("{e:#}"), true);
+                                }
+                            }
+                        }
                         self.set_state(PlayState::Stopped);
                         self.emit_state(None);
                     }
