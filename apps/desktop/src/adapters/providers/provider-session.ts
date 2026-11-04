@@ -59,7 +59,7 @@ export class ProviderSession {
         height: 800,
         webPreferences: {
           session: ses,
-          preload: this.opts.preloadPath ?? join(__dirname, "../../preload/provider.js"),
+          preload: this.opts.preloadPath ?? join(__dirname, "provider-preload.js"),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
