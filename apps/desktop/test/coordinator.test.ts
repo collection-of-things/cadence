@@ -169,20 +169,21 @@ describe("coordinator: handoff", () => {
     const r = rig();
     const items = [fakeItem("a", "local"), fakeItem("b", "local")];
     await r.coordinator.handleCommand({ kind: "setQueue", items, startIndex: 0 });
-    // ended on the live generation -> next item starts
+    // ended on the live generation -> next item starts (after the
+    // promotion window: the engine may self-start a prefetched successor)
     r.local.emitAdapterEvent({ kind: "ended", generationId: 1 });
-    await new Promise((res) => setImmediate(res));
+    await new Promise((res) => setTimeout(res, 700));
     expect(r.local.playedItems.at(-1)?.queueId).toBe(r.coordinator.getQueue().items[1]?.queueId);
     // end of queue with repeat off -> stopped
     r.local.emitAdapterEvent({ kind: "ended", generationId: 2 });
-    await new Promise((res) => setImmediate(res));
+    await new Promise((res) => setTimeout(res, 50));
     expect(r.coordinator.getSnapshot().status).toBe("stopped");
     // repeat all wraps
     await r.coordinator.handleCommand({ kind: "setRepeat", repeat: "all" });
     const firstId = r.coordinator.getQueue().items[0]?.queueId ?? "";
     await r.coordinator.handleCommand({ kind: "play", queueId: firstId });
     r.local.emitAdapterEvent({ kind: "ended", generationId: 3 });
-    await new Promise((res) => setImmediate(res));
+    await new Promise((res) => setTimeout(res, 700));
     expect(r.local.playedItems.at(-1)?.queueId).toBe(r.coordinator.getQueue().items[1]?.queueId);
   });
 });

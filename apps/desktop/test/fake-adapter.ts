@@ -85,6 +85,11 @@ export class FakeAdapter implements RouteAdapter {
     return Promise.resolve();
   }
 
+  prefetch(item: QueueItem): Promise<void> {
+    this.calls.push(`prefetch:${item.queueId}`);
+    return Promise.resolve();
+  }
+
   dispose(): Promise<void> {
     this.calls.push("dispose");
     return Promise.resolve();

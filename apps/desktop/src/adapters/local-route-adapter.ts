@@ -32,6 +32,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   private readonly client: AudioServiceClient;
   private readonly listeners = new Set<(e: AdapterEvent) => void>();
   private lastLoadGeneration = 0;
+  private lastLoadedQueueId: string | null = null;
   private fidelityMode = false;
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
@@ -93,6 +94,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
     const source = fileSourceOf(item);
     this.lastLoadGeneration = lease.generationId;
+    this.lastLoadedQueueId = item.queueId;
     const params: Parameters<AudioServiceClient["load"]>[0] = {
       queueId: item.queueId,
       generationId: lease.generationId,
@@ -144,6 +146,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     const params: Parameters<AudioServiceClient["prefetch"]>[0] = {
       queueId: item.queueId,
       path: item.track.source.path,
+      generationId: this.lastLoadGeneration,
     };
     if (item.track.replayGainDb !== undefined) params.replayGainDb = item.track.replayGainDb;
     await this.client.prefetch(params);
@@ -194,7 +197,17 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     switch (e.method) {
       case "event.trackStarted": {
         if (e.params.gapless) this.observedGapless = true;
-        const started: AdapterEvent = { kind: "started", generationId: e.params.generationId };
+        // Engine self-promotion: a trackStarted whose queueId we did not load
+        // means the engine advanced into its prefetch on its own (seamless or
+        // renegotiated reopen). The coordinator must not replay it.
+        const promoted = e.params.queueId !== this.lastLoadedQueueId;
+        if (promoted) this.lastLoadedQueueId = e.params.queueId;
+        const started: AdapterEvent = {
+          kind: "started",
+          generationId: e.params.generationId,
+          queueId: e.params.queueId,
+          promoted,
+        };
         if (e.params.durationMs > 0) this.emit({ ...started, durationMs: e.params.durationMs });
         else this.emit(started);
         return;
@@ -218,7 +231,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
       }
       case "event.trackEnded": {
         if (e.params.gapless) this.observedGapless = true;
-        this.emit({ kind: "ended", generationId: e.params.generationId });
+        this.emit({ kind: "ended", generationId: e.params.generationId, gapless: e.params.gapless });
         return;
       }
       case "event.buffering": {

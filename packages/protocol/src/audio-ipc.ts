@@ -35,7 +35,12 @@ export type AudioRpcRequest =
         replayGainDb?: number;
       };
     }
-  | { method: "audio.prefetch"; params: { queueId: string; path: string; replayGainDb?: number } }
+  /** Prefetch a successor under the current lease generation — stale
+   *  generations are rejected so a skip can never install the wrong track. */
+  | {
+      method: "audio.prefetch";
+      params: { queueId: string; path: string; generationId: number; replayGainDb?: number };
+    }
   /** Push a PCM chunk into the pcm-stream source opened under `queueId`
    *  (base64 little-endian interleaved frames in the declared depth).
    *  `final` marks end-of-stream (remaining buffered audio plays out);

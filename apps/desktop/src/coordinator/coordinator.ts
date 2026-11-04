@@ -79,6 +79,12 @@ export class Coordinator {
   private lastError: PlaybackSnapshot["lastError"];
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  /** Serializes commands and event-driven starts so handoffs can't overlap. */
+  private chain: Promise<void> = Promise.resolve();
+  /** queueId of the successor we asked the active adapter to prefetch. */
+  private pendingPrefetch: string | null = null;
+  /** Set after an engine `ended` while we wait for a self-promoted started. */
+  private promotionTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: CoordinatorDeps) {
     this.registry = deps.registry;
@@ -140,6 +146,15 @@ export class Coordinator {
    * applied (or its failure recorded); it does not reject on engine errors.
    */
   async handleCommand(cmd: PlaybackCommand): Promise<void> {
+    const p = this.chain.then(() => this.dispatch(cmd));
+    this.chain = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    return p;
+  }
+
+  private async dispatch(cmd: PlaybackCommand): Promise<void> {
     switch (cmd.kind) {
       case "setQueue": {
         const items = cmd.items.map((it) => this.stampQueueId(it));
@@ -373,12 +388,37 @@ export class Coordinator {
    * an error event carries the route + queueId, and the UI can issue a
    * deliberate `switchRoute` fallback.
    */
+  /** Serialize an engine/event-driven start onto the same chain as commands. */
+  private enqueueStart(index: number, opts: { positionMs?: number; routeOverride?: RouteId } = {}): void {
+    this.chain = this.chain.then(() => this.startItem(index, opts)).then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+
+  /** Bound a call so a wedged adapter can't stall the coordinator forever. */
+  private async withTimeout<T>(p: Promise<T>, ms: number, op: string): Promise<T> {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        p,
+        new Promise<never>((_r, rej) => {
+          t = setTimeout(() => rej(new Error(`${op} timed out after ${ms}ms`)), ms);
+        }),
+      ]);
+    } finally {
+      if (t !== null) clearTimeout(t);
+    }
+  }
+
   private async startItem(
     index: number,
     opts: { positionMs?: number; routeOverride?: RouteId },
   ): Promise<void> {
     const item = this.queue.items[index];
     if (item === undefined) return;
+    this.clearPromotionWait();
+    this.pendingPrefetch = null;
     const route = opts.routeOverride ?? item.track.route;
     const adapter = this.registry.get(route);
     this.generation += 1;
@@ -410,7 +450,7 @@ export class Coordinator {
     this.emitSnapshot();
 
     try {
-      await adapter.prepare();
+      await this.withTimeout(adapter.prepare(), 15_000, "adapter.prepare");
     } catch (cause) {
       this.failStart(route, item.queueId, `prepare failed: ${msg(cause)}`, true);
       return;
@@ -421,7 +461,7 @@ export class Coordinator {
     // allowed to wedge the handoff — the incoming source still starts.
     if (outgoing !== null && outgoingLease !== null) {
       try {
-        await outgoing.stop(outgoingLease);
+        await this.withTimeout(outgoing.stop(outgoingLease), 8_000, "outgoing.stop");
       } catch (cause) {
         this.emitError(
           outgoing.route,
@@ -435,7 +475,7 @@ export class Coordinator {
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
     try {
-      await adapter.play(item, lease, playOpts);
+      await this.withTimeout(adapter.play(item, lease, playOpts), 20_000, "adapter.play");
     } catch (cause) {
       this.failStart(route, item.queueId, `play failed: ${msg(cause)}`, true);
       return;
@@ -488,6 +528,7 @@ export class Coordinator {
     if (next === undefined || next.track.route !== adapter.route) return;
     try {
       await adapter.prefetch(next);
+      this.pendingPrefetch = next.queueId;
     } catch {
       // Prefetch is an optimization; a failure only costs the seamlessness.
     }
@@ -570,6 +611,16 @@ export class Coordinator {
     if (this.lease === null || e.generationId !== this.lease.generationId) return;
     switch (e.kind) {
       case "started": {
+        // Engine self-promotion: a started whose queueId is not the item we
+        // told the engine to play means the engine advanced into its own
+        // prefetch (gapless or renegotiated reopen). Never re-load it.
+        const selfPromoted =
+          e.promoted === true ||
+          (e.queueId !== undefined && e.queueId !== this.lease?.queueId);
+        if (selfPromoted) {
+          this.promoteTrack(e.queueId, e.durationMs);
+          return;
+        }
         this.status = "playing";
         if (e.durationMs !== undefined && e.durationMs > 0) this.durationMs = e.durationMs;
         this.emitSnapshot();
@@ -605,7 +656,21 @@ export class Coordinator {
           this.persistSoon();
           return;
         }
-        void this.startItem(idx, {});
+        // When we prefetched a successor, the engine may promote it itself:
+        // seamlessly (gapless:true) or after a format renegotiation. Give the
+        // self-promoted `started` a short window before driving the advance
+        // ourselves — a redundant load here would restart a track already
+        // playing, which is exactly the seam the engine exists to remove.
+        if (this.pendingPrefetch !== null) {
+          const fallbackIdx = idx;
+          this.promotionTimer = setTimeout(() => {
+            this.promotionTimer = null;
+            if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
+            this.enqueueStart(fallbackIdx);
+          }, 600);
+          return;
+        }
+        this.enqueueStart(idx);
         return;
       }
       case "queueChanged": {
@@ -623,6 +688,47 @@ export class Coordinator {
         return;
       }
     }
+  }
+
+  private clearPromotionWait(): void {
+    if (this.promotionTimer !== null) {
+      clearTimeout(this.promotionTimer);
+      this.promotionTimer = null;
+    }
+  }
+
+  /**
+   * The engine promoted a successor itself. Advance queue intent to match —
+   * same generation (the engine session never broke), new queueId, fresh
+   * prefetch for the item after it. No adapter.play call: the audio is
+   * already running.
+   */
+  private promoteTrack(queueId: string | undefined, durationMs?: number): void {
+    this.clearPromotionWait();
+    let idx = queueId !== undefined
+      ? this.queue.items.findIndex((it) => it.queueId === queueId)
+      : -1;
+    if (idx < 0 && this.pendingPrefetch !== null) {
+      idx = this.queue.items.findIndex((it) => it.queueId === this.pendingPrefetch);
+    }
+    if (idx < 0) idx = QueueOps.nextIndexAfterEnd(this.queue) ?? -1;
+    this.pendingPrefetch = null;
+    const item = idx >= 0 ? this.queue.items[idx] : undefined;
+    if (this.lease === null || item === undefined) return;
+    this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
+    if (this.queue.currentIndex !== idx) {
+      this.queue = { ...this.queue, currentIndex: idx };
+      this.emitQueue();
+    }
+    this.status = "playing";
+    this.positionMs = 0;
+    this.positionAtMs = this.now();
+    this.durationMs =
+      durationMs !== undefined && durationMs > 0 ? durationMs : item.track.durationMs;
+    this.emitSnapshot();
+    this.persistSoon();
+    const adapter = this.activeAdapter;
+    if (adapter !== null) void this.prefetchSuccessor(adapter);
   }
 
   private onGraphEvent(e: AudioRpcEvent): void {

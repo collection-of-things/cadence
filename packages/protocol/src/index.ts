@@ -243,10 +243,23 @@ export interface RouteAdapter {
 }
 
 export type AdapterEvent =
-  | { kind: "started"; generationId: number; durationMs?: number }
+  | {
+      kind: "started";
+      generationId: number;
+      durationMs?: number;
+      /** The queue item the engine started — set when it self-promoted a
+       *  prefetched successor (no coordinator play call preceded it). */
+      queueId?: string;
+      promoted?: boolean;
+    }
   | { kind: "position"; positionMs: number; atMs: number; generationId: number }
   | { kind: "state"; status: PlaybackStatus; generationId: number }
-  | { kind: "ended"; generationId: number }
+  | {
+      kind: "ended";
+      generationId: number;
+      /** true when the engine started the successor seamlessly itself. */
+      gapless?: boolean;
+    }
   | { kind: "queueChanged"; generationId: number; providerQueue?: unknown }
   | { kind: "error"; message: string; retriable: boolean; code?: string }
   | { kind: "capabilitiesChanged" };

@@ -234,7 +234,7 @@ export class AudioServiceClient implements PcmStreamSink {
   }
 
   /** Prefetch the next file for a gapless boundary. */
-  async prefetch(params: { queueId: string; path: string; replayGainDb?: number }): Promise<unknown> {
+  async prefetch(params: { queueId: string; path: string; generationId: number; replayGainDb?: number }): Promise<unknown> {
     return this.request("audio.prefetch", params);
   }
 
