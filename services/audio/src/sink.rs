@@ -116,6 +116,7 @@ impl NullSink {
                 let tick = std::time::Duration::from_secs_f64(frames_per_tick as f64 / neg.rate as f64);
                 let mut buf_f = vec![0f32; n];
                 let mut buf_i = vec![0i32; n];
+                let mut buf_16 = vec![0i16; n];
                 while !stop2.load(Ordering::Relaxed) {
                     let t0 = std::time::Instant::now();
                     {
@@ -127,6 +128,7 @@ impl NullSink {
                         match neg.kind {
                             PcmKind::F32 => c.pull_f32(&mut buf_f),
                             PcmKind::S32 => c.pull_s32(&mut buf_i),
+                            PcmKind::S16 => c.pull_s16(&mut buf_16),
                         }
                     }
                     if !fast {
@@ -195,6 +197,7 @@ impl CpalCaps {
     fn kind_of(fmt: cpal::SampleFormat) -> PcmKind {
         match fmt {
             cpal::SampleFormat::I32 => PcmKind::S32,
+            cpal::SampleFormat::I16 => PcmKind::S16,
             _ => PcmKind::F32,
         }
     }
@@ -219,6 +222,7 @@ impl DeviceCaps for CpalCaps {
         use cpal::traits::DeviceTrait;
         let cfgs = self.device.supported_output_configs().ok()?;
         let mut fallback_f32 = false;
+        let mut i16_ok = false;
         for c in cfgs {
             if c.channels() as u32 != channels {
                 continue;
@@ -230,12 +234,19 @@ impl DeviceCaps for CpalCaps {
                 (BitDepth::Float, cpal::SampleFormat::F32) => return Some(PcmKind::F32),
                 (BitDepth::Int(32), cpal::SampleFormat::I32) => return Some(PcmKind::S32),
                 (BitDepth::Int(_), cpal::SampleFormat::I32) => return Some(PcmKind::S32),
+                (BitDepth::Int(bits), cpal::SampleFormat::I16) if bits <= 16 => {
+                    return Some(PcmKind::S16)
+                }
+                (BitDepth::Int(_), cpal::SampleFormat::I16) => i16_ok = true,
                 (BitDepth::Int(_), cpal::SampleFormat::F32) => fallback_f32 = true,
                 _ => {}
             }
         }
         if fallback_f32 {
             Some(PcmKind::F32)
+        } else if i16_ok {
+            // >16-bit source into an i16-only device: lossy but audible.
+            Some(PcmKind::S16)
         } else {
             None
         }
@@ -310,6 +321,21 @@ impl DeviceCaps for CpalCaps {
                         Ok(mut core) => core.pull_s32(data),
                         Err(std::sync::TryLockError::Poisoned(p)) => {
                             p.into_inner().pull_s32(data)
+                        }
+                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0),
+                    },
+                    err_cb,
+                    None,
+                )?
+            }
+            PcmKind::S16 => {
+                let c = Arc::clone(&core);
+                self.device.build_output_stream::<i16, _, _>(
+                    &config,
+                    move |data: &mut [i16], _| match c.try_lock() {
+                        Ok(mut core) => core.pull_s16(data),
+                        Err(std::sync::TryLockError::Poisoned(p)) => {
+                            p.into_inner().pull_s16(data)
                         }
                         Err(std::sync::TryLockError::WouldBlock) => data.fill(0),
                     },

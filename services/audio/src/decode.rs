@@ -19,6 +19,9 @@ pub enum PcmKind {
     F32,
     /// 32-bit signed integer interleaved (s32le). Preserves 24/32-bit int PCM.
     S32,
+    /// 16-bit signed integer interleaved (s16le). For devices whose only
+    /// supported formats are i16 — bit-exact for <=16-bit sources.
+    S16,
 }
 
 impl PcmKind {
@@ -26,12 +29,14 @@ impl PcmKind {
         match self {
             PcmKind::F32 => "f32le",
             PcmKind::S32 => "s32le",
+            PcmKind::S16 => "s16le",
         }
     }
     pub fn codec_name(self) -> &'static str {
         match self {
             PcmKind::F32 => "pcm_f32le",
             PcmKind::S32 => "pcm_s32le",
+            PcmKind::S16 => "pcm_s16le",
         }
     }
 }
@@ -61,6 +66,7 @@ impl BitDepth {
             BitDepth::Int(bits) => match fmt {
                 PcmKind::F32 => bits <= 24, // f32 mantissa is exactly 24 bits
                 PcmKind::S32 => bits <= 32,
+                PcmKind::S16 => bits <= 16,
             },
         }
     }

@@ -175,6 +175,8 @@ pub struct OutputCore {
     fft_tap: Producer<f32>,
     /// optional f32le dump tap of everything rendered (null-sink diagnostics)
     dump: Option<Dump>,
+    /// reusable f32 scratch for pull_s16 (preallocated, grows once)
+    scratch16: Vec<f32>,
 }
 
 impl OutputCore {
@@ -310,6 +312,20 @@ impl OutputCore {
             }
             i += n;
         }
+    }
+
+    /// Fill `out` with i16 samples for devices whose only supported formats
+    /// are s16. Renders through pull_f32 (volume, FFT + dump taps all apply),
+    /// then converts with round + clip. The scratch buffer is preallocated
+    /// so the real-time path does not allocate after warmup.
+    pub fn pull_s16(&mut self, out: &mut [i16]) {
+        let mut tmp = std::mem::take(&mut self.scratch16);
+        tmp.resize(out.len(), 0.0);
+        self.pull_f32(&mut tmp);
+        for (i, s) in tmp.iter().enumerate() {
+            out[i] = (*s * i16::MAX as f32).round().clamp(-32768.0, 32767.0) as i16;
+        }
+        self.scratch16 = tmp;
     }
 
     /// Active track drained: promote `next` (gapless) or end. Returns true if
@@ -624,6 +640,7 @@ impl Engine {
                 stalled: false,
                 fft_tap: tap_p.clone(),
                 dump,
+                scratch16: Vec::new(),
             })),
             tap_p,
             tap_c,
@@ -715,6 +732,7 @@ impl Engine {
         let bit_depth = match neg.kind {
             PcmKind::F32 => json!("float"),
             PcmKind::S32 => json!(32),
+            PcmKind::S16 => json!(16),
         };
         self.emit(
             "event.output",
@@ -857,8 +875,10 @@ impl Engine {
         let neg2 = neg.clone();
         let qid = queue_id.to_string();
 
+        // S16 output still runs the internal f32 pipeline (f32 holds 16-bit
+        // sources exactly); the i16 conversion happens at pull_s16.
         let (reader, join) = match neg.kind {
-            PcmKind::F32 => {
+            PcmKind::F32 | PcmKind::S16 => {
                 let (prod, cons) = ringbuf::channel::<f32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
                 let r = ready.clone();
