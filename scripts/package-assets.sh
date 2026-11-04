@@ -23,7 +23,11 @@ exe="cadence-audio"
 [ "$(uname -s | grep -c MINGW || true)" = "1" ] && exe="cadence-audio.exe"
 
 mkdir -p "services/audio/bin/${triple}"
-cp "services/audio/target/release/${exe}" "services/audio/bin/${triple}/${exe}"
+# Workspace root target dir (root Cargo.toml) first, standalone crate second.
+for cand in "target/release/${exe}" "services/audio/target/release/${exe}"; do
+  if [ -f "$cand" ]; then cp "$cand" "services/audio/bin/${triple}/${exe}"; break; fi
+done
+[ -f "services/audio/bin/${triple}/${exe}" ] || { echo "ERROR: release binary not found" >&2; exit 1; }
 echo "staged services/audio/bin/${triple}/${exe}"
 
 # ffmpeg/ffprobe must ship beside the binary — the decoder shells out to

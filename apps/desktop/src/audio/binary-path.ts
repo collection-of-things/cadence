@@ -5,7 +5,8 @@ import { join } from "node:path";
  * Resolve the cadence-audio binary:
  *   1. `CADENCE_AUDIO_BIN` env var (explicit override)
  *   2. `resourcesPath/audio/{platform}-{arch}/cadence-audio` (packaged app)
- *   3. `services/audio/target/{debug,release}/cadence-audio` (repo dev build)
+ *   3. `target/{debug,release}/cadence-audio` (cargo workspace-root dev build)
+ *   4. `services/audio/target/{debug,release}/` (standalone crate layout)
  * Returns null when nothing exists — the caller decides how to degrade.
  */
 export function resolveAudioBinary(
@@ -25,8 +26,12 @@ export function resolveAudioBinary(
     for (const c of candidates) if (existsSync(c)) return c;
   }
   for (const profile of ["debug", "release"]) {
-    const candidate = join(repoRoot, "services", "audio", "target", profile, exe);
-    if (existsSync(candidate)) return candidate;
+    for (const base of [
+      join(repoRoot, "target", profile, exe),
+      join(repoRoot, "services", "audio", "target", profile, exe),
+    ]) {
+      if (existsSync(base)) return base;
+    }
   }
   return null;
 }
