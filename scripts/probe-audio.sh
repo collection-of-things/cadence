@@ -38,7 +38,7 @@ RPCOUT=$(mktemp)
 {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"audio.ping","params":{}}'
   printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"audio.load\",\"params\":{\"queueId\":\"qa\",\"generationId\":1,\"source\":{\"kind\":\"file\",\"path\":\"$A\"}}}"
-  printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"audio.prefetch\",\"params\":{\"queueId\":\"qb\",\"path\":\"$B\"}}"
+  printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"audio.prefetch\",\"params\":{\"queueId\":\"qb\",\"path\":\"$B\",\"generationId\":1}}"
   sleep 7
   printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"audio.shutdown","params":{}}'
 } | timeout 30 "$BIN" --null-sink --null-rate 44100 --null-dump "$DUMP" > "$RPCOUT"

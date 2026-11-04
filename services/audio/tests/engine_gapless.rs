@@ -86,7 +86,7 @@ fn gapless_prefetched_boundary_is_sample_contiguous() {
         })
         .unwrap();
     engine
-        .prefetch("qb", b.to_str().unwrap(), None)
+        .prefetch("qb", b.to_str().unwrap(), 7, None)
         .unwrap();
 
     // Wait for qb's final end (trackEnded for queueId qb).
@@ -258,7 +258,7 @@ fn fidelity_format_mismatch_boundary_is_honest_not_gapless() {
         })
         .unwrap();
     // 96k successor can't render on the 44.1k stream in strict fidelity.
-    engine.prefetch("qb", b.to_str().unwrap(), None).unwrap();
+    engine.prefetch("qb", b.to_str().unwrap(), 5, None).unwrap();
 
     let ended_b = wait_for(
         &events,

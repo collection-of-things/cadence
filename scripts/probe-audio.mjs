@@ -120,7 +120,7 @@ await new Promise((resolve) => {
         queueId: "q1", generationId: gen,
         source: { kind: "file", path: join(FX, "gapless-a.flac") },
       });
-      await send("audio.prefetch", { queueId: "q2", path: join(FX, "gapless-b.flac") });
+      await send("audio.prefetch", { queueId: "q2", path: join(FX, "gapless-b.flac"), generationId: gen });
       await send("audio.play", { generationId: gen });
       ok("rpc load+play", true);
 

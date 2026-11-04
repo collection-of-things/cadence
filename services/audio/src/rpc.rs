@@ -147,6 +147,7 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
         "audio.prefetch" => engine.prefetch(
             get_str(p, "queueId")?,
             get_str(p, "path")?,
+            get_u64(p, "generationId")?,
             p.get("replayGainDb").and_then(|v| v.as_f64()),
         ),
         "audio.play" => engine.play(get_u64(p, "generationId")?),

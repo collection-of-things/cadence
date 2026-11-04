@@ -3,8 +3,12 @@
 //! graph:  decode -> DSP (EQ + ReplayGain, skipped on bypass) -> resample
 //!         -> bounded ring buffer -> output callback pull -> FFT tap -> device
 //!
-//! The output callback only pops samples, applies volume, and taps the FFT
-//! ring. Decode/DSP/resample/alloc all happen on producer threads.
+//! The output callback only pops samples, applies volume, and taps the
+//! FFT/dump rings. Decode/DSP/resample/alloc all happen on producer threads.
+//! The device callback takes the core lock with try_lock + a silent fallback;
+//! control threads never hold `core` across device opens (rebuild_stream
+//! drops/opens sinks outside the lock), so the callback's worst-case wait is
+//! one brief critical section — bounded, documented, non-allocating.
 
 use crate::decode::{BitDepth, DecodeRequest, Decoder, FfmpegDecoder, PcmKind};
 use crate::dsp::Dsp;
@@ -121,6 +125,39 @@ enum CoreEvent {
     Ended { queue_id: String },
 }
 
+/// Bound on queued CoreEvents. Track-boundary events are rare and the
+/// monitor drains them every 20ms; 64 is unreachable in practice. The
+/// VecDeque is created with this capacity, so pushes below the cap never
+/// allocate on the callback thread.
+const MAX_CORE_EVENTS: usize = 64;
+
+/// Rendered-sample dump: the callback taps f32 into a ring (drop-on-full);
+/// a writer thread does the file I/O so the callback never touches the
+/// filesystem. Under --null-fast the writer can fall behind and samples are
+/// dropped — the dump stays lossless at real-time pacing, which is what the
+/// probe and tests use.
+struct Dump {
+    tap: Producer<f32>,
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Dump {
+    /// Signal the writer thread and join it (flushes the BufWriter).
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
+impl Drop for Dump {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// Everything the output callback touches. One Mutex, held briefly.
 pub struct OutputCore {
     pub negotiated: Negotiated,
@@ -136,13 +173,15 @@ pub struct OutputCore {
     /// currently inside a stall episode (latch, avoids event spam)
     stalled: bool,
     fft_tap: Producer<f32>,
-    /// optional f32le dump of everything rendered (null-sink diagnostics)
-    dump: Option<std::io::BufWriter<std::fs::File>>,
+    /// optional f32le dump tap of everything rendered (null-sink diagnostics)
+    dump: Option<Dump>,
 }
 
 impl OutputCore {
     /// Fill `out` with f32 output samples. Hot path: pops ring, applies
-    /// volume, taps FFT, writes dump. Zero-fills on underrun/pause.
+    /// volume, taps FFT + dump rings (drop-on-full). No allocation and no
+    /// blocking I/O — safe to call on the device callback thread. Zero-fills
+    /// on underrun/pause.
     pub fn pull_f32(&mut self, out: &mut [f32]) {
         if self.paused {
             out.fill(0.0);
@@ -199,12 +238,8 @@ impl OutputCore {
             }
         }
         let _ = self.fft_tap.write(out);
-        if let Some(d) = self.dump.as_mut() {
-            use std::io::Write;
-            let bytes = unsafe {
-                std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4)
-            };
-            let _ = d.write_all(bytes);
+        if let Some(d) = &self.dump {
+            let _ = d.tap.write(out);
         }
     }
 
@@ -261,7 +296,7 @@ impl OutputCore {
                 *s = (*s as f64 * vol as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
             }
         }
-        // tap FFT with f32-converted samples (bounded write, drops on full)
+        // tap FFT + dump with f32-converted samples (bounded writes, drop on full)
         let mut tap = [0f32; 2048];
         let mut i = 0;
         while i < out.len() {
@@ -270,6 +305,9 @@ impl OutputCore {
                 tap[j] = out[i + j] as f32 / i32::MAX as f32;
             }
             let _ = self.fft_tap.write(&tap[..n]);
+            if let Some(d) = &self.dump {
+                let _ = d.tap.write(&tap[..n]);
+            }
             i += n;
         }
     }
@@ -279,7 +317,7 @@ impl OutputCore {
     fn advance_track(&mut self) -> bool {
         let ended = self.active.take().unwrap();
         if let Some(next) = self.next.take() {
-            self.events.push_back(CoreEvent::Boundary {
+            self.push_event(CoreEvent::Boundary {
                 ended_queue_id: ended.queue_id,
                 started_queue_id: next.queue_id.clone(),
                 started_duration_ms: next.duration_ms,
@@ -290,10 +328,19 @@ impl OutputCore {
             self.underrun = false;
             true
         } else {
-            self.events.push_back(CoreEvent::Ended {
+            self.push_event(CoreEvent::Ended {
                 queue_id: ended.queue_id,
             });
             false
+        }
+    }
+
+    /// Queue an event for the monitor. Bounded: drops rather than growing
+    /// past MAX_CORE_EVENTS (the VecDeque was preallocated, so in-bounds
+    /// pushes never allocate on the callback thread).
+    fn push_event(&mut self, ev: CoreEvent) {
+        if self.events.len() < MAX_CORE_EVENTS {
+            self.events.push_back(ev);
         }
     }
 
@@ -344,6 +391,11 @@ impl OutputCore {
 
 /// Shared byte queue for a pushed PCM stream. base64-decoded bytes land in
 /// `buf`; `closed` marks end-of-stream.
+///
+/// Bounded: `push` blocks while the buffer is full and fails after
+/// `PUSH_TIMEOUT`, so audio.feed applies real backpressure to the JSON-RPC
+/// caller instead of growing memory without bound (e.g. a paused stream).
+/// The wait is interruptible by `close`/`abort`.
 pub struct Feed {
     buf: Mutex<VecDeque<u8>>,
     cv: Condvar,
@@ -351,9 +403,41 @@ pub struct Feed {
 }
 
 impl Feed {
-    fn push(&self, bytes: &[u8]) {
-        self.buf.lock().unwrap().extend(bytes.iter().copied());
-        self.cv.notify_all();
+    /// ~4 MiB ≈ 23s of 44.1kHz/16-bit stereo PCM.
+    const CAP: usize = 4 * 1024 * 1024;
+    /// How long a push may wait for drain before erroring.
+    const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Append bytes, blocking while the buffer is at CAP. Errors on timeout
+    /// or once the feed is closed/aborted; a timeout may leave a prefix of
+    /// `bytes` appended.
+    fn push(&self, bytes: &[u8]) -> Result<()> {
+        let mut buf = self.buf.lock().unwrap();
+        let deadline = std::time::Instant::now() + Self::PUSH_TIMEOUT;
+        let mut off = 0;
+        while off < bytes.len() {
+            if self.closed.load(Ordering::Acquire) {
+                bail!("feed closed");
+            }
+            let space = Self::CAP.saturating_sub(buf.len());
+            if space > 0 {
+                let n = space.min(bytes.len() - off);
+                buf.extend(bytes[off..off + n].iter().copied());
+                off += n;
+                self.cv.notify_all();
+                continue;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                bail!("feed full: no drain within {}ms", Self::PUSH_TIMEOUT.as_millis());
+            }
+            let (g, t) = self.cv.wait_timeout(buf, deadline - now).unwrap();
+            buf = g;
+            if t.timed_out() {
+                bail!("feed full: no drain within {}ms", Self::PUSH_TIMEOUT.as_millis());
+            }
+        }
+        Ok(())
     }
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
@@ -373,6 +457,8 @@ impl Feed {
                 for (i, b) in buf.drain(..n).enumerate() {
                     out[i] = b;
                 }
+                // space opened up: wake any push waiting on a full buffer
+                self.cv.notify_all();
                 return n;
             }
             if self.closed.load(Ordering::Acquire) {
@@ -466,6 +552,9 @@ pub struct Engine {
     core: Arc<Mutex<OutputCore>>,
     state: Mutex<EngineState>,
     sink: Mutex<Option<Box<dyn Sink>>>,
+    /// Serializes stream rebuilds (set_device / fidelity / format mismatch)
+    /// so two of them can never interleave a sink swap.
+    stream_mu: Mutex<()>,
     caps: Mutex<Arc<dyn DeviceCaps>>,
     monitor_stop: Arc<AtomicBool>,
     producer: Mutex<Option<ProducerHandle>>,
@@ -502,6 +591,7 @@ impl Engine {
                 reported_prefetch_ready: false,
             }),
             sink: Mutex::new(Some(sink)),
+            stream_mu: Mutex::new(()),
             caps: Mutex::new(caps),
             monitor_stop: Arc::new(AtomicBool::new(false)),
             producer: Mutex::new(None),
@@ -520,12 +610,7 @@ impl Engine {
         let (tap_p, tap_c) = ringbuf::channel::<f32>(
             (negotiated.rate as usize * negotiated.channels as usize).max(4096) / 2,
         );
-        let dump = dump.and_then(|p| {
-            std::fs::File::create(&p)
-                .map(std::io::BufWriter::new)
-                .map_err(|e| eprintln!("null dump {}: {e}", p.display()))
-                .ok()
-        });
+        let dump = dump.and_then(|p| Self::spawn_dump_writer(&p, &negotiated));
         (
             Arc::new(Mutex::new(OutputCore {
                 negotiated,
@@ -534,7 +619,7 @@ impl Engine {
                 active: None,
                 next: None,
                 frames_played: 0,
-                events: VecDeque::new(),
+                events: VecDeque::with_capacity(MAX_CORE_EVENTS),
                 underrun: false,
                 stalled: false,
                 fft_tap: tap_p.clone(),
@@ -543,6 +628,52 @@ impl Engine {
             tap_p,
             tap_c,
         )
+    }
+
+    /// Spawn the dump writer thread: drains the dump tap ring into a
+    /// BufWriter. Runs until `stop` is set AND the ring is empty; flushes on
+    /// exit (also via BufWriter's Drop).
+    fn spawn_dump_writer(path: &PathBuf, neg: &Negotiated) -> Option<Dump> {
+        let file = match std::fs::File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("null dump {}: {e}", path.display());
+                return None;
+            }
+        };
+        // ~2s of output; large enough that a real-time-paced render never
+        // drops samples into the dump.
+        let cap = (neg.rate as usize * neg.channels.max(1) as usize * 2).max(65536);
+        let (tap, cons) = ringbuf::channel::<f32>(cap);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = Arc::clone(&stop);
+        let join = std::thread::Builder::new()
+            .name("pcm-dump".into())
+            .spawn(move || {
+                use std::io::Write;
+                let mut w = std::io::BufWriter::new(file);
+                let mut buf = vec![0f32; 8192];
+                loop {
+                    let n = cons.read(&mut buf);
+                    if n > 0 {
+                        for s in &buf[..n] {
+                            let _ = w.write_all(&s.to_le_bytes());
+                        }
+                    } else {
+                        if stop2.load(Ordering::Acquire) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
+                let _ = w.flush();
+            })
+            .expect("spawn pcm-dump");
+        Some(Dump {
+            tap,
+            stop,
+            join: Some(join),
+        })
     }
 
     /// Spawn the monitor thread: position events ~10Hz, FFT ~20Hz, core events.
@@ -699,19 +830,21 @@ impl Engine {
         let bypass = plan.bypass;
 
         {
-            let mut core = self.core.lock().unwrap();
+            let core = self.core.lock().unwrap();
             if core.negotiated != neg {
+                let (cur_rate, cur_kind) = (core.negotiated.rate, core.negotiated.kind);
+                drop(core);
                 if !rebuild_ok {
                     bail!(
                         "incompatible format for seamless transition: \
                          track wants {}Hz/{:?}, stream is {}Hz/{:?}",
                         neg.rate,
                         neg.kind,
-                        core.negotiated.rate,
-                        core.negotiated.kind
+                        cur_rate,
+                        cur_kind
                     );
                 }
-                self.rebuild_stream_locked(&mut core, &neg)?;
+                self.rebuild_stream(&neg)?;
             }
         }
 
@@ -796,22 +929,34 @@ impl Engine {
         Some(feed)
     }
 
-    /// Swap the output stream for a new negotiated format. Must be called
-    /// with `core` locked. Pipelines are NOT preserved across a rate/format
-    /// change — callers respawn them (see respawn_pipelines).
-    fn rebuild_stream_locked(
-        &self,
-        core: &mut OutputCore,
-        neg: &Negotiated,
-    ) -> Result<()> {
-        core.clear_all();
-        let new_sink = crate::sink::open_sink(
-            &self.cfg,
-            Arc::clone(&self.caps.lock().unwrap()),
-            neg,
-            &self.core,
-        )?;
-        core.negotiated = neg.clone();
+    /// Swap the output stream for a new negotiated format. Serialized via
+    /// `stream_mu`. The old sink is taken out and stopped/dropped WITHOUT
+    /// holding `core` — dropping a CpalSink joins its audio thread, which
+    /// blocks on `core`, so joining it while holding the core mutex
+    /// deadlocks. The new stream is likewise opened without holding `core`
+    /// so the RT callback never finds the mutex held across a device open.
+    /// Pipelines are NOT preserved across a rate/format change — callers
+    /// respawn them (see respawn_pipelines).
+    fn rebuild_stream(&self, neg: &Negotiated) -> Result<()> {
+        let _serial = self.stream_mu.lock().unwrap();
+        // Another rebuild may have landed while we waited on the lock.
+        if self.core.lock().unwrap().negotiated == *neg {
+            return Ok(());
+        }
+        if self.monitor_stop.load(Ordering::Acquire) {
+            bail!("engine is shutting down");
+        }
+        let old = self.sink.lock().unwrap().take();
+        if let Some(mut old) = old {
+            old.stop();
+        }
+        {
+            let mut core = self.core.lock().unwrap();
+            core.clear_all();
+            core.negotiated = neg.clone();
+        }
+        let caps = Arc::clone(&self.caps.lock().unwrap());
+        let new_sink = crate::sink::open_sink(&self.cfg, caps, neg, &self.core)?;
         *self.sink.lock().unwrap() = Some(new_sink);
         Ok(())
     }
@@ -835,10 +980,7 @@ impl Engine {
                 device_name: caps.name(),
             }
         };
-        {
-            let mut core = self.core.lock().unwrap();
-            self.rebuild_stream_locked(&mut core, &neg)?;
-        }
+        self.rebuild_stream(&neg)?;
         self.respawn_pipelines();
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -982,7 +1124,17 @@ impl Engine {
         Ok(result)
     }
 
-    pub fn prefetch(&self, queue_id: &str, path: &str, rg_db: Option<f64>) -> Result<Value> {
+    /// Prefetch a successor under the current lease generation — a stale
+    /// generation is rejected like every other generation-gated command, so
+    /// a skip can never install the wrong track.
+    pub fn prefetch(
+        &self,
+        queue_id: &str,
+        path: &str,
+        generation: u64,
+        rg_db: Option<f64>,
+    ) -> Result<Value> {
+        self.check_gen(generation)?;
         let src = SourceSpec::File { path: PathBuf::from(path) };
         // If the successor negotiates a different stream format (strict
         // fidelity + a native format the stream can't take), it cannot
@@ -1131,7 +1283,10 @@ impl Engine {
                 if abort {
                     f.abort();
                 } else {
-                    f.push(data);
+                    // May block up to Feed::PUSH_TIMEOUT when the stream is
+                    // full — that delay + a possible error IS the
+                    // backpressure signal to the RPC caller.
+                    f.push(data)?;
                     if is_final {
                         f.close();
                     }
@@ -1406,15 +1561,17 @@ impl Engine {
 
     pub fn shutdown(&self) {
         self.monitor_stop.store(true, Ordering::Release);
+        // Serialize with any in-flight rebuild so a new sink can't be
+        // installed after this point.
+        let _serial = self.stream_mu.lock().unwrap();
+        // Stop the sink first so no more samples land on the dump tap.
+        if let Some(mut s) = self.sink.lock().unwrap().take() {
+            s.stop();
+        }
         let mut core = self.core.lock().unwrap();
         core.clear_all();
         if let Some(d) = core.dump.as_mut() {
-            use std::io::Write;
-            let _ = d.flush();
-        }
-        drop(core);
-        if let Some(mut s) = self.sink.lock().unwrap().take() {
-            s.stop();
+            d.stop(); // joins the writer thread; its BufWriter flushes on exit
         }
     }
 }
@@ -1718,4 +1875,68 @@ fn pcm_bytes_len(n_samples: usize, depth: BitDepth) -> usize {
         _ => 2,
     };
     n_samples * bps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_feed() -> Arc<Feed> {
+        Arc::new(Feed {
+            buf: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    /// A push into a full feed must block (real backpressure) and then error
+    /// after the deadline instead of growing memory without bound.
+    #[test]
+    fn feed_push_blocks_then_errors_when_full() {
+        let feed = make_feed();
+        feed.push(&vec![0u8; Feed::CAP]).unwrap(); // fills to CAP exactly
+        let t0 = std::time::Instant::now();
+        let err = feed.push(&[1u8; 16]).unwrap_err();
+        assert!(format!("{err:#}").contains("feed full"), "{err:#}");
+        let el = t0.elapsed();
+        assert!(
+            el >= std::time::Duration::from_millis(400),
+            "push returned too early ({el:?}): no backpressure"
+        );
+        assert!(el < std::time::Duration::from_secs(5));
+    }
+
+    /// A blocked push must be interruptible by abort (and close).
+    #[test]
+    fn feed_push_unblocks_on_abort() {
+        let feed = make_feed();
+        feed.push(&vec![0u8; Feed::CAP]).unwrap();
+        let f2 = Arc::clone(&feed);
+        let t0 = std::time::Instant::now();
+        let t = std::thread::spawn(move || f2.push(&[1u8; 16]));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        feed.abort();
+        let err = t.join().unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("closed"), "{err:#}");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(450),
+            "abort did not interrupt the push wait"
+        );
+    }
+
+    /// Once the reader drains, a waiting push completes.
+    #[test]
+    fn feed_push_succeeds_after_drain() {
+        let feed = make_feed();
+        feed.push(&vec![7u8; Feed::CAP]).unwrap();
+        let f2 = Arc::clone(&feed);
+        let t = std::thread::spawn(move || f2.push(&vec![9u8; Feed::CAP / 4]));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut out = vec![0u8; Feed::CAP];
+        let n = feed.read(&mut out);
+        assert_eq!(n, Feed::CAP, "expected a full drain");
+        t.join().unwrap().unwrap();
+        assert_eq!(feed.read(&mut out), Feed::CAP / 4);
+        assert!(out[..8].iter().all(|b| *b == 9));
+    }
 }

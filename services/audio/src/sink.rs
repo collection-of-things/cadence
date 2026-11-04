@@ -119,6 +119,10 @@ impl NullSink {
                 while !stop2.load(Ordering::Relaxed) {
                     let t0 = std::time::Instant::now();
                     {
+                        // Test driver, not a real-time thread: a blocking
+                        // lock keeps rendered output deterministic. This is
+                        // deadlock-safe because control threads never hold
+                        // `core` across sink stop/join (see Engine::rebuild_stream).
                         let mut c = core.lock().unwrap();
                         match neg.kind {
                             PcmKind::F32 => c.pull_f32(&mut buf_f),
@@ -147,6 +151,14 @@ impl Sink for NullSink {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+    }
+}
+
+// Dropping a live NullSink must stop + join its pull thread; a bare drop
+// would detach it and leave a zombie pulling samples forever.
+impl Drop for NullSink {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -269,13 +281,22 @@ impl DeviceCaps for CpalCaps {
         let err_cb = move |e: cpal::StreamError| {
             *err_flag.lock().unwrap() = Some(e.to_string());
         };
+        // The callback runs on the device's real-time thread: it must never
+        // block on the core mutex. try_lock + silent fallback bounds the wait
+        // to the lock attempt itself; a contended frame renders as silence
+        // rather than risking an xrun (or worse, a priority inversion while a
+        // control thread holds `core` across a device open).
         let stream = match neg.kind {
             PcmKind::F32 => {
                 let c = Arc::clone(&core);
                 self.device.build_output_stream::<f32, _, _>(
                     &config,
-                    move |data: &mut [f32], _| {
-                        c.lock().unwrap().pull_f32(data);
+                    move |data: &mut [f32], _| match c.try_lock() {
+                        Ok(mut core) => core.pull_f32(data),
+                        Err(std::sync::TryLockError::Poisoned(p)) => {
+                            p.into_inner().pull_f32(data)
+                        }
+                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0.0),
                     },
                     err_cb,
                     None,
@@ -285,8 +306,12 @@ impl DeviceCaps for CpalCaps {
                 let c = Arc::clone(&core);
                 self.device.build_output_stream::<i32, _, _>(
                     &config,
-                    move |data: &mut [i32], _| {
-                        c.lock().unwrap().pull_s32(data);
+                    move |data: &mut [i32], _| match c.try_lock() {
+                        Ok(mut core) => core.pull_s32(data),
+                        Err(std::sync::TryLockError::Poisoned(p)) => {
+                            p.into_inner().pull_s32(data)
+                        }
+                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0),
                     },
                     err_cb,
                     None,
