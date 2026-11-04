@@ -107,8 +107,13 @@ export class LibraryService {
    */
   async scan(paths?: string[]): Promise<void> {
     const targets = paths ?? this.roots();
-    this.scanChain = this.scanChain.then(() => this.runScan(targets));
-    return this.scanChain;
+    const p = this.scanChain.then(() => this.runScan(targets));
+    // The caller sees the failure; the chain recovers so later scans still run.
+    this.scanChain = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    return p;
   }
 
   /** Track search/list (FTS5 text + field filters). */
