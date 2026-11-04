@@ -1,0 +1,15 @@
+{
+  "name": "cadence",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cadence — an open-source desktop music player. Electron + React + Rust audio.",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "dev": "pnpm --filter @cadence/desktop dev",
+    "verify": "bash scripts/verify.sh"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-ssr/
+target/
+*.local
+.DS_Store
+*.log
+coverage/
+.electron-cache/
+test/fixtures/generated/
