@@ -57,8 +57,9 @@ fn parse_bit_depth(v: &Value) -> Result<BitDepth> {
 }
 
 /// Run the stdio server loop until stdin closes or audio.shutdown arrives.
-pub fn run_stdio(engine: Arc<Engine>) -> i32 {
-    let emit = stdout_emitter();
+/// `emit` must be the same emitter the engine uses, so responses and events
+/// share one stdout lock and lines can never interleave.
+pub fn run_stdio(engine: Arc<Engine>, emit: Arc<dyn Fn(Value) + Send + Sync>) -> i32 {
     let stdin = std::io::stdin();
     let mut code = 0;
     for line in stdin.lock().lines() {
@@ -79,6 +80,7 @@ pub fn run_stdio(engine: Arc<Engine>) -> i32 {
         let params = msg.get("params").cloned().unwrap_or(json!({}));
 
         match dispatch(&engine, method, &params) {
+
             Ok(result) => {
                 if !id.is_null() {
                     emit(respond(&id, result));

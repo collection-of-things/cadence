@@ -201,14 +201,15 @@ fn serve(cli: Cli) -> Result<i32> {
         }
     };
 
+    let emit = rpc::stdout_emitter();
     let engine = Engine::new(
         cfg,
-        rpc::stdout_emitter(),
+        Arc::clone(&emit),
         sink_obj,
         caps,
         fft_cons,
         core,
     );
     engine.start_monitor();
-    Ok(rpc::run_stdio(engine))
+    Ok(rpc::run_stdio(engine, emit))
 }
