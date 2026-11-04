@@ -1425,8 +1425,15 @@ impl Engine {
                         started_duration_ms,
                         started_seek_offset_ms,
                     } => {
+                        // A concurrent load may have landed while this event
+                        // sat in the drain window — only adopt the promotion
+                        // if the ended track is still our current one.
                         let gen = {
                             let mut st = self.state.lock().unwrap();
+                            if st.queue_id.as_deref() != Some(ended_queue_id.as_str()) {
+                                eprintln!("monitor: dropped stale boundary {ended_queue_id}->{started_queue_id}");
+                                continue;
+                            }
                             st.queue_id = Some(started_queue_id.clone());
                             st.duration_ms = started_duration_ms;
                             let _ = started_seek_offset_ms;
@@ -1462,6 +1469,11 @@ impl Engine {
                     CoreEvent::Ended { queue_id } => {
                         let gen = {
                             let mut st = self.state.lock().unwrap();
+                            // Ignore an end for a track no longer current
+                            // (a concurrent load already replaced it).
+                            if st.queue_id.as_deref() != Some(queue_id.as_str()) {
+                                continue;
+                            }
                             st.queue_id = None;
                             st.generation
                         };

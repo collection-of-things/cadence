@@ -87,8 +87,9 @@ export class Coordinator {
   private promotionTimer: ReturnType<typeof setTimeout> | null = null;
   /** ended events already handled, keyed `${generation}:${queueId}`. */
   private handledEnded = new Set<string>();
-  /** queueId the engine self-promoted for the current lease (tail-race guard). */
+  /** queueId+generation the engine self-promoted (tail-race guard). */
   private promotedQueueId: string | null = null;
+  private promotedGenerationId = 0;
 
   constructor(deps: CoordinatorDeps) {
     this.registry = deps.registry;
@@ -367,7 +368,13 @@ export class Coordinator {
    * WITHOUT autoplay: the item is re-loaded paused at its last position and
    * playback only resumes on an explicit user command.
    */
-  async notifyEngineRestarted(route: RouteId): Promise<void> {
+  notifyEngineRestarted(route: RouteId): void {
+    // Route through the serialized chain — a startItem in flight must not
+    // see generation/lease mutated underneath it.
+    this.chain = this.chain.then(() => this.restoreAfterRestart(route));
+  }
+
+  private async restoreAfterRestart(route: RouteId): Promise<void> {
     const item = QueueOps.currentItem(this.queue);
     if (item === null || this.activeRouteValue !== route) return;
     this.generation += 1;
@@ -502,12 +509,14 @@ export class Coordinator {
       }
     }
 
-    // Tail of the promotion race: the engine may have started this exact
-    // track itself after our 600ms fallback already enqueued. Re-pointing is
-    // enough — a play call here would restart a track already sounding.
+    // Tail of the promotion race: skip play only when this queueId was
+    // engine-promoted AND has not ended since. Once an `ended` for it is on
+    // record the promotion is spent — repeat-one replays and user
+    // prev/next/"play this again" must issue a real play.
     const alreadyPromoted =
       this.promotedQueueId === item.queueId &&
-      adapter === this.activeAdapter;
+      adapter === this.activeAdapter &&
+      !this.handledEnded.has(`${this.promotedGenerationId}:${item.queueId}`);
     // The incoming route is ready and the outgoing one silent — commit the
     // lease only now, so a failed prepare above left the old route intact.
     this.handledEnded.clear();
@@ -726,11 +735,16 @@ export class Coordinator {
         // ourselves — a redundant load here would restart a track already
         // playing, which is exactly the seam the engine exists to remove.
         if (this.pendingPrefetch !== null) {
-          const fallbackIdx = idx;
+          // Capture the queueId, resolve to an index at fire time — a queue
+          // mutation inside the window must not start whatever item happens
+          // to sit at the stale index.
+          const fallbackQueueId = this.queue.items[idx]?.queueId;
           this.promotionTimer = setTimeout(() => {
             this.promotionTimer = null;
             if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
-            this.enqueueStart(fallbackIdx);
+            if (fallbackQueueId === undefined) return;
+            const nowIdx = this.queue.items.findIndex((it) => it.queueId === fallbackQueueId);
+            if (nowIdx >= 0) this.enqueueStart(nowIdx);
           }, 600);
           return;
         }
@@ -795,6 +809,7 @@ export class Coordinator {
     if (this.lease === null || item === undefined) return;
     this.promotedQueueId = item.queueId;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
+    this.promotedGenerationId = this.lease.generationId;
     if (this.queue.currentIndex !== idx) {
       this.queue = { ...this.queue, currentIndex: idx };
       this.emitQueue();

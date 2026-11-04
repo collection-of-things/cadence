@@ -309,7 +309,9 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
           if (this.fifoReader === rs) rs.resume();
         })
         .catch(() => {
-          /* stream closed; stop() tears down */
+          // A transient feed-full timeout must not pause the reader
+          // permanently — resume unless the stream is gone.
+          if (this.fifoReader === rs && this.stream === stream) rs.resume();
         });
     });
     rs.on("error", () => this.error("librespot fifo read failed", true));

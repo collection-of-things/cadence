@@ -103,8 +103,23 @@ struct FfprobeFormat {
 }
 
 /// ffprobe a media file and return stream info for the first audio stream.
+
+/// Resolve a decoder tool binary: prefer the sibling of our executable
+/// (packaged layout), fall back to PATH (dev/system install).
+fn tool_bin(name: &str) -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    name.to_string()
+}
+
 pub fn probe_file(path: &Path) -> Result<AudioInfo> {
-    let out = Command::new("ffprobe")
+    let out = Command::new(tool_bin("ffprobe"))
         .args([
             "-v",
             "error",
@@ -250,7 +265,7 @@ impl Decoder for FfmpegDecoder {
     }
 
     fn open(&self, req: &DecodeRequest) -> Result<DecodeStream> {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = Command::new(tool_bin("ffmpeg"));
         cmd.args(["-v", "error", "-nostdin", "-hide_banner"]);
         if req.seek_ms > 0 {
             cmd.args(["-ss", &format!("{:.3}", req.seek_ms as f64 / 1000.0)]);

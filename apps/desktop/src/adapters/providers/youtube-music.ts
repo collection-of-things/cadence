@@ -205,13 +205,14 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     }
   }
 
-  /** Sign-in flow: reveal the view FIRST — a slow load or consent wall must
-   * not gate the window where the user authenticates. */
+  /** Sign-in flow: prepare the view, then always reveal — even a failed
+   * controller install leaves the window for the user to authenticate in. */
   async signIn(): Promise<void> {
-    this.session.reveal();
-    await this.prepare().catch(() => {
-      /* controller install is best-effort at sign-in time */
-    });
+    try {
+      await this.prepare();
+    } finally {
+      this.session.reveal();
+    }
   }
 
   private onPageEvent(name: string, data: unknown): void {

@@ -18,6 +18,7 @@ function gainLabel(db: number): string {
 
 function EqSection() {
   const [gains, setGains] = useState<number[]>(() => EQ_FREQS.map(() => 0));
+  const eqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaseRoute = useUi((s) => s.snapshot.lease?.route);
   const trackRoute = useUi((s) => s.snapshot.current?.track.route);
   const bypass = useUi((s) => s.snapshot.output?.fidelityBypass ?? false);
@@ -37,7 +38,12 @@ function EqSection() {
 
   const apply = (next: number[]) => {
     setGains(next);
-    session.setEq(next.map((gainDb, i) => ({ freqHz: EQ_FREQS[i]!, gainDb })));
+    // Slider ticks fire per-move; the engine rebuilds the pipeline per
+    // setEq, so coalesce drags into one send.
+    if (eqTimer.current !== null) clearTimeout(eqTimer.current);
+    eqTimer.current = setTimeout(() => {
+      session.setEq(next.map((gainDb, i) => ({ freqHz: EQ_FREQS[i]!, gainDb })));
+    }, 150);
   };
 
   return (
@@ -84,20 +90,28 @@ function EqSection() {
 }
 
 function FidelitySection() {
-  const bypass = useUi((s) => s.snapshot.output?.fidelityBypass ?? false);
+  // The switch reflects the user's setting; the sub-line reports what the
+  // engine actually negotiated — two honest, different things.
+  const enabled = useUi((s) => s.snapshot.fidelityMode ?? false);
+  const bypassed = useUi((s) => s.snapshot.output?.fidelityBypass ?? false);
+  const sub = enabled
+    ? bypassed
+      ? 'Active: bypassing EQ and resampling at the source rate.'
+      : 'On — bypass applies when the device accepts the source format.'
+    : 'Bypasses EQ and resampling when the device accepts the source format.';
   return (
     <section className="set-sec" aria-label="Fidelity mode">
       <div className="set-row">
         <div className="set-txt">
           <span className="set-label">Fidelity mode</span>
-          <span className="set-sub">Bypasses EQ and resampling when the device accepts the source format.</span>
+          <span className="set-sub">{sub}</span>
         </div>
         <input
           type="checkbox"
           role="switch"
           className="switch"
           aria-label="Fidelity mode"
-          checked={bypass}
+          checked={enabled}
           onChange={(e) => session.setFidelityMode(e.currentTarget.checked)}
         />
       </div>

@@ -8,3 +8,7 @@ target/
 coverage/
 .electron-cache/
 test/fixtures/generated/
+
+# packaging staging + output
+services/audio/bin/
+apps/desktop/release/

@@ -12,7 +12,7 @@
     "start": "electron .",
     "electron:ecs": "pnpm pkg set devDependencies.electron=github:castlabs/electron-releases#v44.10.0+wvcus && pnpm install",
     "dist": "pnpm build && bash ../../scripts/package-assets.sh && electron-builder --config electron-builder.yml",
-    "dist:dir": "pnpm build && electron-builder --dir --config electron-builder.yml",
+    "dist:dir": "pnpm build && bash ../../scripts/package-assets.sh && electron-builder --dir --config electron-builder.yml",
     "package:assets": "bash ../../scripts/package-assets.sh"
   },
   "dependencies": {

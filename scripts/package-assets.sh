@@ -25,3 +25,14 @@ exe="cadence-audio"
 mkdir -p "services/audio/bin/${triple}"
 cp "services/audio/target/release/${exe}" "services/audio/bin/${triple}/${exe}"
 echo "staged services/audio/bin/${triple}/${exe}"
+
+# ffmpeg/ffprobe must ship beside the binary — the decoder shells out to
+# them and packaged machines may not have them on PATH.
+for tool in ffmpeg ffprobe; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    cp "$(command -v "$tool")" "services/audio/bin/${triple}/"
+    echo "staged ${tool}"
+  else
+    echo "WARN: ${tool} not found on PATH — packaged app needs it beside ${exe}" >&2
+  fi
+done

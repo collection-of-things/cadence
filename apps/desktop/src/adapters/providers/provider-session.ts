@@ -91,8 +91,17 @@ export class ProviderSession {
         return { action: "allow", overrideBrowserWindowOptions: { show: true } };
       });
 
-      await win.loadURL(this.opts.url);
+      // Assign before loadURL: reveal() and eval() see the window even while
+      // the page is still loading (or the load fails).
       this.win = win;
+      try {
+        await win.loadURL(this.opts.url);
+      } catch (e) {
+        // Don't leak the failed hidden window — destroy so a retry starts clean.
+        this.win = null;
+        if (!win.isDestroyed()) win.destroy();
+        throw e;
+      }
     })();
 
     try {
