@@ -34,8 +34,15 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   private lastLoadGeneration = 0;
   private lastLoadedQueueId: string | null = null;
   /** queueIds this adapter loaded or prefetched — engine events for other
-   * queueIds (e.g. a librespot pcm-stream sharing the graph) are ignored. */
+   * queueIds (e.g. a librespot pcm-stream sharing the graph) are ignored.
+   * Bounded: a session-long queue stays under a few hundred entries. */
   private knownQueueIds = new Set<string>();
+  private rememberQueueId(id: string): void {
+    this.knownQueueIds.add(id);
+    if (this.knownQueueIds.size > 512) {
+      this.knownQueueIds.delete(this.knownQueueIds.values().next().value!);
+    }
+  }
   private fidelityMode = false;
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
@@ -98,7 +105,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     const source = fileSourceOf(item);
     this.lastLoadGeneration = lease.generationId;
     this.lastLoadedQueueId = item.queueId;
-    this.knownQueueIds.add(item.queueId);
+    this.rememberQueueId(item.queueId);
     const params: Parameters<AudioServiceClient["load"]>[0] = {
       queueId: item.queueId,
       generationId: lease.generationId,
@@ -149,7 +156,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   /** Prefetch a successor file for the gapless boundary. */
   async prefetch(item: QueueItem): Promise<void> {
     if (item.track.source.kind !== "file") return;
-    this.knownQueueIds.add(item.queueId);
+    this.rememberQueueId(item.queueId);
     const params: Parameters<AudioServiceClient["prefetch"]>[0] = {
       queueId: item.queueId,
       path: item.track.source.path,
@@ -169,7 +176,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   /** Reload the item paused at a position after an engine restart. No autoplay. */
   async restoreAfterEngineRestart(item: QueueItem, positionMs: number): Promise<void> {
     const source = fileSourceOf(item);
-    this.knownQueueIds.add(item.queueId);
+    this.rememberQueueId(item.queueId);
     await this.client.load({
       queueId: item.queueId,
       generationId: this.lastLoadGeneration,

@@ -48,7 +48,7 @@ export function parsePersistedPlayback(u: unknown): PersistedPlayback | null {
   if (typeof p.volumeByRoute === "object" && p.volumeByRoute !== null) {
     for (const [route, vol] of Object.entries(p.volumeByRoute as Record<string, unknown>)) {
       if (ROUTES.has(route) && typeof vol === "number" && Number.isFinite(vol)) {
-        volumeByRoute[route as RouteId] = Math.min(Math.max(vol, 0), 1);
+        volumeByRoute[route as RouteId] = Math.min(Math.max(vol, 0), 1.5);
       }
     }
   }

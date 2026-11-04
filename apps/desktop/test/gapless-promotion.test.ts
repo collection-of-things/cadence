@@ -82,6 +82,31 @@ describe("gapless promotion", () => {
     coordinator.dispose();
   });
 
+  it("repeat-one replays a promoted track with a real play (no desync)", async () => {
+    const { coordinator, local } = rig();
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await flush();
+    const q2 = coordinator.getQueue().items[1]!.queueId;
+    // Engine promotes b; then b ends under repeat-one.
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, queueId: "a", gapless: true });
+    local.emitAdapterEvent({ kind: "started", generationId: 1, queueId: q2, promoted: true });
+    await flush();
+    await coordinator.handleCommand({ kind: "setRepeat", repeat: "one" });
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, queueId: q2, gapless: false });
+    await new Promise((r) => setTimeout(r, 50));
+    // The promotion is spent — repeat-one must issue a REAL play on a new
+    // generation, not adopt a dead lease.
+    expect(local.playedItems.length).toBe(2);
+    expect(local.playedItems[1]!.queueId).toBe(q2);
+    expect(local.playedItems[1]!.generationId).toBe(2);
+    coordinator.dispose();
+  });
+
   it("promotes after a format-mismatch reopen (started, gapless flag false)", async () => {
     const { coordinator, local } = rig();
     await coordinator.handleCommand({

@@ -446,6 +446,31 @@ export class Coordinator {
     this.pendingPrefetch = null;
     const route = opts.routeOverride ?? item.track.route;
     const adapter = this.registry.get(route);
+
+    // Tail of the promotion race: the engine may already be playing this
+    // exact track under the current lease. Adopt that lease — minting a new
+    // generation here would desync event stamping and gated commands.
+    // The guard is spent once an `ended` for the promoted item is on record,
+    // so repeat-one replays and manual re-plays still issue a real play.
+    if (
+      adapter !== undefined &&
+      this.promotedQueueId === item.queueId &&
+      adapter === this.activeAdapter &&
+      !this.handledEnded.has(`${this.promotedGenerationId}:${item.queueId}`)
+    ) {
+      if (this.queue.currentIndex !== index) {
+        this.queue = { ...this.queue, currentIndex: index };
+        this.emitQueue();
+      }
+      this.status = "playing";
+      this.lastError = undefined;
+      this.durationMs = item.track.durationMs;
+      this.emitSnapshot();
+      this.persistSoon();
+      this.refreshPrefetch();
+      return;
+    }
+
     this.generation += 1;
     const lease: PlaybackLease = {
       generationId: this.generation,
@@ -509,26 +534,10 @@ export class Coordinator {
       }
     }
 
-    // Tail of the promotion race: skip play only when this queueId was
-    // engine-promoted AND has not ended since. Once an `ended` for it is on
-    // record the promotion is spent — repeat-one replays and user
-    // prev/next/"play this again" must issue a real play.
-    const alreadyPromoted =
-      this.promotedQueueId === item.queueId &&
-      adapter === this.activeAdapter &&
-      !this.handledEnded.has(`${this.promotedGenerationId}:${item.queueId}`);
     // The incoming route is ready and the outgoing one silent — commit the
     // lease only now, so a failed prepare above left the old route intact.
     this.handledEnded.clear();
     this.lease = lease;
-    if (alreadyPromoted) {
-      this.status = "playing";
-      this.lastError = undefined;
-      this.emitSnapshot();
-      this.persistSoon();
-      this.refreshPrefetch();
-      return;
-    }
     this.promotedQueueId = null;
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
@@ -580,7 +589,7 @@ export class Coordinator {
   /** Queue changed — an installed engine prefetch may now be stale. Re-issue
    * for the actual successor (the engine overwrites its `next` slot). */
   private refreshPrefetch(): void {
-    if (this.status !== "playing" || this.activeAdapter?.prefetch === undefined) return;
+    if (this.activeAdapter?.prefetch === undefined || this.lease === null) return;
     this.pendingPrefetch = null;
     void this.prefetchSuccessor(this.activeAdapter);
   }
@@ -748,7 +757,14 @@ export class Coordinator {
           }, 600);
           return;
         }
-        this.enqueueStart(idx);
+        {
+          const nextQueueId = this.queue.items[idx]?.queueId;
+          if (nextQueueId === undefined) return;
+          this.chain = this.chain.then(() => {
+            const nowIdx = this.queue.items.findIndex((it) => it.queueId === nextQueueId);
+            return nowIdx >= 0 ? this.startItem(nowIdx, {}) : Promise.resolve();
+          });
+        }
         return;
       }
       case "queueChanged": {

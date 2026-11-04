@@ -12,11 +12,11 @@ pnpm --filter @cadence/ui build
 echo "== build cadence-audio =="
 cargo build --release --manifest-path services/audio/Cargo.toml
 
-triple="$(python3 -c 'import platform,sys; m=platform.machine(); print({"x86_64":"x64","aarch64":"arm64"}.get(m,m)+"-"+sys.platform)' 2>/dev/null || echo "linux-x64")"
+# Layout MUST match resolveAudioBinary: resources/audio/{platform}-{arch}/
 case "$(uname -s)" in
-  Darwin) triple="$(uname -m | sed 's/x86_64/x64/;s/arm64/arm64/')-darwin" ;;
-  MINGW*|MSYS*|CYGWIN*) triple="x64-win32" ;;
-  *) triple="$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')-linux" ;;
+  Darwin) triple="darwin-$(uname -m | sed 's/x86_64/x64/;s/arm64/arm64/')" ;;
+  MINGW*|MSYS*|CYGWIN*) triple="win32-x64" ;;
+  *) triple="linux-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')" ;;
 esac
 
 exe="cadence-audio"

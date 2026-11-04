@@ -263,7 +263,8 @@ describe("coordinator: engine restart", () => {
     rigs.push({ ...r, coordinator });
     await coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a")], startIndex: 0 });
     await coordinator.handleCommand({ kind: "seek", positionMs: 12_000 });
-    await coordinator.notifyEngineRestarted("local");
+    coordinator.notifyEngineRestarted("local");
+    await new Promise((res) => setImmediate(res));
     expect(restorable.calls).toContain("restore");
     expect(coordinator.getSnapshot().status).toBe("paused");
     expect(coordinator.getQueue().items).toHaveLength(1);
