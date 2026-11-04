@@ -17,7 +17,7 @@ import { join } from "node:path";
 
 const BIN =
   process.argv[2] ??
-  join("services", "audio", "target", "debug", "cadence-audio");
+  join("target", "debug", "cadence-audio");
 const FX = join("test", "fixtures", "generated");
 
 const fixtures = [

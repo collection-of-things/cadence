@@ -1,0 +1,25 @@
+[package]
+name = "cadence-audio"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Cadence audio service: FFmpeg decode, PCM graph, CPAL output, JSON-RPC over stdio"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+cpal = "0.15"
+rubato = "0.16"
+rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[[bin]]
+name = "cadence-audio"
+path = "src/main.rs"
+
+[lib]
+name = "cadence_audio"
+path = "src/lib.rs"
