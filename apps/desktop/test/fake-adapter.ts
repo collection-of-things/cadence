@@ -104,7 +104,14 @@ export function fakeTrack(id: string, route: RouteId = "local"): TrackRef {
   return {
     id,
     route,
-    provider: route === "local" ? "local" : "spotify",
+    provider:
+      route === "local"
+        ? "local"
+        : route === "apple-musickit"
+          ? "apple"
+          : route === "youtube-music"
+            ? "youtube"
+            : "spotify",
     title: `Track ${id}`,
     artists: [{ name: "Test Artist" }],
     durationMs: 180_000,

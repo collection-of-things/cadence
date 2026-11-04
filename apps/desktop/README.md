@@ -41,8 +41,13 @@ missing.
 `electron` is pinned to **45.1.0** (stock) for dev/typecheck. Castlabs ECS is
 not on npm; for the DRM build swap the dependency spec one line:
 
+```bash
+pnpm electron:ecs   # one-line swap: devDependencies.electron -> the ECS git tag
+```
+
+which is equivalent to editing package.json to:
+
 ```jsonc
-// package.json (or a pnpm.overrides entry in the root package.json)
 "electron": "github:castlabs/electron-releases#v44.10.0+wvcus"
 ```
 

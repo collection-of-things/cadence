@@ -26,6 +26,7 @@ export interface IpcDeps {
 
 function assertOk<T>(r: { _tag: string; value?: T; error?: unknown }): T {
   if (r._tag !== "ok") throw r.error;
+  // SAFETY: r._tag === "ok" guarantees value is present (Result contract).
   return r.value as T;
 }
 

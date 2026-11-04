@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "pnpm build && electron .",
-    "start": "electron ."
+    "start": "electron .",
+    "electron:ecs": "pnpm pkg set devDependencies.electron=github:castlabs/electron-releases#v44.10.0+wvcus && pnpm install"
   },
   "dependencies": {
     "@cadence/protocol": "workspace:*",

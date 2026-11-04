@@ -149,9 +149,11 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     await this.client.prefetch(params);
   }
 
-  /** Release the service process (idle teardown; session state is ours anyway). */
+  /** Idle teardown: silence whatever generation is loaded, keep the service warm. */
   async releaseIdle(): Promise<void> {
-    if (this.lastLoadGeneration === 0) await this.client.dispose();
+    if (this.lastLoadGeneration !== 0) {
+      await this.client.stop(this.lastLoadGeneration).catch(() => undefined);
+    }
   }
 
   /** Reload the item paused at a position after an engine restart. No autoplay. */

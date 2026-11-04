@@ -499,8 +499,9 @@ export class Coordinator {
     const adapter = this.activeAdapter;
     const lease = this.lease;
     if (adapter === null || lease === null) return;
-    await this.guarded(() => adapter.pause(lease), "pause");
-    this.status = "paused";
+    if (await this.guarded(() => adapter.pause(lease), "pause")) {
+      this.status = "paused";
+    }
     this.emitSnapshot();
     this.persistSoon();
   }
@@ -509,20 +510,26 @@ export class Coordinator {
     const adapter = this.activeAdapter;
     const lease = this.lease;
     if (adapter === null || lease === null) return;
-    await this.guarded(() => adapter.resume(lease), "resume");
-    this.status = "playing";
+    if (await this.guarded(() => adapter.resume(lease), "resume")) {
+      this.status = "playing";
+    }
     this.emitSnapshot();
     this.persistSoon();
   }
 
-  /** Run an adapter call; failures are reported route-locally, never thrown. */
-  private async guarded(call: () => Promise<void>, op: string): Promise<void> {
+  /**
+   * Run an adapter call; failures are reported route-locally, never thrown.
+   * Returns false when the call failed so callers skip optimistic state.
+   */
+  private async guarded(call: () => Promise<void>, op: string): Promise<boolean> {
     const lease = this.lease;
     try {
       await call();
+      return true;
     } catch (cause) {
       const route = lease?.route ?? this.activeRoute ?? "local";
       this.emitError(route, lease?.queueId, `${op} failed: ${msg(cause)}`, true);
+      return false;
     }
   }
 
