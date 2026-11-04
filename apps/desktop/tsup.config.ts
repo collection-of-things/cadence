@@ -9,6 +9,7 @@ export default defineConfig({
   entry: {
     main: "src/main.ts",
     preload: "src/preload.ts",
+    "provider-preload": "src/adapters/providers/provider-preload.ts",
   },
   outDir: "dist",
   format: ["cjs"],

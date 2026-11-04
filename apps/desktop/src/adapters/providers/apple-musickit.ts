@@ -59,11 +59,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     return this.baseCapabilities({
       route: this.route,
       state: needsToken ? "unauthenticated" : this.authorized ? "ready" : "unauthenticated",
-      stateDetail: needsToken
-        ? "No Apple developer token endpoint configured."
+      ...(needsToken
+        ? { stateDetail: "No Apple developer token endpoint configured." }
         : this.authorized
-          ? undefined
-          : "Apple Music account not authorized in the embedded player.",
+          ? {}
+          : { stateDetail: "Apple Music account not authorized in the embedded player." }),
       playback: {
         engine: "provider-engine",
         canPlay: true,

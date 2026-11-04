@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
 import { makePlaceholderAdapter, providerRoutes } from "./adapters/placeholders.js";
+import { createProviderAdapters } from "./adapters/providers/index.js";
 import { AudioServiceClient } from "./audio/audio-client.js";
 import { resolveAudioBinary } from "./audio/binary-path.js";
 import { Coordinator } from "./coordinator/coordinator.js";
@@ -102,11 +103,32 @@ async function main(): Promise<void> {
 
   const registry = new AdapterRegistry();
   registry.register(localAdapter);
-  // Honest placeholders until the lead's providers land:
-  //   registry.register(new YouTubeMusicAdapter(...)) replaces the stub via
-  //   the same call — placeholders never shadow a real adapter.
-  const placeholderRoutes = providerRoutes();
-  for (const route of placeholderRoutes) registry.register(makePlaceholderAdapter(route));
+  // Real provider adapters (hidden ECS views + librespot PCM route).
+  const registered = new Set(["local"]);
+  for (const adapter of createProviderAdapters({
+    graph: audioClient,
+    apple: {
+      getDeveloperToken: async () => process.env.CADENCE_APPLE_DEVELOPER_TOKEN ?? null,
+    },
+    spotify: {
+      getCredentials: async () => {
+        const username = process.env.CADENCE_SPOTIFY_USERNAME;
+        const password = process.env.CADENCE_SPOTIFY_PASSWORD;
+        const accessToken = process.env.CADENCE_SPOTIFY_ACCESS_TOKEN;
+        if (accessToken) return { accessToken };
+        if (username) return { username, password: password ?? "" };
+        return null;
+      },
+      getAccessToken: async () => process.env.CADENCE_SPOTIFY_TOKEN ?? null,
+    },
+  })) {
+    registry.register(adapter);
+    registered.add(adapter.route);
+  }
+  // Honest placeholders only for routes a real adapter did not cover.
+  for (const route of providerRoutes()) {
+    if (!registered.has(route)) registry.register(makePlaceholderAdapter(route));
+  }
 
   const coordinator = new Coordinator({
     registry,
@@ -131,7 +153,19 @@ async function main(): Promise<void> {
     void library.scan();
   }
 
-  const unbindEvents = registerIpcHandlers({ coordinator, library, registry });
+  const unbindEvents = registerIpcHandlers({
+    coordinator,
+    library,
+    registry,
+    routeSignIn: async (route) => {
+      const adapter = registry.get(route);
+      if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
+      await adapter.signIn();
+    },
+    routeSignOut: async (route) => {
+      await registry.get(route)?.signOut?.();
+    },
+  });
   const unregisterKeys = registerMediaKeys(coordinator);
 
   app.on("activate", () => {

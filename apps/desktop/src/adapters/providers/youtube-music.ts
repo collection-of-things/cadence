@@ -61,12 +61,11 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
           ? "unauthenticated"
           : "ready"
         : "unauthenticated",
-      stateDetail:
-        signedIn === false
-          ? "Not signed in to YouTube Music — open the sign-in view."
-          : signedIn === null
-            ? "Sign-in state unknown until the player view loads."
-            : undefined,
+      ...(signedIn === false
+        ? { stateDetail: "Not signed in to YouTube Music — open the sign-in view." }
+        : signedIn === null
+          ? { stateDetail: "Sign-in state unknown until the player view loads." }
+          : {}),
       playback: {
         engine: "provider-engine",
         canPlay: true,

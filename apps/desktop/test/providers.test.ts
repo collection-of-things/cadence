@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { normalizeHit, bestThumb } from "./youtube-music-catalog.js";
-import { SpotifyLibrespotAdapter } from "./spotify-librespot.js";
+import { normalizeHit, bestThumb } from "../src/adapters/providers/youtube-music-catalog.js";
+import { SpotifyLibrespotAdapter, type LibrespotGraph } from "../src/adapters/providers/spotify-librespot.js";
+
+const graph: LibrespotGraph = {
+  openStream: async () => ({
+    streamId: "s1",
+    write: async () => {},
+    end: async () => {},
+    abort: async () => {},
+  }),
+  play: async () => {},
+  pause: async () => {},
+  stop: async () => {},
+  setVolume: async () => {},
+};
 
 describe("youtube-music-catalog normalizeHit", () => {
   it("maps an InnerTube song result to a hit", () => {
@@ -27,28 +40,28 @@ describe("youtube-music-catalog normalizeHit", () => {
 });
 
 describe("spotify-librespot capabilities", () => {
-  const sink = {
-    openStream: async () => {},
-    control: async () => {},
-  };
-
   it("reports unavailable when binary is missing", async () => {
-    const a = new SpotifyLibrespotAdapter({ sink, binaryPath: "/nonexistent/librespot" });
+    const a = new SpotifyLibrespotAdapter({ graph, binaryPath: "/nonexistent/librespot" });
     const caps = await a.capabilities();
     expect(caps.route).toBe("spotify-librespot");
     expect(caps.state).toBe("unavailable");
-    expect(caps.audio.pcmAccess).toBe("unknown");
+    expect(caps.playback.engine).toBe("none");
     expect(caps.notes.length).toBeGreaterThan(0);
   });
 
   it("reports unauthenticated when binary exists but no credentials", async () => {
     const a = new SpotifyLibrespotAdapter({
-      sink,
-      binaryPath: "librespot", // PATH name allowed through binary()
+      graph,
+      binaryPath: "librespot",
       getCredentials: async () => null,
     });
     const caps = await a.capabilities();
-    expect(["unauthenticated", "ready", "degraded"]).toContain(caps.state);
-    expect(caps.audio.pcmAccess).toBe("yes"); // binary reachable via PATH
+    if (process.platform === "win32") {
+      expect(caps.state).toBe("unavailable");
+    } else {
+      expect(caps.state).toBe("unauthenticated");
+      expect(caps.audio.pcmAccess).toBe("yes"); // binary resolvable via PATH
+      expect(caps.visuals.kind).toBe("pcm-fft");
+    }
   });
 });

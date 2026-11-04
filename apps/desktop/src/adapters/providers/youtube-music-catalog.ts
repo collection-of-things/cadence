@@ -113,16 +113,18 @@ export function normalizeHit(raw: unknown): YtmSearchHit | null {
     typeof r.duration === "number" ? r.duration : r.duration?.seconds;
   return {
     videoId,
-    title: title ?? undefined,
-    artists: byline
-      ? byline
-          .split("•")[0]!
-          .split(",")
-          .map((name) => ({ name: name.trim() }))
-          .filter((a) => a.name.length > 0)
-      : undefined,
-    durationMs: durationS ? durationS * 1000 : undefined,
-    thumbnails: r.thumbnails,
+    ...(title ? { title } : {}),
+    ...(byline
+      ? {
+          artists: byline
+            .split("•")[0]!
+            .split(",")
+            .map((name) => ({ name: name.trim() }))
+            .filter((a) => a.name.length > 0),
+        }
+      : {}),
+    ...(durationS ? { durationMs: durationS * 1000 } : {}),
+    ...(r.thumbnails ? { thumbnails: r.thumbnails } : {}),
   };
 }
 

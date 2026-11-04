@@ -12,20 +12,25 @@ export { AppleMusicKitAdapter, type AppleMusicAdapterDeps } from "./apple-musick
 export {
   SpotifyLibrespotAdapter,
   type LibrespotAdapterDeps,
-  type PcmStreamSink,
+  type LibrespotGraph,
+  type PcmStreamLike,
 } from "./spotify-librespot.js";
 export { SpotifyWebAdapter } from "./spotify-web.js";
 
 import type { RouteAdapter } from "@cadence/protocol";
 import { YouTubeMusicAdapter } from "./youtube-music.js";
 import { AppleMusicKitAdapter, type AppleMusicAdapterDeps } from "./apple-musickit.js";
-import { SpotifyLibrespotAdapter, type PcmStreamSink } from "./spotify-librespot.js";
+import { SpotifyLibrespotAdapter, type LibrespotGraph } from "./spotify-librespot.js";
 import { SpotifyWebAdapter } from "./spotify-web.js";
 
 export interface ProviderAdaptersDeps {
   /** PCM sink into the shared audio graph (for the librespot route). */
-  pcmSink: PcmStreamSink;
+  graph: LibrespotGraph;
   apple?: AppleMusicAdapterDeps;
+  spotify?: Pick<
+    import("./spotify-librespot.js").LibrespotAdapterDeps,
+    "binaryPath" | "getCredentials" | "getAccessToken"
+  >;
 }
 
 /** Construct all provider route adapters. Register on the adapter registry. */
@@ -33,7 +38,7 @@ export function createProviderAdapters(deps: ProviderAdaptersDeps): RouteAdapter
   return [
     new YouTubeMusicAdapter(),
     new AppleMusicKitAdapter(deps.apple ?? {}),
-    new SpotifyLibrespotAdapter({ sink: deps.pcmSink }),
+    new SpotifyLibrespotAdapter({ graph: deps.graph, ...(deps.spotify ?? {}) }),
     new SpotifyWebAdapter(),
   ];
 }
