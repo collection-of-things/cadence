@@ -67,6 +67,32 @@ describe('MockCadenceApi', () => {
     expect(q2.items.find((i) => i.queueId === 'new-1')).toBeDefined();
   });
 
+  it('audio surface: setEq stores band shape, devices list and switch', async () => {
+    api = new MockCadenceApi();
+    const bands = [
+      { freqHz: 60, gainDb: 3 },
+      { freqHz: 1000, gainDb: -2.5 },
+    ];
+    await api.audio.setEq(bands);
+    expect(api.eqBands).toEqual(bands);
+    expect(api.eqBands).not.toBe(bands); // cloned, not aliased
+
+    const devices = await api.audio.listDevices();
+    expect(devices.length).toBeGreaterThanOrEqual(2);
+    expect(devices.some((d) => d.isDefault)).toBe(true);
+
+    const events: CoordinatorEvent[] = [];
+    api.onEvent((e) => events.push(e));
+    await api.audio.setDevice(devices[1]!.name);
+    const snap = await api.getSnapshot();
+    expect(snap.output?.deviceName).toBe(devices[1]!.name);
+    expect(events.some((e) => e.kind === 'output' && e.output.deviceName === devices[1]!.name)).toBe(true);
+
+    await api.audio.setDevice(null);
+    const back = await api.getSnapshot();
+    expect(back.output?.deviceName).toBe(devices.find((d) => d.isDefault)!.name);
+  });
+
   it('library search filters by text and returns albums/artists', async () => {
     api = new MockCadenceApi();
     const all = await api.library.tracks({});

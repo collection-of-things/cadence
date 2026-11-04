@@ -245,6 +245,44 @@ describe('commands', () => {
     expect(fake.sent.at(-1)).toEqual({ kind: 'setRepeat', repeat: 'one' });
   });
 
+  it('setFidelityMode sends the fidelity command', () => {
+    session.setFidelityMode(true);
+    expect(fake.sent.at(-1)).toEqual({ kind: 'setFidelityMode', enabled: true });
+    session.setFidelityMode(false);
+    expect(fake.sent.at(-1)).toEqual({ kind: 'setFidelityMode', enabled: false });
+  });
+
+  it('setEq forwards the band shape to api.audio; devices round-trip', async () => {
+    const calls: { freqHz: number; gainDb: number }[][] = [];
+    const devices = [{ name: 'DAC', isDefault: true }];
+    const picked: (string | null)[] = [];
+    fake.api.audio = {
+      setEq: async (b) => {
+        calls.push(b);
+      },
+      listDevices: async () => devices,
+      setDevice: async (n) => {
+        picked.push(n);
+      },
+    };
+    const bands = [
+      { freqHz: 60, gainDb: 3 },
+      { freqHz: 2400, gainDb: -1.5 },
+      { freqHz: 15000, gainDb: 0 },
+    ];
+    session.setEq(bands);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual([bands]);
+    session.setEq([]); // Flat
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls[1]).toEqual([]);
+    expect(await session.listDevices()).toEqual(devices);
+    session.setDevice('DAC');
+    session.setDevice(null);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(picked).toEqual(['DAC', null]);
+  });
+
   it('toasts on command rejection', async () => {
     fake.api.sendCommand = async () => {
       throw new Error('boom');

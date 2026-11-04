@@ -94,6 +94,19 @@ export const FolderIcon = (p: P) => (
     <path d="M3.5 6.5a2 2 0 0 1 2-2h3l2 2.5h8a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" stroke="currentColor" strokeWidth="1.6" fill="none" />
   </Svg>
 );
+export const GearIcon = (p: P) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="6.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
+    <circle cx="12" cy="12" r="2.3" fill="currentColor" />
+    <path
+      d="M12 5.4V2.7M12 21.3v-2.7M18.6 12h2.7M2.7 12h2.7M16.6 7.4l1.9-1.9M5.5 18.5l1.9-1.9M16.6 16.6l1.9 1.9M5.5 5.5l1.9 1.9"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      fill="none"
+    />
+  </Svg>
+);
 export const NoteIcon = (p: P) => (
   <Svg {...p}>
     <path d="M9 18.5V6l11-2.5V16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none" />

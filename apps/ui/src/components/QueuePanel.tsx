@@ -16,17 +16,21 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
   return (
     <div
       className={`q-row ${current ? 'now' : ''} ${dragOver ? 'drop' : ''}`}
-      draggable
+      draggable={!shuffle}
+      title={shuffle ? 'Reorder unavailable while shuffled' : undefined}
       onDragStart={(e) => {
+        if (shuffle) return;
         e.dataTransfer.setData('text/cadence-qindex', String(index));
         e.dataTransfer.effectAllowed = 'move';
       }}
       onDragOver={(e) => {
+        if (shuffle) return;
         e.preventDefault();
         setDragOver(true);
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
+        if (shuffle) return;
         e.preventDefault();
         setDragOver(false);
         const from = Number(e.dataTransfer.getData('text/cadence-qindex'));

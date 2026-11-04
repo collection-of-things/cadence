@@ -20,6 +20,16 @@ export interface Toast {
   retriable: boolean;
 }
 
+export interface EqBand {
+  freqHz: number;
+  gainDb: number;
+}
+
+export interface AudioDevice {
+  name: string;
+  isDefault: boolean;
+}
+
 /** The subset of window.cadence the store needs. CadenceApi satisfies this. */
 export interface StoreApiSurface {
   sendCommand(cmd: PlaybackCommand): Promise<unknown>;
@@ -29,6 +39,11 @@ export interface StoreApiSurface {
   getCapabilities(): Promise<RouteCapabilities[]>;
   library: { onScanProgress(cb: (p: ScanProgress) => void): () => void };
   routes?: { signIn(route: RouteId): Promise<unknown> };
+  audio?: {
+    setEq(bands: EqBand[]): Promise<unknown>;
+    listDevices(): Promise<AudioDevice[]>;
+    setDevice(name: string | null): Promise<unknown>;
+  };
 }
 
 export interface UiState {
@@ -126,6 +141,10 @@ export interface UiSession {
   moveQueueItem(fromIndex: number, toIndex: number): void;
   playQueueId(queueId: string): void;
   signInRoute(route: RouteId): void;
+  setFidelityMode(enabled: boolean): void;
+  setEq(bands: EqBand[]): void;
+  listDevices(): Promise<AudioDevice[]>;
+  setDevice(name: string | null): void;
   setView(view: UiState['view']): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
@@ -306,6 +325,25 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     signInRoute(route) {
       if (!api.routes) return;
       void api.routes.signIn(route).catch(() => pushToast(route, 'Sign-in failed', true));
+    },
+    setFidelityMode: (enabled) => cmd({ kind: 'setFidelityMode', enabled }),
+    setEq(bands) {
+      if (!api.audio) return;
+      const route = get().snapshot.lease?.route ?? 'local';
+      void api.audio.setEq(bands).catch(() => pushToast(route, 'Could not apply EQ', true));
+    },
+    async listDevices() {
+      if (!api.audio) return [];
+      try {
+        return await api.audio.listDevices();
+      } catch {
+        return [];
+      }
+    },
+    setDevice(name) {
+      if (!api.audio) return;
+      const route = get().snapshot.lease?.route ?? 'local';
+      void api.audio.setDevice(name).catch(() => pushToast(route, 'Could not switch output device', true));
     },
     setView: (view) => set({ view }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
