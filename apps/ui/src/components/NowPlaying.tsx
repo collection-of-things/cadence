@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { session } from '../app';
+import { displayOrder } from '../store';
 import { artistsLine } from '../format';
 import { useReducedMotion, useUi } from '../hooks';
 import { NoteIcon } from '../icons';
@@ -29,6 +30,34 @@ function Artwork() {
           <NoteIcon size={64} />
         </div>
       )}
+    </div>
+  );
+}
+
+function UpNextStrip() {
+  const queue = useUi((s) => s.queue);
+  const currentQid = useUi((s) => s.snapshot.current?.queueId);
+  const order = useMemo(() => displayOrder(queue).map((i) => queue.items[i]!), [queue]);
+  const pos = order.findIndex((qi) => qi.queueId === currentQid);
+  const next = order.slice(pos + 1, pos + 4);
+  if (!next.length) return null;
+  return (
+    <div className="np-upnext" aria-label="Up next">
+      <span className="np-upnext-label">Up next</span>
+      {next.map((qi) => {
+        const t = qi.track;
+        return (
+        <button
+          key={qi.queueId}
+          className="np-upnext-row"
+          onClick={() => session.playQueueId(qi.queueId)}
+        >
+          {t.artwork ? <img src={t.artwork.url} alt="" /> : <span className="np-upnext-art" />}
+          <span className="np-upnext-t">{t.title}</span>
+          <span className="np-upnext-a">{artistsLine(t.artists)}</span>
+        </button>
+        );
+      })}
     </div>
   );
 }
@@ -79,6 +108,7 @@ export function NowPlaying() {
               </div>
             )}
             <CapabilityChips />
+            <UpNextStrip />
           </div>
         </div>
       ) : (
