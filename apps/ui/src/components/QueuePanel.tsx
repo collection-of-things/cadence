@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
 import { session } from '../app';
@@ -38,6 +38,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
       }}
       onClick={() => session.playQueueId(item.queueId)}
       role="button"
+      aria-current={current || undefined}
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter') session.playQueueId(item.queueId);
@@ -92,6 +93,14 @@ export function QueuePanel() {
     estimateSize: () => 56,
     overscan: 10,
   });
+
+  // Land on the playing row when the panel opens.
+  useEffect(() => {
+    if (!open) return;
+    const pos = order.indexOf(queue.currentIndex);
+    if (pos > 0) virtualizer.scrollToIndex(pos, { align: 'center' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
     <aside className={`queue ${open ? 'open' : ''}`} aria-hidden={!open} aria-label="Play queue">
