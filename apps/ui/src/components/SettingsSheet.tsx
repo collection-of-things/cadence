@@ -83,6 +83,7 @@ function EqSection() {
               step={0.5}
               value={gains[i]}
               disabled={dimmed}
+              style={{ '--lo': `${Math.min(50, ((gains[i]! + EQ_MAX_DB) / (EQ_MAX_DB * 2)) * 100)}%`, '--hi': `${Math.max(50, ((gains[i]! + EQ_MAX_DB) / (EQ_MAX_DB * 2)) * 100)}%` } as React.CSSProperties}
               onChange={(e) => apply(gains.map((g, j) => (j === i ? Number(e.currentTarget.value) : g)))}
             />
             <span className="eq-freq">{freqLabel(hz)}</span>

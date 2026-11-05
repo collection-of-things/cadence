@@ -49,8 +49,6 @@ const tabs: { page: PrimaryPage; label: string }[] = [
 ];
 
 export function TopBar({ activePage, canGoBack, canGoForward, sidebarCollapsed, onBack, onForward, onNavigate, onToggleSidebar }: TopBarProps) {
-  const queueOpen = useUi((s) => s.queueOpen);
-  const queueCount = useUi((s) => s.queue.items.length);
 
   return (
     <header className="cadence-topbar">
@@ -88,16 +86,6 @@ export function TopBar({ activePage, canGoBack, canGoForward, sidebarCollapsed, 
       </nav>
 
       <div className="topbar-right">
-        <button
-          className={`chrome-button queue-toggle ${queueOpen ? 'is-on' : ''}`}
-          aria-label="Toggle queue"
-          aria-pressed={queueOpen}
-          title="Queue"
-          onClick={() => session.setQueueOpen(!queueOpen)}
-        >
-          <QueueIcon size={18} />
-          {queueCount > 0 && <span className="topbar-queue-count">{queueCount}</span>}
-        </button>
         <SettingsSheet />
       </div>
     </header>

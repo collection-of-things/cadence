@@ -22,9 +22,11 @@ function shuffled<T>(items: T[]): T[] {
 }
 
 function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; onPlay(): void }) {
+  const isCurrent = useUi((s) => s.snapshot.current?.track.id === track.id);
+  const playing = useUi((s) => s.snapshot.status === 'playing');
   return (
     <div
-      className="album-track-row"
+      className={`album-track-row ${isCurrent ? 'now' : ''}`}
       tabIndex={0}
       onClick={onPlay}
       onKeyDown={(event) => {
@@ -34,7 +36,11 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
         }
       }}
     >
-      <span className="album-track-index">{String(index + 1).padStart(2, '0')}</span>
+      <span className="album-track-index">
+        {isCurrent && playing
+          ? <span className="q-eq on" aria-hidden="true"><i /><i /><i /></span>
+          : String(index + 1).padStart(2, '0')}
+      </span>
       <span className="album-track-copy">
         <span className="album-track-title">{track.title}</span>
         <span className="album-track-artist">{track.artists.map((artist) => artist.name).join(', ')}</span>

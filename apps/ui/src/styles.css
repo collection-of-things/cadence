@@ -256,6 +256,8 @@ input:focus-visible,
 }
 
 .route-badge {
+  width: fit-content;
+  align-self: flex-start;
   font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.09em;
@@ -1659,15 +1661,43 @@ input:focus-visible,
   min-height: 14px;
 }
 
+.eq-band > input[type='range'].eq-slider,
 .eq-slider {
-  writing-mode: vertical-lr;
-  direction: rtl;
-  -webkit-appearance: slider-vertical;
-  width: 20px;
-  height: 104px;
-  margin: 0;
-  accent-color: var(--accent);
+  -webkit-appearance: none;
+  appearance: none;
+  width: 104px;
+  height: 20px;
+  margin: 42px 0;
+  transform: rotate(-90deg);
+  background: transparent;
   cursor: pointer;
+}
+
+.eq-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  /* fill outward from the 0 dB centre line */
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.14) var(--lo, 50%),
+    var(--accent) var(--lo, 50%),
+    var(--accent) var(--hi, 50%),
+    rgba(255, 255, 255, 0.14) var(--hi, 50%)
+  );
+}
+
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+}
+
+.eq-slider:disabled::-webkit-slider-runnable-track {
+  opacity: 0.4;
 }
 
 .eq-slider:disabled {

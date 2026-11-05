@@ -21,17 +21,31 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
+    // inert the browse app so Tab can't leak into page-order DOM behind
+    // the portal; the queue and toasts are body children and stay live.
+    const appEl = document.querySelector<HTMLElement>('.app');
+    appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { onClose(); return; }
       if (event.key !== 'Tab') return;
-      const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])');
-      if (!controls?.length) return;
-      const first = controls[0]!; const last = controls[controls.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
+      const dialog = dialogRef.current;
+      const controls: HTMLElement[] = [];
+      if (dialog) {
+        dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
+          .forEach((el) => { if (visible(el)) controls.push(el); });
+      }
+      document.querySelectorAll<HTMLElement>('.queue.open button:not(:disabled), .queue.open [tabindex]:not([tabindex="-1"])')
+        .forEach((el) => { if (visible(el)) controls.push(el); });
+      if (!controls.length) return;
+      const active = document.activeElement as HTMLElement | null;
+      const idx = active ? controls.indexOf(active) : -1;
+      const step = event.shiftKey ? -1 : 1;
+      event.preventDefault();
+      controls[(((idx + step) % controls.length) + controls.length) % controls.length]?.focus();
     };
     document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
+    return () => { document.removeEventListener('keydown', key); appEl?.removeAttribute('inert'); previous?.focus(); };
   }, [onClose]);
 
   if (!track) return null;
@@ -69,13 +83,15 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
       </main>
       <div className="full-controls">
         <SeekBar />
-        <Transport />
-        <button className="full-mute icon-btn" aria-label={muted ? 'Unmute' : 'Mute'} onClick={() => session.toggleMute()}>
-          {muted ? <MuteIcon size={17} /> : <VolumeIcon size={17} />}
-        </button>
-        <button className="full-queue icon-btn" aria-label="Show queue" aria-pressed={queueOpen} onClick={() => session.setQueueOpen(!queueOpen)}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M4 6h12M4 11h12M4 16h8" /><path d="m17.5 15 4 2.6-4 2.6z" fill="currentColor" stroke="none" /></svg>
-        </button>
+        <div className="full-dock">
+          <Transport />
+          <button className="full-mute icon-btn" aria-label={muted ? 'Unmute' : 'Mute'} onClick={() => session.toggleMute()}>
+            {muted ? <MuteIcon size={17} /> : <VolumeIcon size={17} />}
+          </button>
+          <button className="full-queue icon-btn" aria-label="Show queue" aria-pressed={queueOpen} onClick={() => session.setQueueOpen(!queueOpen)}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M4 6h12M4 11h12M4 16h8" /><path d="m17.5 15 4 2.6-4 2.6z" fill="currentColor" stroke="none" /></svg>
+          </button>
+        </div>
       </div>
     </section>
   );

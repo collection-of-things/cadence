@@ -155,10 +155,10 @@
 
 .sidebar-nav-row:not(:disabled):hover { color: #fff; background: rgba(255, 255, 255, 0.065); }
 .sidebar-nav-row:not(:disabled):active { transform: scale(0.96); }
-.sidebar-nav-row.is-active { color: var(--shell-accent-ink); background: var(--shell-accent); box-shadow: 0 7px 20px rgba(241, 135, 96, 0.19); }
+.sidebar-nav-row.is-active { color: var(--shell-accent-bright); background: var(--shell-accent-wash); }
 .sidebar-row-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 17px; }
 .sidebar-row-label { overflow: hidden; min-width: 0; flex: 1; font-size: 12.5px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-nav-row.is-active .sidebar-row-icon { color: #35180f; }
+.sidebar-nav-row.is-active .sidebar-row-icon { color: var(--shell-accent-bright); }
 .sidebar-nav-row.is-disabled { color: rgba(244, 243, 248, 0.38); cursor: default; }
 .sidebar-coming { padding: 2px 6px; color: rgba(244, 243, 248, 0.44); font-size: 9px; font-weight: 680; letter-spacing: 0.07em; text-transform: uppercase; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; }
 
@@ -217,7 +217,7 @@
 }
 
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 9px; }
-.topbar-right { justify-content: end; }
+.topbar-right { grid-column: 3; justify-content: end; }
 .history-pill { display: flex; align-items: center; gap: 1px; padding: 3px; background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(255, 255, 255, 0.055); border-radius: 999px; }
 
 .chrome-button {
@@ -238,6 +238,7 @@
 .chrome-button:disabled { color: rgba(244, 243, 248, 0.25); opacity: 1; cursor: default; }
 .chrome-button.is-on { color: var(--shell-accent-bright); background: var(--shell-accent-wash); }
 
+.app:not(.sidebar-is-collapsed) .topbar-segments { display: none; }
 .topbar-segments {
   display: flex;
   align-items: center;
@@ -298,9 +299,11 @@
   .history-pill { gap: 0; padding: 2px; }
   .chrome-button { width: 31px; height: 31px; }
   .sidebar-toggle { width: 31px; }
+  .app:not(.sidebar-is-collapsed) .topbar-segments { display: none; }
+  .sidebar.is-collapsed { display: none; }
   .topbar-segments { justify-self: center; max-width: 100%; gap: 0; padding: 3px; }
   .topbar-segment { height: 31px; padding-inline: 8px; font-size: 10.5px; }
-  .topbar-right { gap: 3px; }
+  .topbar-right { grid-column: 3; gap: 3px; }
   .topbar-right .settings > .icon-btn { width: 31px; height: 31px; }
 }
 

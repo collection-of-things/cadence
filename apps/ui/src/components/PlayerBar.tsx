@@ -81,7 +81,7 @@ export function PlayerBar() {
         <button
           className="pb-art"
           aria-label="Show now playing"
-          onClick={() => session.setView('now')}
+          onClick={() => { session.setView('now'); session.setNowPlayingExpanded(true); }}
           style={
             track && glow
               ? { boxShadow: `0 6px 20px -6px rgba(${glow[0]},${glow[1]},${glow[2]},0.55)` }

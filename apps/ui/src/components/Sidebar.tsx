@@ -52,35 +52,19 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
     setOpen((state) => ({ ...state, [section]: !state[section] }));
   };
 
-  const section = (name: NavSection, label: string, target: Exclude<ShellPage, 'album'> | null, childLabel: string, disabled = false) => {
-    const isActive = target !== null && activePage === target;
-    const expanded = open[name];
+  const navRow = (target: 'home' | 'library' | 'sources', label: string) => {
+    const isActive = activePage === target;
     return (
-      <section className={`sidebar-section ${isActive ? 'has-active' : ''}`} key={name}>
-        <button
-          className="sidebar-section-head"
-          aria-expanded={collapsed ? undefined : expanded}
-          aria-label={collapsed ? label : undefined}
-          title={collapsed ? label : undefined}
-          onClick={() => toggleSection(name, target)}
-        >
-          <span className="sidebar-section-icon"><Glyph name={name} /></span>
-          <span className="sidebar-section-label">{label}</span>
-          <Chevron open={expanded} />
-        </button>
-        {!collapsed && expanded && (
-          <button
-            className={`sidebar-nav-row ${isActive ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`}
-            aria-current={isActive ? 'page' : undefined}
-            disabled={disabled}
-            onClick={() => !disabled && target !== null && onNavigate(target)}
-          >
-            <span className="sidebar-row-icon"><Glyph name={name} size={15} /></span>
-            <span className="sidebar-row-label">{childLabel}</span>
-            {disabled && <span className="sidebar-coming">Soon</span>}
-          </button>
-        )}
-      </section>
+      <button
+        key={target}
+        className={`sidebar-nav-row ${isActive ? 'is-active' : ''}`}
+        aria-current={isActive ? 'page' : undefined}
+        title={collapsed ? label : undefined}
+        onClick={() => onNavigate(target)}
+      >
+        <span className="sidebar-row-icon"><Glyph name={target as NavSection} size={16} /></span>
+        {!collapsed && <span className="sidebar-row-label">{label}</span>}
+      </button>
     );
   };
 
@@ -104,9 +88,9 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
       </label>
 
       <nav className="sidebar-nav" aria-label="Library navigation">
-        {section('home', 'Home', 'home', 'For you')}
-        {section('library', 'Library', 'library', 'Albums & tracks')}
-        {section('sources', 'Sources', 'sources', 'Connected services')}
+        {navRow('home', 'Home')}
+        {navRow('library', 'Library')}
+        {navRow('sources', 'Sources')}
       </nav>
 
       {!collapsed && (

@@ -78,7 +78,18 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
+    const onResize = () => {
+      const viewport = scrollRef.current;
+      const target = viewport?.querySelector<HTMLElement>('[data-lyric].active');
+      if (viewport && target && Date.now() > manualUntil.current) {
+        viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: 'instant' });
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', onResize);
+    };
   }, [lines]);
 
   if (!raw?.trim()) return <div className="full-lyrics-empty">No lyrics available for this track.</div>;
