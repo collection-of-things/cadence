@@ -73,23 +73,20 @@ void main() {
   vec2 p = vUv - 0.5;
   p.x *= uRes.x / uRes.y;
 
-  float t = uTime * 0.045 * uMotion;
+  float t = uTime * 0.000012 * uMotion;
   vec2 warp = vec2(
-    fbm(p * 1.5 + vec2(t, -t * 0.6)),
-    fbm(p * 1.5 + vec2(-t * 0.8, t * 0.5))
+    fbm(p * 1.1 + vec2(t, -t * 0.4)),
+    fbm(p * 1.1 + vec2(-t * 0.5, t * 0.7))
   );
-  float f = fbm(p * 1.8 + warp * 1.35 - vec2(0.0, t * 0.4));
-
-  float ang = atan(p.y, p.x) / 6.2831853 + 0.5;
-  float band = bandAt(ang);
+  float deep = fbm(p * 1.25 + warp * 1.5 + vec2(t * 0.25, -t * 0.3));
+  float near = fbm(p * 1.8 - warp * 0.8 + vec2(-t * 0.65, t * 0.4));
+  vec3 col = mix(uColC, uColB, smoothstep(0.18, 0.85, deep));
+  col = mix(col, uColA, smoothstep(0.34, 0.84, near) * 0.7);
   float r = length(p);
-
-  vec3 col = mix(uColC, uColB, smoothstep(0.12, 0.72, f));
-  col = mix(col, uColA, smoothstep(0.55, 0.98, f + band * 0.22));
-
-  float lum = 0.05 + f * 0.09 + band * (0.10 + uEnergy * 0.18) * smoothstep(1.1, 0.15, r);
-  col *= lum * (0.9 + uEnergy * 0.45);
-  col *= 1.0 - smoothstep(0.35, 1.15, r) * 0.6;
+  float grain = hash21(gl_FragCoord.xy + fract(uTime * 0.0001) * 100.0) - 0.5;
+  col *= (0.32 + deep * 0.18) * (1.0 + uEnergy * 0.035);
+  col *= 1.0 - smoothstep(0.45, 1.4, r) * 0.34;
+  col += grain * 0.012;
 
   fragColor = vec4(col, 1.0);
 }

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { session } from '../app';
 import { artistsLine } from '../format';
 import { useReducedMotion, useUi } from '../hooks';
@@ -8,6 +9,7 @@ import { CapabilityChips } from './CapabilityChips';
 import { providerForRoute, RouteBadge } from './RouteBadge';
 import { SeekBar } from './SeekBar';
 import { Transport } from './Transport';
+import { NowPlayingFull } from './NowPlayingFull';
 
 function Artwork() {
   const track = useUi((s) => s.snapshot.current?.track);
@@ -61,6 +63,8 @@ function Artwork() {
 export function NowPlaying() {
   // Narrow selectors: position/fft updates at 2-20Hz must not re-render this
   // tree — the seek bar and Pixi layer read those off-store.
+  const [expanded, setExpanded] = useState(false);
+  const closeFull = useCallback(() => setExpanded(false), []);
   const status = useUi((s) => s.snapshot.status);
   const lastError = useUi((s) => s.snapshot.lastError);
   const palette = useUi((s) => s.palette);
@@ -68,7 +72,9 @@ export function NowPlaying() {
 
   return (
     <div className="np">
-      <PixiBackground palette={palette} />
+      {!expanded && <PixiBackground palette={palette} />}
+      {track && <button className="np-expand" onClick={() => setExpanded(true)} aria-label="Expand now playing">⤢ <span>Full screen</span></button>}
+      {expanded && track && createPortal(<NowPlayingFull onClose={closeFull} />, document.body)}
       {track ? (
         <div className="np-inner">
           <Artwork />
