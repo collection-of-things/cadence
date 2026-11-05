@@ -567,13 +567,10 @@ export class Coordinator {
       // Apply the user's fidelity mode before load — the persisted setting
       // must reach the adapter even when it was toggled while stopped.
       if (adapter.setFidelityMode !== undefined) {
-        await adapter.setFidelityMode(this.fidelityMode);
+        await this.withTimeout(adapter.setFidelityMode(this.fidelityMode), 10_000, "adapter.setFidelityMode");
       }
       // Volume lands before the track starts — the incoming route must not
       // sound briefly at a stale/default level (muted startup especially).
-      if (adapter.setFidelityMode !== undefined) {
-        await this.withTimeout(adapter.setFidelityMode(this.fidelityMode), 10_000, "adapter.setFidelityMode");
-      }
       this.volume = this.volumeByRoute.get(route) ?? this.volume;
       await this.withTimeout(adapter.setVolume(this.muted ? 0 : this.volume), 10_000, "adapter.setVolume");
       await this.withTimeout(adapter.play(item, lease, playOpts), 20_000, "adapter.play");

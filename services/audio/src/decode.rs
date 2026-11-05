@@ -248,6 +248,9 @@ pub struct DecodeRequest {
     pub kind: PcmKind,
     /// Channel remix target (e.g. device channels). None = source channels.
     pub channels: Option<u32>,
+    /// Probe result the caller already holds (engine's plan_track). When
+    /// set, open() reuses it instead of re-running ffprobe per spawn.
+    pub info: Option<AudioInfo>,
 }
 
 /// Pluggable decode backend.
@@ -285,7 +288,12 @@ impl Decoder for FfmpegDecoder {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("ffmpeg stdout missing"))?;
-        let info = self.probe(&req.path)?;
+        // A caller that already probed passes the result through — re-
+        // running ffprobe here would double the spawn cost per pipeline.
+        let info = match req.info.clone() {
+            Some(info) => info,
+            None => self.probe(&req.path)?,
+        };
         Ok(DecodeStream {
             info,
             kind: req.kind,
@@ -314,6 +322,7 @@ pub fn decode_to_f32_at(
         seek_ms,
         kind: PcmKind::F32,
         channels,
+        info: None,
     })?;
     let mut out = Vec::new();
     let mut buf = vec![0f32; 8192];

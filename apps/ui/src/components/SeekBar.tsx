@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { session } from '../app';
 import { formatTime } from '../format';
 import { positionNow, useUi } from '../hooks';
+import './controls.css';
 
 /**
  * Seek bar with interpolated position. The fill, input value and elapsed label

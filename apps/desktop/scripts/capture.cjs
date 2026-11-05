@@ -1,6 +1,9 @@
 // Headless screenshot capture for the UI. Run under xvfb-run:
 //   electron scripts/capture.cjs --url=... --out=shot.png --wait=2500 [--eval=js]
 const { app, BrowserWindow } = require('electron');
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('ozone-platform', 'x11');
+app.setPath('userData', '/tmp/cadence-cap-' + process.pid);
 const { writeFileSync, mkdirSync } = require('node:fs');
 const { dirname, resolve } = require('node:path');
 
@@ -27,7 +30,8 @@ async function main() {
   await win.loadURL(url);
   await new Promise((r) => setTimeout(r, wait));
   if (evalJs) {
-    await win.webContents.executeJavaScript(evalJs, true);
+    await win.webContents.executeJavaScript(evalJs, true)
+      .catch((e) => console.warn('eval failed:', e.message));
     await new Promise((r) => setTimeout(r, 1200));
   }
   const img = await win.webContents.capturePage();

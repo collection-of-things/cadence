@@ -10,7 +10,7 @@
 //! drops/opens sinks outside the lock), so the callback's worst-case wait is
 //! one brief critical section — bounded, documented, non-allocating.
 
-use crate::decode::{BitDepth, DecodeRequest, Decoder, FfmpegDecoder, PcmKind};
+use crate::decode::{AudioInfo, BitDepth, DecodeRequest, Decoder, FfmpegDecoder, PcmKind};
 use crate::dsp::Dsp;
 use crate::fft::FftAnalyzer;
 use crate::resample::{plan as resample_plan, ResamplePlan, StreamingResampler};
@@ -139,6 +139,12 @@ enum CoreEvent {
 /// allocate on the callback thread.
 const MAX_CORE_EVENTS: usize = 64;
 
+/// Bound on retired track readers awaiting reclamation. Track ends are
+/// seconds apart and the monitor drains this every 20ms; 8 is
+/// unreachable in practice. The VecDeque is created with this capacity,
+/// so pushes below the cap never allocate on the callback thread.
+const MAX_RETIRED_READERS: usize = 8;
+
 /// Rendered-sample dump: the callback taps f32 into a ring (drop-on-full);
 /// a writer thread does the file I/O so the callback never touches the
 /// filesystem. Under --null-fast the writer can fall behind and samples are
@@ -176,6 +182,11 @@ pub struct OutputCore {
     /// output frames emitted for `active` since it became current
     frames_played: u64,
     events: VecDeque<CoreEvent>,
+    /// Ended readers parked for the monitor to drop. A TrackReader owns
+    /// its ring buffer (~buffer_secs of samples) — freeing that inside
+    /// the audio callback is an RT violation, so advance_track moves
+    /// ownership here instead and the monitor reclaims it off-thread.
+    retired: VecDeque<TrackReader>,
     /// a buffering notification is pending for the monitor thread
     underrun: bool,
     /// currently inside a stall episode (latch, avoids event spam)
@@ -353,11 +364,16 @@ impl OutputCore {
     /// Active track drained: promote `next` (gapless) or end. Returns true if
     /// a new track took over on the same stream.
     fn advance_track(&mut self) -> bool {
-        let ended = self.active.take().unwrap();
+        let mut ended = self.active.take().unwrap();
+        // Move the queue id into the event without cloning (no RT alloc)
+        // and park the reader for the monitor to reclaim.
+        let ended_queue_id = std::mem::take(&mut ended.queue_id);
+        let ended_instance = ended.instance;
+        self.retire(ended);
         if let Some(next) = self.next.take() {
             self.push_event(CoreEvent::Boundary {
-                ended_queue_id: ended.queue_id,
-                ended_instance: ended.instance,
+                ended_queue_id,
+                ended_instance,
                 started_queue_id: next.queue_id.clone(),
                 started_instance: next.instance,
                 started_duration_ms: next.duration_ms,
@@ -369,11 +385,21 @@ impl OutputCore {
             true
         } else {
             self.push_event(CoreEvent::Ended {
-                queue_id: ended.queue_id,
-                instance: ended.instance,
+                queue_id: ended_queue_id,
+                instance: ended_instance,
             });
             false
         }
+    }
+
+    /// Park an ended reader for reclamation by the monitor thread. Bounded;
+    /// the drop-on-full fallback frees one ring inline — the same cost the
+    /// engine always paid, now only reachable if the monitor stalls.
+    fn retire(&mut self, track: TrackReader) {
+        if self.retired.len() >= MAX_RETIRED_READERS {
+            self.retired.pop_front();
+        }
+        self.retired.push_back(track);
     }
 
     /// Queue an event for the monitor. Bounded: drops rather than growing
@@ -590,6 +616,9 @@ struct TrackPlan {
     neg: Negotiated,
     rplan: ResamplePlan,
     bypass: bool,
+    /// Probe result for file sources — threaded into DecodeRequest so the
+    /// producer's ffmpeg spawn doesn't re-run ffprobe.
+    info: Option<AudioInfo>,
 }
 
 pub struct Engine {
@@ -668,6 +697,7 @@ impl Engine {
                 next: None,
                 frames_played: 0,
                 events: VecDeque::with_capacity(MAX_CORE_EVENTS),
+                retired: VecDeque::with_capacity(MAX_RETIRED_READERS),
                 underrun: false,
                 stalled: false,
                 fft_tap: tap_p.clone(),
@@ -823,7 +853,7 @@ impl Engine {
     }
 
     fn plan_track(&self, src: &SourceSpec, seek_ms: u64) -> Result<TrackPlan> {
-        let (src_rate, src_channels, src_depth, duration_ms) = match src {
+        let (src_rate, src_channels, src_depth, duration_ms, info) = match src {
             SourceSpec::File { path } => {
                 let info = self.decoder.probe(path)?;
                 (
@@ -831,13 +861,14 @@ impl Engine {
                     info.channels,
                     info.bit_depth,
                     info.duration_ms.saturating_sub(seek_ms),
+                    Some(info),
                 )
             }
             SourceSpec::PcmStream {
                 sample_rate_hz,
                 channels,
                 bit_depth,
-            } => (*sample_rate_hz, *channels, *bit_depth, 0),
+            } => (*sample_rate_hz, *channels, *bit_depth, 0, None),
         };
 
         let (neg, mut bypass) = self.negotiate(src_rate, src_channels, src_depth);
@@ -856,6 +887,7 @@ impl Engine {
             neg,
             rplan,
             bypass,
+            info,
         })
     }
 
@@ -864,7 +896,7 @@ impl Engine {
     /// format than the live one, this fails with an "incompatible" error
     /// instead of rebuilding (used for prefetched successors: a format
     /// change there means the boundary can't be seamless).
-    /// Returns (reader, handle, duration_ms, fidelity_bypass).
+    /// Returns (reader, handle, duration_ms, fidelity_bypass, audio_info).
     fn spawn_pipeline(
         &self,
         queue_id: &str,
@@ -872,12 +904,27 @@ impl Engine {
         seek_ms: u64,
         rg_db: Option<f64>,
         rebuild_ok: bool,
-    ) -> Result<(TrackReader, ProducerHandle, u64, bool)> {
+    ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let plan = self.plan_track(&src, seek_ms)?;
+        self.spawn_pipeline_planned(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+    }
+
+    /// spawn_pipeline over a caller-computed plan — lets prefetch() reuse
+    /// the plan (and its ffprobe result) from the compatibility check.
+    fn spawn_pipeline_planned(
+        &self,
+        queue_id: &str,
+        src: SourceSpec,
+        seek_ms: u64,
+        rg_db: Option<f64>,
+        rebuild_ok: bool,
+        plan: TrackPlan,
+    ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let duration_ms = plan.duration_ms;
         let neg = plan.neg;
         let rplan = plan.rplan;
         let bypass = plan.bypass;
+        let info = plan.info;
 
         {
             // A missing/dead sink (open failed earlier) must retry the open —
@@ -931,11 +978,13 @@ impl Engine {
                 let qid_c = qid.clone();
                 let emit_c = Arc::clone(&self.emit);
                 let prod_ret = prod.clone();
+                let info_c = info.clone();
                 let join = std::thread::Builder::new()
                     .name(format!("decode:{qid}"))
                     .spawn(move || {
                         let res = run_producer_f32(
                             &*decoder, src2, seek_ms, &neg2, rplan, eq, rg_db, feed, prod, r,
+                            info_c,
                         );
                         if let Err(e) = res {
                             eprintln!("producer {qid_c}: {e:#}");
@@ -973,11 +1022,12 @@ impl Engine {
                 let qid_c = qid.clone();
                 let emit_c = Arc::clone(&self.emit);
                 let prod_ret = prod.clone();
+                let info_c = info.clone();
                 let join = std::thread::Builder::new()
                     .name(format!("decode:{qid}"))
                     .spawn(move || {
                         let res =
-                            run_producer_s32(&*decoder, src2, seek_ms, &neg2, feed, prod, r);
+                            run_producer_s32(&*decoder, src2, seek_ms, &neg2, feed, prod, r, info_c);
                         if let Err(e) = res {
                             eprintln!("producer {qid_c}: {e:#}");
                             (emit_c)(serde_json::json!({
@@ -1005,7 +1055,7 @@ impl Engine {
                 )
             }
         };
-        Ok((reader, join, duration_ms, bypass))
+        Ok((reader, join, duration_ms, bypass, info))
     }
 
     fn ensure_feed(&self, src: &SourceSpec, queue_id: &str) -> Option<Arc<Feed>> {
@@ -1129,7 +1179,7 @@ impl Engine {
                 (position_ms, st.replay_gain_db)
             };
             match self.spawn_pipeline(&qid, src, pos, rg, true) {
-                Ok((reader, handle, dur, bypass)) => {
+                Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
                     self.core.lock().unwrap().set_active(reader);
                     *self.producer.lock().unwrap() = Some(handle);
@@ -1146,7 +1196,7 @@ impl Engine {
             // the stream (that would erase the active track we just set);
             // the boundary reopen path handles it honestly instead.
             match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
-                Ok((reader, handle, _dur, _bypass)) => {
+                Ok((reader, handle, _dur, _bypass, _info)) => {
                     let ready = reader.ready.clone();
                     self.core.lock().unwrap().set_next(reader);
                     *self.prefetch_producer.lock().unwrap() = Some(handle);
@@ -1188,7 +1238,7 @@ impl Engine {
         // stop any prefetch tied to the old generation
         self.abort_prefetch();
 
-        let (reader, handle, duration_ms, bypass) = match self.spawn_pipeline(
+        let (reader, handle, duration_ms, bypass, info) = match self.spawn_pipeline(
             &p.queue_id,
             p.source.clone(),
             p.position_ms,
@@ -1236,10 +1286,8 @@ impl Engine {
             }),
         );
 
-        let info = match &p.source {
-            SourceSpec::File { path } => Some(self.decoder.probe(path)?),
-            _ => None,
-        };
+        // The plan already probed the file — report it back without a
+        // second ffprobe run.
         let mut result = json!({ "ok": true, "durationMs": duration_ms });
         if let Some(i) = info {
             result["sampleRateHz"] = json!(i.sample_rate_hz);
@@ -1274,13 +1322,13 @@ impl Engine {
         // fidelity + a native format the stream can't take), it cannot
         // render seamlessly — keep it as a reopen-on-boundary prefetch and
         // report gapless:false honestly when the time comes.
-        let compatible = {
-            let plan = self.plan_track(&src, 0)?;
-            self.core.lock().unwrap().negotiated == plan.neg
-        };
+        // One plan (one ffprobe) serves both the compatibility check and
+        // the spawn below.
+        let plan = self.plan_track(&src, 0)?;
+        let compatible = self.core.lock().unwrap().negotiated == plan.neg;
         if compatible {
-            let (reader, handle, _dur, _bypass) =
-                self.spawn_pipeline(queue_id, src.clone(), 0, rg_db, false)?;
+            let (reader, handle, _dur, _bypass, _info) =
+                self.spawn_pipeline_planned(queue_id, src.clone(), 0, rg_db, false, plan)?;
             let ready = reader.ready.clone();
             {
                 let mut core = self.core.lock().unwrap();
@@ -1364,7 +1412,7 @@ impl Engine {
                 _ => bail!("nothing loaded"),
             }
         };
-        let (reader, handle, duration_ms, bypass) =
+        let (reader, handle, duration_ms, bypass, _info) =
             self.spawn_pipeline(&queue_id, src, position_ms, rg, true)?;
         let seek_instance = reader.instance;
         {
@@ -1416,23 +1464,33 @@ impl Engine {
             let st = self.state.lock().unwrap();
             st.feeds.get(queue_id).cloned()
         };
-        match feed {
-            Some(f) => {
-                if abort {
-                    f.abort();
-                } else {
-                    // May block up to Feed::PUSH_TIMEOUT when the stream is
-                    // full — that delay + a possible error IS the
-                    // backpressure signal to the RPC caller.
-                    f.push(data)?;
-                    if is_final {
-                        f.close();
-                    }
-                }
-                Ok(json!({ "ok": true }))
+        let Some(f) = feed else {
+            // Say which feeds ARE open — a wrong queueId is otherwise
+            // indistinguishable from "no pcm-stream loaded at all".
+            let known = {
+                let st = self.state.lock().unwrap();
+                st.feeds.keys().cloned().collect::<Vec<_>>().join(", ")
+            };
+            if known.is_empty() {
+                bail!("audio.feed: no pcm-stream feed is open (queueId {queue_id})");
             }
-            None => Err(anyhow!("no pcm-stream loaded for queueId {queue_id}")),
+            bail!("audio.feed: unknown queueId {queue_id} (open feeds: {known})");
+        };
+        if abort {
+            f.abort();
+            return Ok(json!({ "ok": true }));
         }
+        if f.closed.load(Ordering::Acquire) {
+            bail!("audio.feed: feed for queueId {queue_id} is already closed");
+        }
+        // May block up to Feed::PUSH_TIMEOUT when the stream is full — that
+        // delay + a possible error IS the backpressure signal to the RPC
+        // caller.
+        f.push(data)?;
+        if is_final {
+            f.close();
+        }
+        Ok(json!({ "ok": true }))
     }
 
     fn check_gen(&self, generation: u64) -> Result<()> {
@@ -1510,11 +1568,17 @@ impl Engine {
                 }
             }
 
-            // drain core events
-            let events: Vec<CoreEvent> = {
+            // drain core events + reclaim retired readers: their ring
+            // buffers (~buffer_secs of samples) are freed here, never on
+            // the audio callback thread.
+            let (events, retired) = {
                 let mut core = self.core.lock().unwrap();
-                core.events.drain(..).collect()
+                (
+                    core.events.drain(..).collect::<Vec<CoreEvent>>(),
+                    core.retired.drain(..).collect::<Vec<TrackReader>>(),
+                )
             };
+            drop(retired);
             for ev in events {
                 match ev {
                     CoreEvent::Boundary {
@@ -1600,7 +1664,7 @@ impl Engine {
                         let pf = self.state.lock().unwrap().prefetch.take();
                         if let Some(pf) = pf {
                             match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true) {
-                                Ok((reader, handle, dur, bypass)) => {
+                                Ok((reader, handle, dur, bypass, _info)) => {
                                     // A concurrent audio.load may have landed
                                     // while we decoded — don't install a
                                     // stale pipeline over the fresh track.
@@ -1806,6 +1870,7 @@ fn run_producer_f32(
     feed: Option<Arc<Feed>>,
     prod: Producer<f32>,
     ready: Arc<AtomicBool>,
+    info: Option<AudioInfo>,
 ) -> Result<()> {
     let mut resampler = match rplan {
         ResamplePlan::Passthrough => None,
@@ -1855,6 +1920,7 @@ fn run_producer_f32(
                 seek_ms,
                 kind: PcmKind::F32,
                 channels: Some(neg.channels),
+                info,
             })?;
             loop {
                 let n = stream.read_f32(&mut inbuf)?;
@@ -1918,6 +1984,7 @@ fn run_producer_s32(
     feed: Option<Arc<Feed>>,
     prod: Producer<i32>,
     ready: Arc<AtomicBool>,
+    info: Option<AudioInfo>,
 ) -> Result<()> {
     let ch = neg.channels as usize;
     let mut first = true;
@@ -1940,6 +2007,7 @@ fn run_producer_s32(
                 seek_ms,
                 kind: PcmKind::S32,
                 channels: Some(ch as u32),
+                info,
             })?;
             let mut inbuf = vec![0i32; 8192];
             loop {
@@ -2136,6 +2204,41 @@ mod tests {
             t0.elapsed() < std::time::Duration::from_millis(450),
             "abort did not interrupt the push wait"
         );
+    }
+
+    /// advance_track must not free the ended reader's ring on the callback
+    /// path — it parks it in `retired` for the monitor to reclaim.
+    #[test]
+    fn advance_track_parks_ended_reader_for_monitor() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::F32,
+            device_name: "test".into(),
+        };
+        let (core, _tap, _cons) = Engine::make_core(neg, None);
+        let mut c = core.lock().unwrap();
+        let (prod, cons) = ringbuf::channel::<f32>(64);
+        prod.finish();
+        c.active = Some(TrackReader {
+            instance: 1,
+            queue_id: "qa".into(),
+            duration_ms: 1_000,
+            seek_offset_ms: 0,
+            pipe: PipeReader::F32(cons),
+            ready: Arc::new(AtomicBool::new(true)),
+        });
+        assert!(!c.advance_track()); // nothing behind it -> Ended
+        assert_eq!(c.retired.len(), 1, "ended reader must be parked");
+        assert_eq!(c.retired[0].queue_id, "", "queue_id moved into the event");
+        assert!(
+            matches!(c.events.back(), Some(CoreEvent::Ended { .. })),
+            "expected a pending Ended event"
+        );
+        // Monitor-side drain frees the ring off the callback thread.
+        let retired: Vec<TrackReader> = c.retired.drain(..).collect();
+        drop(retired);
+        assert!(c.retired.is_empty());
     }
 
     /// Once the reader drains, a waiting push completes.

@@ -1,6 +1,7 @@
 import { session } from '../app';
 import { useUi } from '../hooks';
 import { MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, QueueIcon, RepeatIcon, ShuffleIcon, VolumeIcon } from '../icons';
+import './controls.css';
 
 
 export function VolumeControl() {
@@ -62,42 +63,44 @@ export function Transport() {
 
   return (
     <div className="transport">
-      <button
-        className={`icon-btn tp-side ${shuffle ? 'on' : ''}`}
-        aria-label="Shuffle"
-        aria-pressed={shuffle}
-        onClick={() => session.toggleShuffle()}
-      >
-        <ShuffleIcon size={19} />
-      </button>
-      <button className="icon-btn tp-nav" aria-label="Previous track" disabled={!canSkip} onClick={() => session.previous()}>
-        <PrevIcon size={22} />
-      </button>
-      <button
-        className={`tp-play ${busy ? 'busy' : ''}`}
-        aria-label={playing ? 'Pause' : 'Play'}
-        disabled={playing && !canPause}
-        onClick={() => session.togglePlay()}
-      >
-        <span className={`tp-ic ${playing ? 'hide' : ''}`}>
-          <PlayIcon size={26} />
-        </span>
-        <span className={`tp-ic ${playing ? '' : 'hide'}`}>
-          <PauseIcon size={26} />
-        </span>
-      </button>
-      <button className="icon-btn tp-nav" aria-label="Next track" disabled={!canSkip} onClick={() => session.next()}>
-        <NextIcon size={22} />
-      </button>
-      <button
-        className={`icon-btn tp-side ${repeat !== 'off' ? 'on' : ''}`}
-        aria-label={`Repeat: ${repeat}`}
-        aria-pressed={repeat !== 'off'}
-        onClick={() => session.cycleRepeat()}
-      >
-        <RepeatIcon size={19} />
-        {repeat === 'one' && <span className="tp-one">1</span>}
-      </button>
+      <div className="tp-cluster">
+        <button
+          className={`icon-btn tp-side ${shuffle ? 'on' : ''}`}
+          aria-label="Shuffle"
+          aria-pressed={shuffle}
+          onClick={() => session.toggleShuffle()}
+        >
+          <ShuffleIcon size={18} />
+        </button>
+        <button className="icon-btn tp-nav" aria-label="Previous track" disabled={!canSkip} onClick={() => session.previous()}>
+          <PrevIcon size={22} />
+        </button>
+        <button
+          className={`tp-play ${busy ? 'busy' : ''}`}
+          aria-label={playing ? 'Pause' : 'Play'}
+          disabled={playing && !canPause}
+          onClick={() => session.togglePlay()}
+        >
+          <span className={`tp-ic ${playing ? 'hide' : ''}`}>
+            <PlayIcon size={26} />
+          </span>
+          <span className={`tp-ic ${playing ? '' : 'hide'}`}>
+            <PauseIcon size={26} />
+          </span>
+        </button>
+        <button className="icon-btn tp-nav" aria-label="Next track" disabled={!canSkip} onClick={() => session.next()}>
+          <NextIcon size={22} />
+        </button>
+        <button
+          className={`icon-btn tp-side ${repeat !== 'off' ? 'on' : ''}`}
+          aria-label={`Repeat: ${repeat}`}
+          aria-pressed={repeat !== 'off'}
+          onClick={() => session.cycleRepeat()}
+        >
+          <RepeatIcon size={18} />
+          {repeat === 'one' && <span className="tp-one">1</span>}
+        </button>
+      </div>
       <div className="tp-right">
         <VolumeControl />
         <QueueToggle />
