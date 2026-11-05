@@ -280,7 +280,7 @@
   .topbar-segment { padding-inline: 11px; }
 }
 
-@media (max-width: 690px) {
+@media (max-width: 1000px) {
   .sidebar:not(.is-collapsed) { flex-basis: 72px; width: 72px; padding-inline: 9px; }
   .sidebar:not(.is-collapsed) .sidebar-brand { justify-content: center; padding: 0; }
   .sidebar:not(.is-collapsed) .sidebar-brand-name,

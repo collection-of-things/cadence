@@ -52,10 +52,7 @@ function Shelf({ title, subtitle, albums, onSelectAlbum }: {
               </span>
               <span className="home-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
             </span>
-            <span className="home-card-caption">
-              <span className="home-card-title">{album.title}</span>
-              <span className="home-card-subtitle">{album.artist}{album.year ? ` · ${album.year}` : ''}</span>
-            </span>
+
           </button>
         ))}
       </div>
