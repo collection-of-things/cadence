@@ -1192,10 +1192,29 @@ input:focus-visible,
   text-overflow: ellipsis;
 }
 
+.lib-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 22px 26px 4px;
+}
+.lib-head h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+.lib-count {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 .tr-artist,
 .tr-album {
   font-size: 12.5px;
-  color: var(--text-dim);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1203,7 +1222,7 @@ input:focus-visible,
 
 .tr-time {
   font-size: 12.5px;
-  color: var(--text-faint);
+  color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -1508,7 +1527,7 @@ input:focus-visible,
   width: 372px;
   max-height: calc(100vh - 64px);
   overflow-y: auto;
-  background: var(--panel-float);
+  background: rgba(22, 22, 29, 0.94);
   backdrop-filter: blur(28px) saturate(1.35);
   -webkit-backdrop-filter: blur(28px) saturate(1.35);
   border: 1px solid var(--border);

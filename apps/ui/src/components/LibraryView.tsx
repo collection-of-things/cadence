@@ -202,6 +202,10 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
 
   return (
     <div className="lib">
+      <header className="lib-head">
+        <h1>Library</h1>
+        <span className="lib-count">{tab === 'tracks' ? 'Tracks' : tab === 'artists' ? 'Artists' : 'Albums'}</span>
+      </header>
       <div className="lib-bar">
         <nav className="lib-tabs" aria-label="Library sections">
           {(['albums', 'artists', 'tracks'] as const).map((t) => (

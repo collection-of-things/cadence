@@ -70,12 +70,31 @@ function Arrow({ direction }: { direction: 'back' | 'forward' }) {
 
 export function HomeView({ onSelectAlbum }: HomeViewProps) {
   const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
+  const [genreShelf, setGenreShelf] = useState<{ name: string; albums: LibraryAlbum[] } | null>(null);
   const scan = useUi((s) => s.scan);
   useEffect(() => {
     let live = true;
     setAlbums(null);
     void api.library.albums({}).then((result) => {
-      if (live) setAlbums(result);
+      if (!live) return;
+      setAlbums(result);
+      // Build a real genre shelf: dominant genre across tracks, albums
+      // whose titles appear in it. No fake curation.
+      void api.library.tracks({}).then((tracks) => {
+        if (!live) return;
+        const byGenre = new Map<string, Set<string>>();
+        for (const t of tracks) {
+          for (const g of t.genre ?? []) {
+            const set = byGenre.get(g) ?? new Set<string>();
+            if (t.album) set.add(t.album);
+            byGenre.set(g, set);
+          }
+        }
+        const best = [...byGenre.entries()].sort((a, b) => b[1].size - a[1].size)[0];
+        if (!best) return;
+        const matching = result.filter((a) => best[1].has(a.title));
+        if (matching.length >= 2) setGenreShelf({ name: best[0], albums: matching });
+      }).catch(() => undefined);
     }).catch(() => {
       if (live) setAlbums([]);
     });
@@ -99,8 +118,10 @@ export function HomeView({ onSelectAlbum }: HomeViewProps) {
           </div>
         ) : (
           <>
-            <Shelf title="Made for your next listen" subtitle="A few places to begin" albums={albums.slice(0, 4)} onSelectAlbum={onSelectAlbum} />
-            <Shelf title="Your albums" subtitle={`${albums.length} albums in your library`} albums={albums} onSelectAlbum={onSelectAlbum} />
+            <Shelf title="Your albums" subtitle={`${albums.length} ${albums.length === 1 ? 'album' : 'albums'} in your library`} albums={albums} onSelectAlbum={onSelectAlbum} />
+            {genreShelf && (
+              <Shelf title={genreShelf.name} subtitle={`${genreShelf.albums.length} albums in this corner of your library`} albums={genreShelf.albums} onSelectAlbum={onSelectAlbum} />
+            )}
           </>
         )}
       </div>

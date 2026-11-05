@@ -107,7 +107,6 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
         {section('home', 'Home', 'home', 'For you')}
         {section('library', 'Library', 'library', 'Albums & tracks')}
         {section('sources', 'Sources', 'sources', 'Connected services')}
-        {section('playlists', 'Playlists', 'playlist', 'All playlists')}
       </nav>
 
       {!collapsed && (
