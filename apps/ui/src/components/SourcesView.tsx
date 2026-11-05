@@ -214,6 +214,7 @@ export function SourcesView() {
   const capabilities = useUi((s) => s.capabilities);
   return (
     <div className="src">
+      <header className="src-head"><h1>Sources</h1><span className="lib-count">Playback routes</span></header>
       <h2 className="src-h">Streaming</h2>
       <ProviderSearch caps={capabilities} />
       <h2 className="src-h">Sources</h2>
