@@ -15,7 +15,12 @@ fi
 
 mkdir -p docs/design/screens
 # electron resolves from apps/desktop's deps (.bin is the real binary)
-CMD=(env -u ELECTRON_RUN_AS_NODE xvfb-run -a ../../node_modules/.pnpm/electron@45.1.0/node_modules/electron/dist/electron scripts/capture.cjs
+if [ -n "${DISPLAY:-}" ] && timeout 5 xset -q >/dev/null 2>&1; then
+  RUNNER=(env -u ELECTRON_RUN_AS_NODE)
+else
+  RUNNER=(env -u ELECTRON_RUN_AS_NODE xvfb-run -a)
+fi
+CMD=("${RUNNER[@]}" ../../node_modules/.pnpm/electron@45.1.0/node_modules/electron/dist/electron scripts/capture.cjs
   "--url=http://localhost:${PORT}/${SUFFIX}"
   "--out=../../docs/design/screens/${NAME}.png" "--wait=${WAIT}")
 [ -n "$EVAL" ] && CMD+=("--eval=${EVAL}")
