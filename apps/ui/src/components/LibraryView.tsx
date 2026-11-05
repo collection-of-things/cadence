@@ -167,6 +167,7 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
   useEffect(() => {
     if (!storeQuery) return;
     setText(storeQuery);
+    session.setLibraryQuery(''); // adopt once — don't resurrect it on remount
   }, [storeQuery]);
 
   useEffect(() => {

@@ -90,6 +90,7 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
         ref={scrollRef}
         aria-label="Synced lyrics"
         onWheel={() => unpause()}
+        onPointerDown={() => unpause(6000)}
         onTouchMove={() => unpause(6000)}
       >
         {lines.map((line, i) => (
@@ -97,7 +98,7 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
             data-lyric
             key={`${line.time}-${i}`}
             role="button"
-            tabIndex={0}
+            tabIndex={-1}
             title={`Jump to ${Math.floor(line.time / 60000)}:${String(Math.floor((line.time % 60000) / 1000)).padStart(2, '0')}`}
             onClick={() => session.seek(line.time)}
             onKeyDown={(e) => e.key === 'Enter' && session.seek(line.time)}

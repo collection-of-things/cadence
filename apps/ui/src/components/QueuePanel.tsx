@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
 import { session } from '../app';
@@ -102,7 +103,7 @@ export function QueuePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  return (
+  return createPortal(
     <aside className={`queue ${open ? 'open' : ''} ${npExpanded ? 'over-now' : ''}`} aria-hidden={!open} aria-label="Play queue">
       <div className="q-head">
         <h2>Up Next</h2>
@@ -128,6 +129,7 @@ export function QueuePanel() {
           </div>
         </div>
       )}
-    </aside>
+    </aside>,
+    document.body,
   );
 }

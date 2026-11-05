@@ -174,7 +174,6 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
             <div
               key={t.id}
               className="src-hit"
-              role="button"
               tabIndex={0}
               onClick={() => session.playTracks(results, i, { kind: 'provider' })}
               onKeyDown={(e) => e.key === 'Enter' && session.playTracks(results, i, { kind: 'provider' })}

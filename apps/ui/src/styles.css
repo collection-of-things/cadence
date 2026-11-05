@@ -708,7 +708,7 @@ input:focus-visible,
 
 /* Floating frosted card docked to the right edge, clearing the player bar. */
 .queue {
-  position: absolute;
+  position: fixed;
   top: 10px;
   right: 10px;
   bottom: var(--pb-clear);
@@ -1775,3 +1775,8 @@ input:focus-visible,
 .lib-root-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8; font-family: ui-monospace, monospace; }
 .lib-root-x { padding: 0 8px; font-size: 14px; line-height: 1.4; }
 .lib-roots-empty { opacity: .6; font-size: 12px; padding: 2px 0; }
+
+/* rises above the immersive overlay (z 1000) while expanded */
+.queue.over-now {
+  z-index: 1100;
+}

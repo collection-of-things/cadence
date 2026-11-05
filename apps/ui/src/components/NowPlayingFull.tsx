@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { artistsLine } from '../format';
 import { useUi } from '../hooks';
 import { session } from '../app';
-import { DownIcon, NoteIcon } from '../icons';
+import { DownIcon, MuteIcon, NoteIcon, VolumeIcon } from '../icons';
 import { PixiBackground } from '../visuals/PixiBackground';
 import { Lyrics } from './Lyrics';
 import { SeekBar } from './SeekBar';
@@ -13,6 +13,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
   const track = useUi((s) => s.snapshot.current?.track);
   const palette = useUi((s) => s.palette);
   const queueOpen = useUi((s) => s.queueOpen);
+  const muted = useUi((s) => s.snapshot.muted === true);
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const touch = useRef<{ x: number; y: number; at: number } | null>(null);
@@ -69,6 +70,9 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
       <div className="full-controls">
         <SeekBar />
         <Transport />
+        <button className="full-mute icon-btn" aria-label={muted ? 'Unmute' : 'Mute'} onClick={() => session.toggleMute()}>
+          {muted ? <MuteIcon size={17} /> : <VolumeIcon size={17} />}
+        </button>
         <button className="full-queue icon-btn" aria-label="Show queue" aria-pressed={queueOpen} onClick={() => session.setQueueOpen(!queueOpen)}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M4 6h12M4 11h12M4 16h8" /><path d="m17.5 15 4 2.6-4 2.6z" fill="currentColor" stroke="none" /></svg>
         </button>

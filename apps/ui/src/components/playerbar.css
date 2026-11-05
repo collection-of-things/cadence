@@ -305,5 +305,5 @@
 }
 
 /* mute shows only where the volume lane collapses away */
-.pb-mute { display: none; }
-@media (max-width: 1020px) { .pb-mute { display: inline-flex; } }
+.playerbar .pb-mute { display: none; }
+@media (max-width: 1020px) { .playerbar .pb-mute { display: inline-flex; } }

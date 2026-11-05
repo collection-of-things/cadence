@@ -25,7 +25,6 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
   return (
     <div
       className="album-track-row"
-      role="button"
       tabIndex={0}
       onClick={onPlay}
       onKeyDown={(event) => {

@@ -85,7 +85,7 @@ export function SeekBar() {
           }}
           onPointerUp={commit}
           onKeyUp={(e) => {
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') commit();
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') commit();
           }}
           onBlur={() => {
             scrubbing.current = false;
