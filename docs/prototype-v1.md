@@ -1,7 +1,7 @@
 # Music player prototype v1 — report
 
-Date: 5 November 2026. Repo: `~/dev/work/music-player` (branch `main`, commit `1ec7996`).
-Status: complete for the v1 vertical slice. Final council round R5 in flight at write time (Sol + Terra + Astra seats); scores appended below when received.
+Date: 5 November 2026. Repo: `~/dev/work/music-player` (branch `main`, commit `50ffeb2`).
+Status: complete for the v1 vertical slice.
 
 ## What was built
 
@@ -113,7 +113,7 @@ Astra via codex).
 | R2 | 8.0 | 7.0 | 7.0 | Promotion fix, serialization/timeouts, RT-safety, S16, tray, cadence-art, SettingsSheet/mediaSession, Sources/search, librespot pump, YTM reinject, suspend/resume, electron-builder, position-preserving rebuilds, device fallback, pre-volume FFT. |
 | R3 | 7.5 | 7.5 | 7.5 | Ended dedupe, knownQueueIds filter, prefetch reconcile, promotedQueueId guard (bug found: desync — fixed next round), monitor guards, dead-sink negotiated-order, librespot sink events, packaged paths, sign-in UX. |
 | R4 | 8.0 | 6.8 | 7.0 | Verified-fix round: I32 wrong-pitch producer, dead-sink silent load, producer-death buffering, atomic feed, feed control frames, stall-clear, route-gated events, all timeouts, audioMute, quit-dispose, engine-down surfacing, cadence-app scheme + base './', removeRoots, FFT units, probe hardened. |
-| R5 | pending (Sol) | pending (Terra) | pending (Astra) | Track-instance epoch guards, stall-clear protocol key, removeRoots prune + UI, next-at-end positionMs, EQ store state. |
+| R5 | **8.0** (GPT-6.1 Sol) | **6.3** (GPT-6.1 Terra) | **7.5** (GPT-6 Astra) | Track-instance epoch guards, stall-clear protocol key, removeRoots prune + UI, `clearPrefetch` on stale successors, volume+fidelity before play, engine-down error status, sink-health in rebuild, atomic boundary adoption, album-artist match, library refetch. |
 
 ## Top open issues (inherent or residual)
 
@@ -132,6 +132,8 @@ Astra via codex).
 7. Repeat-one can't prefetch itself — restart with a gap by design.
 8. No MPRIS — `globalShortcut` media keys are best-effort on Linux;
    `mediaSession` covers in-page only.
-9. Small residuals: `ffprobe` runs per pipeline spawn (double-probe per
-   load); `scratch16` may allocate on first callback; IPC broadcast reaches
-   hidden provider windows (harmless noise).
+9. Small residuals: `ffprobe` runs per pipeline spawn; callback still clones
+   a queue id + drops the ended track at boundaries; 500-result library cap
+   unpaginated in the UI; a timed-out `adapter.play` can't cancel a provider's
+   late start (audioMute mitigates); a failed outgoing `stop` still hands off
+   (confirmed-silence is best-effort on provider routes).
