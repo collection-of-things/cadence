@@ -7,8 +7,6 @@ import { NoteIcon } from '../icons';
 import { PixiBackground } from '../visuals/PixiBackground';
 import { CapabilityChips } from './CapabilityChips';
 import { providerForRoute, RouteBadge } from './RouteBadge';
-import { SeekBar } from './SeekBar';
-import { Transport } from './Transport';
 import { NowPlayingFull } from './NowPlayingFull';
 
 function Artwork() {
@@ -106,8 +104,6 @@ export function NowPlaying() {
               </div>
             )}
             <CapabilityChips />
-            <SeekBar />
-            <Transport />
           </div>
         </div>
       ) : (

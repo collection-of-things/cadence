@@ -5,13 +5,13 @@
 
 /* ---------- transport ---------- */
 
-.app .transport {
+.app .transport, .full-now .transport {
   gap: 14px;
   margin-top: 10px;
 }
 
 /* The five playback buttons read as one rounded pill. */
-.app .tp-cluster {
+.app .tp-cluster, .full-now .tp-cluster {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -21,7 +21,7 @@
   border: 1px solid var(--border-soft);
 }
 
-.app .transport .icon-btn {
+.app .transport .icon-btn, .full-now .transport .icon-btn {
   width: 38px;
   height: 38px;
   border-radius: 50%;
@@ -32,43 +32,43 @@
     transform 0.16s var(--ease);
 }
 
-.app .transport .icon-btn:hover {
+.app .transport .icon-btn:hover, .full-now .transport .icon-btn:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.08);
 }
 
-.app .transport .icon-btn:active {
+.app .transport .icon-btn:active, .full-now .transport .icon-btn:active {
   transform: scale(0.96);
 }
 
-.app .transport .icon-btn.on {
+.app .transport .icon-btn.on, .full-now .transport .icon-btn.on {
   color: var(--accent);
 }
 
 /* shuffle / repeat sit one step quieter than prev/next */
-.app .transport .tp-side {
+.app .transport .tp-side, .full-now .transport .tp-side {
   width: 34px;
   height: 34px;
   margin: 0 2px;
   color: var(--text-faint);
 }
 
-.app .transport .tp-side:hover {
+.app .transport .tp-side:hover, .full-now .transport .tp-side:hover {
   color: var(--text-dim);
 }
 
-.app .transport .tp-side.on {
+.app .transport .tp-side.on, .full-now .transport .tp-side.on {
   color: var(--accent);
 }
 
-.app .transport .tp-nav {
+.app .transport .tp-nav, .full-now .transport .tp-nav {
   width: 44px;
   height: 44px;
   color: var(--text);
 }
 
 /* The play button is the one solid element: accent, generous, tactile. */
-.app .transport .tp-play {
+.app .transport .tp-play, .full-now .transport .tp-play {
   width: 54px;
   height: 54px;
   margin: 0 4px;
@@ -84,38 +84,38 @@
     opacity 0.15s ease;
 }
 
-.app .transport .tp-play:hover {
+.app .transport .tp-play:hover, .full-now .transport .tp-play:hover {
   transform: scale(1.04);
   box-shadow:
     0 10px 30px rgba(140, 130, 255, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.32);
 }
 
-.app .transport .tp-play:active {
+.app .transport .tp-play:active, .full-now .transport .tp-play:active {
   transform: scale(0.96);
 }
 
-.app .transport .tp-play:disabled {
+.app .transport .tp-play:disabled, .full-now .transport .tp-play:disabled {
   opacity: 0.45;
   box-shadow: none;
 }
 
 /* play/pause crossfade — both icons stay mounted, swap by opacity+scale */
-.app .transport .tp-play .tp-ic {
+.app .transport .tp-play .tp-ic, .full-now .transport .tp-play .tp-ic {
   transition:
     opacity 0.16s var(--ease),
     transform 0.16s var(--ease),
     filter 0.16s var(--ease);
 }
 
-.app .transport .tp-play .tp-ic.hide {
+.app .transport .tp-play .tp-ic.hide, .full-now .transport .tp-play .tp-ic.hide {
   opacity: 0;
   transform: scale(0.25);
   filter: blur(4px);
 }
 
 /* volume + queue form a second, quieter pill on the right */
-.app .tp-right {
+.app .tp-right, .full-now .tp-right {
   gap: 6px;
   padding: 4px 6px;
   border-radius: 999px;
@@ -123,15 +123,15 @@
   border: 1px solid var(--border-soft);
 }
 
-.app .vol {
+.app .vol, .full-now .vol {
   gap: 2px;
 }
 
-.app .q-toggle {
+.app .q-toggle, .full-now .q-toggle {
   position: relative;
 }
 
-.app .vol-input {
+.app .vol-input, .full-now .vol-input {
   width: 84px;
   height: 4px;
   margin: 0 6px;
@@ -143,7 +143,7 @@
   );
 }
 
-.app .vol-input::-webkit-slider-thumb {
+.app .vol-input::-webkit-slider-thumb, .full-now .vol-input::-webkit-slider-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -156,7 +156,7 @@
     transform 0.15s var(--ease);
 }
 
-.app .vol-input::-moz-range-thumb {
+.app .vol-input::-moz-range-thumb, .full-now .vol-input::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border: none;
@@ -169,29 +169,29 @@
     transform 0.15s var(--ease);
 }
 
-.app .vol:hover .vol-input::-webkit-slider-thumb,
-.app .vol-input:focus-visible::-webkit-slider-thumb,
-.app .vol:hover .vol-input::-moz-range-thumb,
-.app .vol-input:focus-visible::-moz-range-thumb {
+.app .vol:hover .vol-input::-webkit-slider-thumb, .full-now .vol:hover .vol-input::-webkit-slider-thumb,
+.app .vol-input:focus-visible::-webkit-slider-thumb, .full-now .vol-input:focus-visible::-webkit-slider-thumb,
+.app .vol:hover .vol-input::-moz-range-thumb, .full-now .vol:hover .vol-input::-moz-range-thumb,
+.app .vol-input:focus-visible::-moz-range-thumb, .full-now .vol-input:focus-visible::-moz-range-thumb {
   opacity: 1;
   transform: scale(1);
 }
 
 /* ---------- seek bar ---------- */
 
-.app .seek {
+.app .seek, .full-now .seek {
   gap: 14px;
   margin-top: 8px;
 }
 
 /* Thin track that swells and brightens under the pointer. */
-.app .seek-track::before {
+.app .seek-track::before, .full-now .seek-track::before {
   height: 4px;
   background: rgba(255, 255, 255, 0.12);
   transition: height 0.18s var(--ease);
 }
 
-.app .seek-track::after {
+.app .seek-track::after, .full-now .seek-track::after {
   height: 4px;
   background: linear-gradient(
     90deg,
@@ -203,24 +203,24 @@
     width 0.1s linear;
 }
 
-.app .seek-track:hover::before,
-.app .seek-track:hover::after,
-.app .seek-track:focus-within::before,
-.app .seek-track:focus-within::after {
+.app .seek-track:hover::before, .full-now .seek-track:hover::before,
+.app .seek-track:hover::after, .full-now .seek-track:hover::after,
+.app .seek-track:focus-within::before, .full-now .seek-track:focus-within::before,
+.app .seek-track:focus-within::after, .full-now .seek-track:focus-within::after {
   height: 6px;
 }
 
-.app .seek-input::-webkit-slider-thumb {
+.app .seek-input::-webkit-slider-thumb, .full-now .seek-input::-webkit-slider-thumb {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
 }
 
-.app .seek-time {
+.app .seek-time, .full-now .seek-time {
   color: var(--text-faint);
   font-size: 12px;
   letter-spacing: 0.02em;
 }
 
-.app .seek-tip {
+.app .seek-tip, .full-now .seek-tip {
   border-radius: 8px;
   background: rgba(14, 14, 24, 0.94);
   backdrop-filter: blur(10px);
@@ -229,11 +229,11 @@
 
 /* ---------- sources view ---------- */
 
-.app .src {
+.app .src, .full-now .src {
   gap: 16px;
 }
 
-.app .src-route {
+.app .src-route, .full-now .src-route {
   padding: 16px 18px;
   gap: 12px;
   transition:
@@ -241,27 +241,27 @@
     box-shadow 0.2s ease;
 }
 
-.app .src-route:hover {
+.app .src-route:hover, .full-now .src-route:hover {
   border-color: var(--border);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
 }
 
-.app .src-route-head {
+.app .src-route-head, .full-now .src-route-head {
   gap: 12px;
 }
 
-.app .src-route-name {
+.app .src-route-name, .full-now .src-route-name {
   font-size: 14.5px;
 }
 
 /* state chip carries a live status dot */
-.app .src-state {
+.app .src-state, .full-now .src-state {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.app .src-dot {
+.app .src-dot, .full-now .src-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -269,97 +269,97 @@
   flex: none;
 }
 
-.app .chip-ok .src-dot {
+.app .chip-ok .src-dot, .full-now .chip-ok .src-dot {
   background: #7ee2a0;
 }
 
-.app .chip-warn .src-dot {
+.app .chip-warn .src-dot, .full-now .chip-warn .src-dot {
   background: #ffc08a;
 }
 
-.app .chip-dim .src-dot {
+.app .chip-dim .src-dot, .full-now .chip-dim .src-dot {
   background: var(--text-faint);
 }
 
-.app .src-notes {
+.app .src-notes, .full-now .src-notes {
   gap: 4px;
 }
 
-.app .src-notes li::marker {
+.app .src-notes li::marker, .full-now .src-notes li::marker {
   color: var(--text-faint);
 }
 
-.app .src-empty {
+.app .src-empty, .full-now .src-empty {
   padding: 40px 0;
   text-align: center;
   color: var(--text-faint);
 }
 
 /* search bar */
-.app .src-panel {
+.app .src-panel, .full-now .src-panel {
   padding: 16px;
 }
 
-.app .src-field {
+.app .src-field, .full-now .src-field {
   height: 38px;
   transition: border-color 0.15s ease;
 }
 
-.app .src-field:focus-within {
+.app .src-field:focus-within, .full-now .src-field:focus-within {
   border-color: rgba(140, 130, 255, 0.5);
   color: var(--text-dim);
 }
 
-.app .src-pill {
+.app .src-pill, .full-now .src-pill {
   transition:
     color 0.15s,
     background-color 0.15s,
     transform 0.16s var(--ease);
 }
 
-.app .src-pill:hover {
+.app .src-pill:hover, .full-now .src-pill:hover {
   color: var(--text);
 }
 
-.app .src-pill:active {
+.app .src-pill:active, .full-now .src-pill:active {
   transform: scale(0.96);
 }
 
 /* results */
-.app .src-hits {
+.app .src-hits, .full-now .src-hits {
   gap: 2px;
 }
 
-.app .src-hit {
+.app .src-hit, .full-now .src-hit {
   padding: 7px 10px;
   border-radius: 10px;
   transition: background-color 0.12s ease;
 }
 
-.app .src-hit:active {
+.app .src-hit:active, .full-now .src-hit:active {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.app .src-hit-art {
+.app .src-hit-art, .full-now .src-hit-art {
   /* 1px inner outline for depth — pure white at low alpha, never tinted */
   outline: 1px solid rgba(255, 255, 255, 0.1);
   outline-offset: -1px;
 }
 
-.app .src-hit-next {
+.app .src-hit-next, .full-now .src-hit-next {
   border-radius: 50%;
 }
 
-.app .src-status {
+.app .src-status, .full-now .src-status {
   padding: 20px 6px 14px;
 }
 
-.app .src-err {
+.app .src-err, .full-now .src-err {
   color: #ffb3a7;
 }
 
 /* route badges read as chips, not stickers */
-.app .route-badge {
+.app .route-badge, .full-now .route-badge {
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 10px;
@@ -367,7 +367,7 @@
 
 /* ---------- toasts ---------- */
 
-.app .toast {
+.app .toast, .full-now .toast {
   border-radius: 12px;
   background: rgba(20, 20, 32, 0.92);
   backdrop-filter: blur(16px) saturate(1.2);
@@ -375,7 +375,7 @@
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
 }
 
-.app .toast .icon-btn {
+.app .toast .icon-btn, .full-now .toast .icon-btn {
   width: 26px;
   height: 26px;
   border-radius: 50%;

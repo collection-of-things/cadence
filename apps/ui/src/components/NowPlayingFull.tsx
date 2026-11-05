@@ -32,8 +32,17 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   if (!track) return null;
+  // Artwork-coloured wash as a real fallback when WebGL is unavailable —
+  // and a base layer while the shader warms up.
+  const css = (c: [number, number, number] | undefined, fallback: string) =>
+    c ? `rgb(${c[0]}, ${c[1]}, ${c[2]})` : fallback;
+  const washVars = {
+    '--npf-c0': css(palette?.[0], 'rgb(110,60,140)'),
+    '--npf-c1': css(palette?.[1], 'rgb(150,80,50)'),
+    '--npf-c2': css(palette?.[2], 'rgb(40,40,70)'),
+  } as React.CSSProperties;
   return (
-    <section ref={dialogRef} className="full-now" role="dialog" aria-modal="true" aria-label="Now playing"
+    <section ref={dialogRef} className="full-now" role="dialog" aria-modal="true" aria-label="Now playing" style={washVars}
       onTouchStart={(e) => { if (e.touches.length === 1) touch.current = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, at: Date.now() }; }}
       onTouchEnd={(e) => {
         const start = touch.current; touch.current = null;

@@ -35,6 +35,10 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
           elements.forEach((el, i) => {
             el.classList.toggle('active', i === next);
             el.classList.toggle('past', i < next);
+            const dist = i - next;
+            el.classList.toggle('d1', dist === 1);
+            el.classList.toggle('d2', dist === 2);
+            el.classList.toggle('d3', dist >= 3);
           });
           const target = elements[Math.max(0, next)];
           if (target) viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
