@@ -59,7 +59,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     '--npf-c2': css(palette?.[2], 'rgb(40,40,70)'),
   } as React.CSSProperties;
   return (
-    <section ref={dialogRef} className="full-now" role="dialog" aria-modal="true" aria-label="Now playing" style={washVars}
+    <section ref={dialogRef} className={`full-now ${queueOpen ? "has-queue" : ""}`} role="dialog" aria-modal="true" aria-label="Now playing" style={washVars}
       onTouchStart={(e) => { if (e.touches.length === 1) touch.current = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, at: Date.now() }; }}
       onTouchEnd={(e) => {
         const start = touch.current; touch.current = null;

@@ -198,9 +198,8 @@
     var(--accent),
     color-mix(in srgb, var(--accent) 72%, #fff)
   );
-  transition:
-    height 0.18s var(--ease),
-    width 0.1s linear;
+  /* no width transition: --p already animates at rAF pace */
+  transition: height 0.18s var(--ease);
 }
 
 .app .seek-track:hover::before, .full-now .seek-track:hover::before,

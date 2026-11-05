@@ -30,10 +30,10 @@
 .full-lyrics-scroll::before, .full-lyrics-scroll::after { content: ''; display: block; height: 38%; }
 .full-lyrics-scroll p { margin: 0 0 24px; color: rgba(255,255,255,.34); font-size: clamp(24px, 2.65vw, 39px); font-weight: 800; line-height: 1.18; letter-spacing: -.035em; filter: blur(1px); transition: color 300ms, filter 300ms, transform 300ms, opacity 300ms; transform-origin: left center; }
 .full-lyrics-scroll p.active { color: white; filter: none; transform: scale(1.045); }
-.full-lyrics-scroll p.past { color: rgba(255,255,255,.30); filter: none; }
-.full-lyrics-scroll p.d1 { color: rgba(255,255,255,.38); filter: blur(1.5px); }
-.full-lyrics-scroll p.d2 { color: rgba(255,255,255,.26); filter: blur(2.5px); }
-.full-lyrics-scroll p.d3 { color: rgba(255,255,255,.18); filter: blur(4px); }
+.full-lyrics-scroll p.past { color: rgba(255,255,255,.22); filter: blur(0.9px); }
+.full-lyrics-scroll p.d1 { color: rgba(255,255,255,.34); filter: blur(1.6px); }
+.full-lyrics-scroll p.d2 { color: rgba(255,255,255,.2); filter: blur(3.2px); }
+.full-lyrics-scroll p.d3 { color: rgba(255,255,255,.12); filter: blur(5px); }
 .full-lyrics-plain { padding-top: 25px; white-space: pre-wrap; color: rgba(255,255,255,.62); font-size: 18px; line-height: 1.8; }
 .full-lyrics-follow { position: absolute; right: 26px; bottom: 18px; z-index: 2; padding: 8px 16px; border-radius: 999px; background: rgba(255,255,255,.14); color: white; font-size: 12px; font-weight: 650; backdrop-filter: blur(12px); transition: background 160ms; }
 .full-lyrics-follow:hover { background: rgba(255,255,255,.24); }
@@ -54,3 +54,7 @@
   .full-record { min-width: 0; }
   .full-meta { min-width: 0; flex: 1 1 auto; } .full-meta { margin: 0; } .full-meta h1 { white-space: normal; } .full-lyrics-card { width: 100%; } .full-brand { display: none; } }
 @media (prefers-reduced-motion: reduce) { .full-lyrics-scroll { scroll-behavior: auto; } .full-lyrics-scroll p, .full-close { transition: none; } }
+
+/* queue open narrows the record strip */
+.full-now.has-queue .full-meta { max-width: 46%; }
+.full-now .route-badge { opacity: .55; }

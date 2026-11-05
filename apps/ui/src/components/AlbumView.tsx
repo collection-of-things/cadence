@@ -21,7 +21,7 @@ function shuffled<T>(items: T[]): T[] {
   return out;
 }
 
-function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; onPlay(): void }) {
+function TrackRow({ track, index, onPlay, albumArtist }: { track: TrackRef; index: number; onPlay(): void; albumArtist?: string }) {
   const isCurrent = useUi((s) => s.snapshot.current?.track.id === track.id);
   const playing = useUi((s) => s.snapshot.status === 'playing');
   return (
@@ -43,7 +43,9 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
       </span>
       <span className="album-track-copy">
         <span className="album-track-title">{track.title}</span>
-        <span className="album-track-artist">{track.artists.map((artist) => artist.name).join(', ')}</span>
+        {track.artists.map((a) => a.name).join(', ') !== albumArtist && (
+          <span className="album-track-artist">{track.artists.map((artist) => artist.name).join(', ')}</span>
+        )}
       </span>
       <span className="album-track-duration">{formatTime(track.durationMs)}</span>
       <button
@@ -151,7 +153,7 @@ export function AlbumView({ album, onBack }: AlbumViewProps) {
             <div className="album-track-status">No tracks found for this album.</div>
           ) : (
             <div className="album-track-list">
-              {tracks.map((track, index) => <TrackRow key={track.id} track={track} index={index} onPlay={() => session.playTracks(tracks, index, origin)} />)}
+              {tracks.map((track, index) => <TrackRow key={track.id} track={track} index={index} albumArtist={album.artist} onPlay={() => session.playTracks(tracks, index, origin)} />)}
             </div>
           )}
         </section>

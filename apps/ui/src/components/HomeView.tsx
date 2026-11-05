@@ -64,11 +64,11 @@ function Shelf({ title, subtitle, albums, onSelectAlbum }: {
             <span className="home-cover">
               {album.artwork ? <img src={album.artwork.url} alt="" loading={index > 3 ? 'lazy' : 'eager'} /> : <span className="home-cover-empty"><NoteIcon size={36} /></span>}
               <span className="home-cover-shade" />
-              <span className="home-cover-meta">
-                <span className="home-cover-title">{album.title}</span>
-                <span className="home-cover-artist">{album.artist}</span>
-              </span>
               <span className="home-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
+            </span>
+            <span className="home-card-caption">
+              <span className="home-card-title">{album.title}</span>
+              <span className="home-card-artist">{album.artist}</span>
             </span>
 
           </button>

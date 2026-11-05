@@ -41,12 +41,14 @@
 .home-cover { position: relative; display: block; overflow: hidden; width: 100%; aspect-ratio: 1 / 1; background: rgba(255, 255, 255, 0.06); border-radius: 19px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.26), 0 2px 5px rgba(0, 0, 0, 0.25); outline: 1px solid oklch(1 0 0 / 0.1); outline-offset: -1px; transition: transform 190ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 190ms ease; }
 .home-cover > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .home-cover-empty { display: grid; width: 100%; height: 100%; place-items: center; color: rgba(255, 255, 255, 0.46); background: linear-gradient(135deg, #34323c, #19191f); }
-.home-cover-shade { position: absolute; inset: 25% 0 0; background: linear-gradient(180deg, transparent 0%, rgba(7, 7, 11, 0.17) 33%, rgba(7, 7, 11, 0.82) 100%); }
+.home-cover-shade { position: absolute; inset: 0; background: rgba(7, 7, 11, 0); transition: background 140ms ease; }
+.home-album-card:hover .home-cover-shade { background: rgba(7, 7, 11, 0.16); }
 .home-cover-meta { position: absolute; inset: auto 15px 15px; display: flex; flex-direction: column; gap: 3px; text-align: start; }
 .home-cover-title { overflow: hidden; color: #fff; font-size: 14px; font-weight: 680; letter-spacing: -0.015em; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 9px rgba(0, 0, 0, 0.48); }
 .home-cover-artist { overflow: hidden; color: rgba(255, 255, 255, 0.75); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4); }
 .home-card-open { position: absolute; inset-block-start: 12px; inset-inline-end: 12px; display: grid; width: 32px; height: 32px; place-items: center; color: #28150f; background: var(--shell-accent-bright); border-radius: 50%; opacity: 0; transform: translateY(3px) scale(0.92); transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
-.home-card-caption { display: flex; flex-direction: column; gap: 3px; padding-inline: 2px; }
+.home-card-caption { display: flex; flex-direction: column; gap: 2px; padding-inline: 3px; }
+.home-card-artist { overflow: hidden; color: rgba(244, 243, 248, 0.55); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .home-card-title { overflow: hidden; color: rgba(250, 248, 246, 0.9); font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .home-card-subtitle { overflow: hidden; color: rgba(244, 243, 248, 0.45); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .home-empty { display: flex; align-items: center; gap: 16px; max-width: 620px; padding: 21px 23px; margin-top: 20px; background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(255, 255, 255, 0.065); border-radius: 17px; }
@@ -87,7 +89,7 @@
 .album-tracklist-head h2 { margin: 0; color: rgba(250, 248, 246, 0.92); font-size: 16px; font-weight: 670; letter-spacing: -0.02em; }
 .album-tracklist-head span { color: rgba(244, 243, 248, 0.43); font-size: 11px; }
 .album-track-list { display: flex; flex-direction: column; gap: 1px; }
-.album-track-row { display: flex; align-items: center; min-height: 48px; gap: 14px; padding: 6px 14px; border-radius: 10px; cursor: pointer; transition: background 130ms ease, transform 130ms cubic-bezier(0.23, 1, 0.32, 1); }
+.album-track-row { display: flex; align-items: center; min-height: 40px; gap: 14px; padding: 4px 10px; border-radius: 8px; cursor: pointer; transition: background 130ms ease, transform 130ms cubic-bezier(0.23, 1, 0.32, 1); }
 .album-track-row:hover { background: rgba(255, 255, 255, 0.055); }
 .album-track-row.now { background: rgba(255, 122, 89, 0.09); }
 .album-track-row:active { transform: scale(0.996); }
@@ -134,9 +136,12 @@
 }
 
 /* Lead shelf: larger, more editorial cards */
-.home-scroll > .home-shelf:first-child .home-album-card,
-.home-scroll > .home-shelf:first-child .home-card { flex-basis: min(28%, 288px); width: auto; }
+.home-scroll > .home-shelf:first-of-type .home-album-card,
+.home-scroll > .home-shelf:first-of-type .home-card { flex-basis: min(28%, 288px); width: auto; }
 /* Rail edge: fade the clipped card instead of a hard cut */
 .home-rail { mask-image: linear-gradient(90deg, black calc(100% - 56px), transparent); -webkit-mask-image: linear-gradient(90deg, black calc(100% - 56px), transparent); }
 /* Reserve the floating bar's space so the next section never hides */
 .home-scroll { padding-bottom: 120px; }
+
+.album-track-row + .album-track-row { border-top: 1px solid rgba(255,255,255,.05); border-radius: 0; }
+.album-track-row:hover { border-radius: 8px; }

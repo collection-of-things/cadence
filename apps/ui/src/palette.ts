@@ -58,5 +58,32 @@ async function sample(url: string): Promise<Rgb[] | null> {
     }
   }
   const top = [...buckets.values()].sort((a, b) => b.score - a.score).slice(0, 3).map((v) => v.rgb);
-  return top.length ? top : null;
+  return top.length ? top.map(liftColor) : null;
+}
+
+/* Lift a sampled colour toward the wash's usable range: a murky dark
+ * extraction gets saturation and mid-luma so it can carry an atmosphere
+ * instead of dimming the page. HSL-space lift, no lib. */
+function liftColor(rgb: Rgb): Rgb {
+  const [r0, g0, b0] = rgb.map((v) => v / 255) as [number, number, number];
+  const max = Math.max(r0, g0, b0);
+  const min = Math.min(r0, g0, b0);
+  const l = (max + min) / 2;
+  const d = max - min;
+  const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  let hue = 0;
+  if (d !== 0) {
+    if (max === r0) hue = 60 * (((g0 - b0) / d) % 6);
+    else if (max === g0) hue = 60 * ((b0 - r0) / d + 2);
+    else hue = 60 * ((r0 - g0) / d + 4);
+  }
+  if (hue < 0) hue += 360;
+  const sat2 = Math.max(sat, 0.42);           // chroma floor
+  const l2 = Math.min(0.62, Math.max(0.38, l + (l < 0.35 ? 0.14 : 0))); // luma band
+  const c = (1 - Math.abs(2 * l2 - 1)) * sat2;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = l2 - c / 2;
+  const seg = Math.floor(hue / 60) % 6;
+  const [rp, gp, bp] = ([[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]] as const)[seg]!;
+  return [Math.round((rp + m) * 255), Math.round((gp + m) * 255), Math.round((bp + m) * 255)];
 }

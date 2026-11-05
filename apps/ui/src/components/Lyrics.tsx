@@ -53,7 +53,7 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
       for (let i = 0; i < lines.length && lines[i]!.time <= position; i++) next = i;
       if (next !== active) {
         const wasInitial = active === -2;
-        activeWasInitial = wasInitial;
+        activeWasInitial = wasInitial || Math.abs(next - active) > 1;
         active = next;
         const viewport = scrollRef.current;
         if (viewport) {

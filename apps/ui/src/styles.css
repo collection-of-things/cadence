@@ -309,11 +309,12 @@ input:focus-visible,
   overflow-y: auto;
 }
 
+
 .np-art {
   width: 100%;
   aspect-ratio: 1;
-  max-height: min(60vh, 520px);
-  max-width: min(60vh, 520px);
+  max-height: min(64vh, 560px);
+  max-width: min(64vh, 560px);
   margin: 0 auto;
   border-radius: 20px;
   overflow: hidden;
