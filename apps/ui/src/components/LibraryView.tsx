@@ -9,7 +9,7 @@ import { providerForRoute, RouteBadge } from './RouteBadge';
 
 type Tab = 'albums' | 'artists' | 'tracks';
 
-function AlbumsGrid({ query }: { query: string }) {
+function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(album: LibraryAlbum): void }) {
   const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
   const scan = useUi((s) => s.scan);
   useEffect(() => {
@@ -24,17 +24,10 @@ function AlbumsGrid({ query }: { query: string }) {
   if (!albums) return <div className="lib-status">Loading albums…</div>;
   if (!albums.length) return <div className="lib-status">No albums match.</div>;
 
-  const play = async (album: LibraryAlbum) => {
-    // Filter by album artist too — a bare title merges same-name albums by
-    // different artists into one queue.
-    const tracks = await api.library.tracks({ album: album.title, artist: album.artist });
-    session.playTracks(tracks, 0, { kind: 'album', id: album.id, name: album.title });
-  };
-
   return (
     <div className="album-grid">
       {albums.map((a) => (
-        <button key={a.id} className="album-card" onClick={() => void play(a)}>
+        <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
           {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
           <span className="album-title">{a.title}</span>
           <span className="album-artist">
@@ -164,7 +157,7 @@ function TracksTable({ query }: { query: string }) {
   );
 }
 
-export function LibraryView() {
+export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlbum): void }) {
   const [tab, setTab] = useState<Tab>('albums');
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
@@ -250,7 +243,7 @@ export function LibraryView() {
         </div>
       )}
       <div className="lib-body">
-        {tab === 'albums' && <AlbumsGrid query={query} />}
+        {tab === 'albums' && <AlbumsGrid query={query} onSelectAlbum={onSelectAlbum} />}
         {tab === 'artists' && <ArtistsList query={query} />}
         {tab === 'tracks' && <TracksTable query={query} />}
       </div>
