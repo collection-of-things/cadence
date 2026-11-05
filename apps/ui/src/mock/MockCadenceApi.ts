@@ -441,7 +441,7 @@ export class MockCadenceApi implements CadenceApi {
       this.scanListeners.add(cb);
       return () => this.scanListeners.delete(cb);
     },
-    roots: async () => ['/home/xdd/Music', '/mnt/media/flac'],
+    roots: async () => ['/music', '/music/flac'],
     removeRoots: async (paths: string[]) => ({ removed: paths.length }),
   };
 
@@ -456,7 +456,7 @@ export class MockCadenceApi implements CadenceApi {
         scanned: Math.min(n, total),
         total,
       };
-      if (!done) p.currentPath = `/home/xdd/Music/${Math.floor(Math.random() * 1e4)}.flac`;
+      if (!done) p.currentPath = `/music/${Math.floor(Math.random() * 1e4)}.flac`;
       for (const cb of this.scanListeners) cb(clone(p));
       if (!done) this.later(step, 120);
     };

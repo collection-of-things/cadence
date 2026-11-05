@@ -88,7 +88,7 @@ export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
         spec.route === 'local'
           ? {
               kind: 'file',
-              path: `/home/xdd/Music/${spec.artist}/${spec.title}/${String(i + 1).padStart(2, '0')} ${title}.${spec.format}`,
+              path: `/music/${spec.artist}/${spec.title}/${String(i + 1).padStart(2, '0')} ${title}.${spec.format}`,
               ...(spec.format ? { format: spec.format } : {}),
             }
           : { kind: 'provider', providerItemId: `${spec.key}-${i + 1}`, uri: `${spec.provider}:${spec.key}:${i + 1}` };
