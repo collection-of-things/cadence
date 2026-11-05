@@ -276,6 +276,7 @@ export class Coordinator {
           await this.teardownActive();
           this.status = "stopped";
           this.lease = null;
+          this.positionMs = 0;
           this.emitSnapshot();
           return;
         }

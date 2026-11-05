@@ -17,7 +17,10 @@ function gainLabel(db: number): string {
 }
 
 function EqSection() {
-  const [gains, setGains] = useState<number[]>(() => EQ_FREQS.map(() => 0));
+  const storedEq = useUi((s) => s.eqBands);
+  const [gains, setGains] = useState<number[]>(() =>
+    EQ_FREQS.map((f) => storedEq.find((b) => b.freqHz === f)?.gainDb ?? 0),
+  );
   const eqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaseRoute = useUi((s) => s.snapshot.lease?.route);
   const trackRoute = useUi((s) => s.snapshot.current?.track.route);

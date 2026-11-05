@@ -57,6 +57,8 @@ export interface UiState {
   view: 'now' | 'library' | 'sources';
   queueOpen: boolean;
   palette: Rgb[];
+  /** Last EQ bands the user applied (engine doesn't report them back). */
+  eqBands: EqBand[];
   ready: boolean;
 }
 
@@ -164,6 +166,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     generationId: -1,
     toasts: [],
     scan: { phase: 'idle', scanned: 0 },
+    eqBands: [],
     view: 'now',
     queueOpen: false,
     palette: DEFAULT_PALETTE,
@@ -333,6 +336,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     setEq(bands) {
       if (!api.audio) return;
       const route = get().snapshot.lease?.route ?? 'local';
+      set({ eqBands: bands });
       void api.audio.setEq(bands).catch(() => pushToast(route, 'Could not apply EQ', true));
     },
     async listDevices() {

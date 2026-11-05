@@ -176,6 +176,24 @@ export function LibraryView() {
     void api.library.addFoldersAndScan();
   }, []);
 
+  const [roots, setRoots] = useState<string[] | null>(null);
+  const toggleRoots = useCallback(async () => {
+    if (roots !== null) {
+      setRoots(null);
+      return;
+    }
+    try {
+      setRoots(await api.library.roots());
+    } catch {
+      setRoots([]);
+    }
+  }, [roots]);
+  const removeRoot = useCallback((path: string) => {
+    void api.library.removeRoots([path]).then(() => {
+      setRoots((r) => (r === null ? r : r.filter((x) => x !== path)));
+    });
+  }, []);
+
   return (
     <div className="lib">
       <div className="lib-bar">
@@ -199,7 +217,23 @@ export function LibraryView() {
         <button className="btn btn-ghost" onClick={addFolders}>
           <FolderIcon size={16} /> Add folders
         </button>
+        <button className="btn btn-ghost" onClick={() => void toggleRoots()} aria-expanded={roots !== null}>
+          Folders
+        </button>
       </div>
+      {roots !== null && (
+        <div className="lib-roots" role="list" aria-label="Library folders">
+          {roots.length === 0 && <span className="lib-roots-empty">No folders indexed.</span>}
+          {roots.map((r) => (
+            <div key={r} className="lib-root" role="listitem">
+              <span className="lib-root-path" title={r}>{r}</span>
+              <button className="btn btn-ghost lib-root-x" aria-label={`Remove ${r}`} onClick={() => removeRoot(r)}>
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {scan.phase === 'scanning' && (
         <div className="scan" role="status">
           <div className="scan-fill" style={{ width: `${scan.total ? Math.min(100, (scan.scanned / scan.total) * 100) : 5}%` }} />

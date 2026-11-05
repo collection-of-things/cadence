@@ -1641,3 +1641,9 @@ input:focus-visible,
     transition: none;
   }
 }
+
+.lib-roots { display: flex; flex-direction: column; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--panel) 60%, transparent); }
+.lib-root { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.lib-root-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8; font-family: ui-monospace, monospace; }
+.lib-root-x { padding: 0 8px; font-size: 14px; line-height: 1.4; }
+.lib-roots-empty { opacity: .6; font-size: 12px; padding: 2px 0; }

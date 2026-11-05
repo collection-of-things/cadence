@@ -97,6 +97,11 @@ export class LibraryService {
   removeRoots(paths: string[]): void {
     const dropping = new Set(paths);
     this.store.saveSection("library", { roots: this.roots().filter((r) => !dropping.has(r)) });
+    for (const p of this.db.allPaths()) {
+      if (paths.some((root) => p.startsWith(withSep(root)))) {
+        this.db.deleteByPath(p);
+      }
+    }
     this.startWatcher();
   }
 

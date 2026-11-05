@@ -100,8 +100,14 @@ impl PipeReader {
     }
 }
 
+static NEXT_TRACK_INSTANCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
 /// Reader + track metadata carried through the render chain.
 struct TrackReader {
+    /// Unique per spawned pipeline — lets the monitor tell a stale queued
+    /// event (pre-seek/pre-load) apart from one belonging to the live track.
+    instance: u64,
     queue_id: String,
     duration_ms: u64,
     /// source-time offset this pipeline decodes from (for position math)
@@ -117,12 +123,14 @@ enum CoreEvent {
     /// Active track drained; prefetched track took over on the same stream.
     Boundary {
         ended_queue_id: String,
+        ended_instance: u64,
         started_queue_id: String,
+        started_instance: u64,
         started_duration_ms: u64,
         started_seek_offset_ms: u64,
     },
     /// Active track drained with nothing behind it.
-    Ended { queue_id: String },
+    Ended { queue_id: String, instance: u64 },
 }
 
 /// Bound on queued CoreEvents. Track-boundary events are rare and the
@@ -345,7 +353,9 @@ impl OutputCore {
         if let Some(next) = self.next.take() {
             self.push_event(CoreEvent::Boundary {
                 ended_queue_id: ended.queue_id,
+                ended_instance: ended.instance,
                 started_queue_id: next.queue_id.clone(),
+                started_instance: next.instance,
                 started_duration_ms: next.duration_ms,
                 started_seek_offset_ms: next.seek_offset_ms,
             });
@@ -356,6 +366,7 @@ impl OutputCore {
         } else {
             self.push_event(CoreEvent::Ended {
                 queue_id: ended.queue_id,
+                instance: ended.instance,
             });
             false
         }
@@ -537,6 +548,9 @@ impl Default for EngineConfig {
 struct EngineState {
     generation: u64,
     queue_id: Option<String>,
+    /// Instance id of the live track — stale queued events carry the old
+    /// instance and get dropped instead of clobbering fresh state.
+    current_instance: u64,
     source: Option<SourceSpec>,
     state: PlayState,
     duration_ms: u64,
@@ -608,6 +622,7 @@ impl Engine {
             state: Mutex::new(EngineState {
                 generation: 0,
                 queue_id: None,
+                current_instance: 0,
                 source: None,
                 state: PlayState::Idle,
                 duration_ms: 0,
@@ -937,6 +952,7 @@ impl Engine {
                     })?;
                 (
                     TrackReader {
+                        instance: NEXT_TRACK_INSTANCE.fetch_add(1, Ordering::Relaxed),
                         queue_id: qid.clone(),
                         duration_ms,
                         seek_offset_ms: seek_ms,
@@ -974,6 +990,7 @@ impl Engine {
                     })?;
                 (
                     TrackReader {
+                        instance: NEXT_TRACK_INSTANCE.fetch_add(1, Ordering::Relaxed),
                         queue_id: qid.clone(),
                         duration_ms,
                         seek_offset_ms: seek_ms,
@@ -1101,9 +1118,11 @@ impl Engine {
             };
             match self.spawn_pipeline(&qid, src, pos, rg, true) {
                 Ok((reader, handle, dur, bypass)) => {
+                    let inst = reader.instance;
                     self.core.lock().unwrap().set_active(reader);
                     *self.producer.lock().unwrap() = Some(handle);
                     let mut st = self.state.lock().unwrap();
+                    st.current_instance = inst;
                     st.duration_ms = dur;
                     st.fidelity_bypass = bypass;
                 }
@@ -1173,6 +1192,7 @@ impl Engine {
             }
         };
 
+        let load_instance = reader.instance;
         {
             let mut core = self.core.lock().unwrap();
             core.set_active(reader);
@@ -1182,6 +1202,7 @@ impl Engine {
 
         {
             let mut st = self.state.lock().unwrap();
+            st.current_instance = load_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
             st.state = if p.start_paused {
@@ -1325,6 +1346,7 @@ impl Engine {
         };
         let (reader, handle, duration_ms, bypass) =
             self.spawn_pipeline(&queue_id, src, position_ms, rg, true)?;
+        let seek_instance = reader.instance;
         {
             let mut core = self.core.lock().unwrap();
             core.set_active(reader);
@@ -1332,6 +1354,7 @@ impl Engine {
         *self.producer.lock().unwrap() = Some(handle);
         {
             let mut st = self.state.lock().unwrap();
+            st.current_instance = seek_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
         }
@@ -1476,7 +1499,9 @@ impl Engine {
                 match ev {
                     CoreEvent::Boundary {
                         ended_queue_id,
+                        ended_instance,
                         started_queue_id,
+                        started_instance,
                         started_duration_ms,
                         started_seek_offset_ms,
                     } => {
@@ -1485,10 +1510,13 @@ impl Engine {
                         // if the ended track is still our current one.
                         let gen = {
                             let mut st = self.state.lock().unwrap();
-                            if st.queue_id.as_deref() != Some(ended_queue_id.as_str()) {
+                            if st.queue_id.as_deref() != Some(ended_queue_id.as_str())
+                                || st.current_instance != ended_instance
+                            {
                                 eprintln!("monitor: dropped stale boundary {ended_queue_id}->{started_queue_id}");
                                 continue;
                             }
+                            st.current_instance = started_instance;
                             st.queue_id = Some(started_queue_id.clone());
                             st.duration_ms = started_duration_ms;
                             let _ = started_seek_offset_ms;
@@ -1516,19 +1544,24 @@ impl Engine {
                         // stream rebuilds respawn the right file.
                         let mut st = self.state.lock().unwrap();
                         if let Some(pf) = st.prefetch.take() {
-                            st.source = Some(pf.source);
-                            st.replay_gain_db = pf.replay_gain_db;
+                            if pf.queue_id == started_queue_id {
+                                st.source = Some(pf.source);
+                                st.replay_gain_db = pf.replay_gain_db;
+                            }
                         }
                         st.reported_prefetch_ready = false;
                     }
-                    CoreEvent::Ended { queue_id } => {
+                    CoreEvent::Ended { queue_id, instance } => {
                         let gen = {
                             let mut st = self.state.lock().unwrap();
                             // Ignore an end for a track no longer current
                             // (a concurrent load already replaced it).
-                            if st.queue_id.as_deref() != Some(queue_id.as_str()) {
+                            if st.queue_id.as_deref() != Some(queue_id.as_str())
+                                || st.current_instance != instance
+                            {
                                 continue;
                             }
+                            st.current_instance = 0;
                             st.queue_id = None;
                             st.generation
                         };
@@ -1559,6 +1592,7 @@ impl Engine {
                                         let _ = handle;
                                         continue;
                                     }
+                                    let reopen_instance = reader.instance;
                                     {
                                         let mut core = self.core.lock().unwrap();
                                         core.set_active(reader);
@@ -1567,6 +1601,7 @@ impl Engine {
                                     *self.producer.lock().unwrap() = Some(handle);
                                     {
                                         let mut st = self.state.lock().unwrap();
+                                        st.current_instance = reopen_instance;
                                         st.queue_id = Some(pf.queue_id.clone());
                                         st.source = Some(pf.source);
                                         st.duration_ms = dur;
@@ -1624,7 +1659,7 @@ impl Engine {
                 }
                 if stall_cleared && playing {
                     let gen = self.state.lock().unwrap().generation;
-                    self.emit("event.state", json!({ "generationId": gen, "status": "playing" }));
+                    self.emit("event.state", json!({ "generationId": gen, "state": "playing" }));
                 }
             }
 
