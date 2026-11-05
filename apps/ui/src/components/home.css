@@ -33,7 +33,7 @@
 .shelf-arrow { display: grid; width: 32px; height: 32px; place-items: center; color: rgba(244, 243, 248, 0.7); background: rgba(255, 255, 255, 0.055); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 50%; transition: color 140ms ease, background 140ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
 .shelf-arrow:hover { color: white; background: rgba(255, 255, 255, 0.11); }
 .shelf-arrow:active { transform: scale(0.96); }
-.shelf-arrow:disabled { opacity: 0.28; pointer-events: none; }
+.shelf-arrow:disabled { visibility: hidden; }
 
 .home-rail { display: flex; gap: 17px; overflow-x: auto; overflow-y: hidden; padding: 2px 2px 15px; scroll-behavior: smooth; scroll-snap-type: x mandatory; scrollbar-width: none; }
 .home-rail::-webkit-scrollbar { display: none; }

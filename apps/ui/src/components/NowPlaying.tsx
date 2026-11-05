@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { session } from '../app';
 import { displayOrder } from '../store';
 import { artistsLine } from '../format';
-import { useReducedMotion, useUi } from '../hooks';
+import { useUi } from '../hooks';
 import { NoteIcon } from '../icons';
 import { PixiBackground } from '../visuals/PixiBackground';
 import { CapabilityChips } from './CapabilityChips';
@@ -39,7 +39,11 @@ function UpNextStrip() {
   const currentQid = useUi((s) => s.snapshot.current?.queueId);
   const order = useMemo(() => displayOrder(queue).map((i) => queue.items[i]!), [queue]);
   const pos = order.findIndex((qi) => qi.queueId === currentQid);
-  const next = order.slice(pos + 1, pos + 4);
+  const next = queue.repeat === 'one' && pos >= 0
+    ? [order[pos]!, order[pos]!, order[pos]!]
+    : queue.repeat === 'all'
+      ? [...order.slice(pos + 1), ...order.slice(0, Math.max(0, pos))].slice(0, 3)
+      : order.slice(pos + 1, pos + 4);
   if (!next.length) return null;
   return (
     <div className="np-upnext" aria-label="Up next">

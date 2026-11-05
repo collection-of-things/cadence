@@ -25,6 +25,7 @@ export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
   const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
+  const hasTrack = useUi((s) => s.snapshot.current !== null);
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
   const [location, setLocation] = useState<Location>({ page: 'home' });
   const npExpanded = expanded && location.page === 'now';
@@ -37,8 +38,9 @@ export function App() {
   useEffect(() => {
     // Clear only when both truths left 'now' — the view→location handoff
     // otherwise collapses the overlay right after it opens.
-    if (location.page !== 'now' && view !== 'now' && expanded) session.setNowPlayingExpanded(false);
-  }, [location.page, view, expanded]);
+    if ((location.page !== 'now' && view !== 'now' && expanded) ||
+        (!hasTrack && expanded)) session.setNowPlayingExpanded(false);
+  }, [location.page, view, expanded, hasTrack]);
 
   useEffect(() => {
     previousStoreView.current = 'home';
@@ -139,6 +141,7 @@ export function App() {
   }, []);
 
   const navigate = (next: Location) => {
+    if (next.page === location.page && !next.album) return; // same page — no history entry
     setBackStack((stack) => [...stack, location]);
     setForwardStack([]);
     setLocation(next);

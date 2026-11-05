@@ -23,7 +23,7 @@ const ROUTE_LABELS: Record<RouteId, string> = {
 };
 
 export function routeLabel(route: RouteId): string {
-  return ROUTE_LABELS[route];
+  return ROUTE_LABELS[route] ?? route;
 }
 
 export function RouteBadge({ provider, title }: { provider: ProviderId; title?: string }) {

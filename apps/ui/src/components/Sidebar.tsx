@@ -19,14 +19,6 @@ function Glyph({ name, size = 17 }: { name: NavSection; size?: number }) {
   );
 }
 
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg className={`sidebar-chevron ${open ? 'is-open' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="m8 10 4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 interface SidebarProps {
   activePage: ShellPage;
   collapsed: boolean;
@@ -34,7 +26,6 @@ interface SidebarProps {
 }
 
 export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
-  const [open, setOpen] = useState<Record<NavSection, boolean>>({ home: true, library: true, sources: true, playlists: true });
   const [compact, setCompact] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 690px)').matches);
 
   useEffect(() => {
@@ -44,13 +35,6 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
     return () => media.removeEventListener('change', update);
   }, []);
 
-  const toggleSection = (section: NavSection, target: Exclude<ShellPage, 'album'> | null) => {
-    if (collapsed || compact) {
-      if (target !== null) onNavigate(target);
-      return;
-    }
-    setOpen((state) => ({ ...state, [section]: !state[section] }));
-  };
 
   const navRow = (target: 'home' | 'library' | 'sources', label: string) => {
     const isActive = activePage === target;

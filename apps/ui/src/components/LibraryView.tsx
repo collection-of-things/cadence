@@ -178,10 +178,15 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
     session.setLibraryQuery(''); // adopt once — don't resurrect it on remount
   }, [storeQuery]);
 
+  const jumpedRef = useRef(false);
   useEffect(() => {
     const t = setTimeout(() => {
       setQuery(text.trim());
-      if (text.trim()) setTab('tracks');
+      if (!text.trim()) jumpedRef.current = false;
+      else if (!jumpedRef.current) {
+        jumpedRef.current = true;
+        setTab('tracks');
+      }
     }, 250);
     return () => clearTimeout(t);
   }, [text]);

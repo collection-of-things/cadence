@@ -16,7 +16,6 @@ import { QueueToggle, VolumeControl } from './Transport';
 import { MuteIcon, VolumeIcon } from '../icons';
 import './playerbar.css';
 
-const RESTING_ACCENT = '#ff7a59';
 
 /**
  * Artwork palette[0] → a legible accent. Grey or near-black art would make
@@ -40,8 +39,8 @@ function HeartIcon({ size = 18, filled = false }: { size?: number; filled?: bool
 
 function LyricsIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M10.5 7.5 8 12.2V16a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-2.5a1 1 0 0 0-1-1H9.6l1.4-5zM18.5 7.5 16 12.2V16a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-2.5a1 1 0 0 0-1-1h-2.4l1.4-5z" fill="currentColor" stroke="none" transform="scale(.86) translate(1.7,1.7)"/>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+      <path d="M9.2 6.8 6.3 12v4.4c0 .7.5 1.2 1.2 1.2h3c.7 0 1.2-.5 1.2-1.2v-3.2c0-.7-.5-1.2-1.2-1.2H8.5l1.6-5.2zM17.6 6.8 14.7 12v4.4c0 .7.5 1.2 1.2 1.2h3c.7 0 1.2-.5 1.2-1.2v-3.2c0-.7-.5-1.2-1.2-1.2h-2.1l1.6-5.2z" />
     </svg>
   );
 }
@@ -61,11 +60,7 @@ export function PlayerBar() {
   const lyricsOn = useUi((s) => s.nowPlayingExpanded);
   const muted = useUi((s) => s.snapshot.muted === true);
 
-  // Retint the shared accent token to the artwork's lead colour; the whole
-  // app's accent surfaces (seek fill, toggles, queue highlight) follow it.
-
-  // Love state is a per-track stub until the protocol grows favorites.
-  const trackId = track?.id;
+    // Love state is a per-track stub until the protocol grows favorites.
 
   const playing = status === 'playing';
   const busy = status === 'loading' || status === 'buffering';
