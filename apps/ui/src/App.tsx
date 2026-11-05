@@ -34,8 +34,10 @@ export function App() {
   useMediaSession();
 
   useEffect(() => {
-    if (location.page !== 'now' && expanded) session.setNowPlayingExpanded(false);
-  }, [location.page, expanded]);
+    // Clear only when both truths left 'now' — the view→location handoff
+    // otherwise collapses the overlay right after it opens.
+    if (location.page !== 'now' && view !== 'now' && expanded) session.setNowPlayingExpanded(false);
+  }, [location.page, view, expanded]);
 
   useEffect(() => {
     previousStoreView.current = 'home';

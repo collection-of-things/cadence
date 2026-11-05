@@ -56,5 +56,10 @@
 @media (prefers-reduced-motion: reduce) { .full-lyrics-scroll { scroll-behavior: auto; } .full-lyrics-scroll p, .full-close { transition: none; } }
 
 /* queue open narrows the record strip */
-.full-now.has-queue .full-meta { max-width: 46%; }
+.full-now.has-queue .full-lyrics-card { opacity: 0; visibility: hidden; transition: opacity .18s, visibility .18s; }
 .full-now .route-badge { opacity: .55; }
+
+/* dock owns the surface — the transport renders flat inside it */
+.full-controls .full-dock .transport { background: transparent; box-shadow: none; backdrop-filter: none; padding: 0; }
+/* lyric card aligns with the artwork top */
+.full-lyrics-card { margin-top: 0; }

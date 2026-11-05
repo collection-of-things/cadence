@@ -1811,3 +1811,11 @@ input:focus-visible,
 .queue.over-now {
   z-index: 1100;
 }
+
+.src-head { display: flex; align-items: baseline; gap: 12px; padding: 22px 26px 4px; }
+.src-head h1 { margin: 0; font-size: 26px; font-weight: 750; letter-spacing: -0.02em; }
+.src-card, .src-card * { white-space: nowrap; }
+.src-desc, .src-meta, .src-tags, .src-desc *, .src-meta *, .src-tags * { white-space: normal; }
+
+/* queue badges: route colour would stack 4 accents — keep them quiet */
+.queue .route-badge { filter: grayscale(0.72); opacity: 0.62; }

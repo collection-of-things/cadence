@@ -162,6 +162,14 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
   const [text, setText] = useState(storeQuery);
   const [query, setQuery] = useState(storeQuery);
   const scan = useUi((s) => s.scan);
+  const [counts, setCounts] = useState<{ albums: number; tracks: number } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void Promise.all([api.library.albums({}), api.library.tracks({})]).then(([a, t]) => {
+      if (live) setCounts({ albums: a.length, tracks: t.length });
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [scan.phase]);
 
   // The sidebar search navigates here carrying its query — adopt it once.
   useEffect(() => {
@@ -204,7 +212,7 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
     <div className="lib">
       <header className="lib-head">
         <h1>Library</h1>
-        <span className="lib-count">{tab === 'tracks' ? 'Tracks' : tab === 'artists' ? 'Artists' : 'Albums'}</span>
+        {counts && <span className="lib-count">{counts.albums} albums · {counts.tracks} tracks</span>}
       </header>
       <div className="lib-bar">
         <nav className="lib-tabs" aria-label="Library sections">
