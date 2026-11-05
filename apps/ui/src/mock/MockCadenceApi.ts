@@ -128,7 +128,13 @@ export class MockCadenceApi implements CadenceApi {
           0.22 * Math.abs(Math.sin(this.fftPhase * 1.3 + i * 1.7)) * (1 - f * 0.6);
         bands[i] = Math.min(1, v);
       }
-      this.emit({ kind: 'fft', bands, peak: Math.max(...bands), atMs: Date.now(), generationId: s.lease.generationId });
+      this.emit({
+        kind: 'fft',
+        bands: bands.map((v) => -80 + v * 80), // dBFS like the engine (-80..0)
+        peak: Math.max(...bands),
+        atMs: Date.now(),
+        generationId: s.lease.generationId,
+      });
     }
     s.positionMs += 50;
     if (Math.floor(s.positionMs / 500) !== Math.floor((s.positionMs - 50) / 500)) {

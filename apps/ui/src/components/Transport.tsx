@@ -43,7 +43,7 @@ export function QueueToggle() {
       onClick={() => session.setQueueOpen(!open)}
     >
       <QueueIcon size={19} />
-      {count > 0 && <span className="q-count">{count}</span>}
+      {count > 0 && <span className="q-count">{count > 99 ? "99+" : count}</span>}
     </button>
   );
 }

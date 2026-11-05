@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { positionNow } from '../hooks';
+import { session } from '../app';
 
 type Line = { time: number; text: string };
 
 function parseLyrics(raw: string): Line[] {
   const lines: Line[] = [];
+  let offsetMs = 0;
   for (const row of raw.split(/\r?\n/)) {
+    const off = row.match(/^\[offset:\s*([+-]?\d+)\s*\]$/i);
+    if (off) { offsetMs = Number(off[1]); continue; }
     const stamps = [...row.matchAll(/\[(\d+):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
     const text = row.replace(/\[(\d+):(\d{2})(?:[.:](\d{1,3}))?\]/g, '').trim();
     if (!text) continue;
     for (const stamp of stamps) {
-      lines.push({ time: Number(stamp[1]) * 60000 + Number(stamp[2]) * 1000 + Number((stamp[3] ?? '').padEnd(3, '0')), text });
+      lines.push({ time: Number(stamp[1]) * 60000 + Number(stamp[2]) * 1000 + Number((stamp[3] ?? '').padEnd(3, '0')) + offsetMs, text });
     }
   }
   return lines.sort((a, b) => a.time - b.time);
@@ -19,6 +23,16 @@ function parseLyrics(raw: string): Line[] {
 export function Lyrics({ raw }: { raw: string | undefined }) {
   const lines = useMemo(() => parseLyrics(raw ?? ''), [raw]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const manualUntil = useRef(0);
+  const [following, setFollowing] = useState(true);
+  const unpause = useCallback((ms = 4500) => {
+    manualUntil.current = Date.now() + ms;
+    setFollowing(false);
+  }, []);
+  const follow = useCallback(() => {
+    manualUntil.current = 0;
+    setFollowing(true);
+  }, []);
   useEffect(() => {
     if (!lines.length) return;
     let frame = 0;
@@ -41,7 +55,12 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
             el.classList.toggle('d3', dist >= 3);
           });
           const target = elements[Math.max(0, next)];
-          if (target) viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+          if (target && Date.now() > manualUntil.current) {
+            viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+            setFollowing((f) => f || true);
+          } else if (target && Date.now() <= manualUntil.current) {
+            // user is reading elsewhere in the panel — leave the view alone
+          }
         }
       }
       frame = requestAnimationFrame(tick);
@@ -52,5 +71,32 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
 
   if (!raw?.trim()) return <div className="full-lyrics-empty">No lyrics available for this track.</div>;
   if (!lines.length) return <div className="full-lyrics-plain">{raw}</div>;
-  return <div className="full-lyrics-scroll" ref={scrollRef} aria-label="Synced lyrics">{lines.map((line, i) => <p data-lyric key={`${line.time}-${i}`}>{line.text}</p>)}</div>;
+  return (
+    <>
+      <div
+        className="full-lyrics-scroll"
+        ref={scrollRef}
+        aria-label="Synced lyrics"
+        onWheel={() => unpause()}
+        onTouchMove={() => unpause(6000)}
+      >
+        {lines.map((line, i) => (
+          <p
+            data-lyric
+            key={`${line.time}-${i}`}
+            role="button"
+            tabIndex={0}
+            title={`Jump to ${Math.floor(line.time / 60000)}:${String(Math.floor((line.time % 60000) / 1000)).padStart(2, '0')}`}
+            onClick={() => session.seek(line.time)}
+            onKeyDown={(e) => e.key === 'Enter' && session.seek(line.time)}
+          >
+            {line.text}
+          </p>
+        ))}
+      </div>
+      {!following && (
+        <button className="full-lyrics-follow" onClick={follow}>Follow lyrics</button>
+      )}
+    </>
+  );
 }

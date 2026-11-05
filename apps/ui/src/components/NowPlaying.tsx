@@ -13,38 +13,13 @@ function Artwork() {
   const track = useUi((s) => s.snapshot.current?.track);
   const status = useUi((s) => s.snapshot.status);
   const palette = useUi((s) => s.palette);
-  const reduced = useReducedMotion();
-  const ref = useRef<HTMLDivElement>(null);
 
-  // Subtle scale/shadow breathing driven by FFT energy, outside React state.
-  useEffect(() => {
-    if (reduced) return;
-    const el = ref.current;
-    if (!el) return;
-    let raf = 0;
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      const { fft, clock } = session.runtime;
-      const live = Date.now() - fft.atMs < 500 && clock.playing;
-      const target = live ? 1 + fft.peak * 0.015 : 1;
-      const cur = parseFloat(el.dataset.s ?? '1');
-      const next = cur + (target - cur) * 0.08;
-      el.dataset.s = String(next);
-      el.style.transform = `scale(${next.toFixed(4)})`;
-    };
-    raf = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(raf);
-      el.style.transform = '';
-    };
-  }, [reduced]);
 
   if (!track) return null;
   const glow = palette[0];
   return (
     <div
       className={`np-art ${status === 'playing' ? 'live' : ''}`}
-      ref={ref}
       style={glow ? { boxShadow: `0 24px 90px -18px rgba(${glow[0]},${glow[1]},${glow[2]},0.45), 0 12px 40px rgba(0,0,0,0.55)` } : undefined}
     >
       {track.artwork ? (

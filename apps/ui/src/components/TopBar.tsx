@@ -43,7 +43,6 @@ function SidebarGlyph({ collapsed }: { collapsed: boolean }) {
 }
 
 const tabs: { page: PrimaryPage; label: string }[] = [
-  { page: 'now', label: 'Now Playing' },
   { page: 'home', label: 'Home' },
   { page: 'library', label: 'Library' },
   { page: 'sources', label: 'Sources' },

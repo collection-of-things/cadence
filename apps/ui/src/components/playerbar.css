@@ -303,3 +303,7 @@
     height: 46px;
   }
 }
+
+/* mute shows only where the volume lane collapses away */
+.pb-mute { display: none; }
+@media (max-width: 1020px) { .pb-mute { display: inline-flex; } }

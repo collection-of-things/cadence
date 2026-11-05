@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { session } from '../app';
 import { artistsLine } from '../format';
 import { useUi } from '../hooks';
-import type { Rgb } from '../palette';
 import {
   NextIcon,
   NoteIcon,
@@ -14,6 +13,7 @@ import {
 } from '../icons';
 import { SeekBar } from './SeekBar';
 import { QueueToggle, VolumeControl } from './Transport';
+import { MuteIcon, VolumeIcon } from '../icons';
 import './playerbar.css';
 
 const RESTING_ACCENT = '#ff7a59';
@@ -24,26 +24,6 @@ const RESTING_ACCENT = '#ff7a59';
  * accent stays vivid and dark glyphs on it keep their contrast. Returns null
  * when the art has no hue worth using, leaving the resting coral.
  */
-function accentFromPalette(p: Rgb[]): string | null {
-  const c = p[0];
-  if (!c) return null;
-  const [r, g, b] = [c[0] / 255, c[1] / 255, c[2] / 255];
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-  if (s < 0.18) return null;
-  let h = 0;
-  if (max === r) h = 60 * (((g - b) / d) % 6);
-  else if (max === g) h = 60 * ((b - r) / d + 2);
-  else h = 60 * ((r - g) / d + 4);
-  if (h < 0) h += 360;
-  const sat = Math.round(Math.min(0.85, Math.max(0.55, s)) * 100);
-  const lig = Math.round(Math.min(0.68, Math.max(0.58, l)) * 100);
-  return `hsl(${Math.round(h)} ${sat}% ${lig}%)`;
-}
-
 function HeartIcon({ size = 18, filled = false }: { size?: number; filled?: boolean }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -81,14 +61,10 @@ export function PlayerBar() {
   const cap = useUi((s) => s.capabilities.find((c) => c.route === route));
   const palette = useUi((s) => s.palette);
   const lyricsOn = useUi((s) => s.nowPlayingExpanded);
+  const muted = useUi((s) => s.snapshot.muted === true);
 
   // Retint the shared accent token to the artwork's lead colour; the whole
   // app's accent surfaces (seek fill, toggles, queue highlight) follow it.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty('--accent', accentFromPalette(palette) ?? RESTING_ACCENT);
-    return () => root.style.setProperty('--accent', RESTING_ACCENT);
-  }, [palette]);
 
   // Love state is a per-track stub until the protocol grows favorites.
   const trackId = track?.id;
@@ -173,6 +149,13 @@ export function PlayerBar() {
 
       <div className="pb-right">
         <VolumeControl />
+        <button
+          className="icon-btn pb-mute"
+          aria-label={muted ? 'Unmute' : 'Mute'}
+          onClick={() => session.toggleMute()}
+        >
+          {muted ? <MuteIcon size={18} /> : <VolumeIcon size={18} />}
+        </button>
         <QueueToggle />
         <button
           className={`icon-btn pb-lyr ${lyricsOn ? 'on' : ''}`}

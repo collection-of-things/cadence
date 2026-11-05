@@ -79,7 +79,6 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
   return (
     <div
       className="tr-row"
-      role="button"
       tabIndex={0}
       onClick={onPlay}
       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onPlay(); }}

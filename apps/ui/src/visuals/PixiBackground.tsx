@@ -129,8 +129,11 @@ export function PixiBackground({ palette }: { palette: Rgb[] }) {
           const bands = u.uBands;
           if (live) {
             for (let i = 0; i < 48; i++) {
+              const raw = fft.bands[i] ?? 0;
+              // Engine bands are dBFS (-100..0); normalize to ~0..1 for the shader.
+              const target = raw <= 0 ? Math.min(1, Math.max(0, (raw + 80) / 80)) : Math.min(1, raw);
               const b = bands[i] ?? 0;
-              bands[i] = b + ((fft.bands[i] ?? 0) - b) * 0.25;
+              bands[i] = b + (target - b) * 0.25;
             }
           } else {
             // Idle breathing when no PCM route feeds us.

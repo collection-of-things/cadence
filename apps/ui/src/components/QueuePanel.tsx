@@ -85,6 +85,7 @@ export function QueuePanel() {
   const open = useUi((s) => s.queueOpen);
   const queue = useUi((s) => s.queue);
   const currentQid = useUi((s) => s.snapshot.current?.queueId);
+  const npExpanded = useUi((s) => s.nowPlayingExpanded);
   const scrollRef = useRef<HTMLDivElement>(null);
   const order = displayOrder(queue);
   const virtualizer = useVirtualizer({
@@ -103,7 +104,7 @@ export function QueuePanel() {
   }, [open]);
 
   return (
-    <aside className={`queue ${open ? 'open' : ''}`} aria-hidden={!open} aria-label="Play queue">
+    <aside className={`queue ${open ? 'open' : ''} ${npExpanded ? 'over-now' : ''}`} aria-hidden={!open} aria-label="Play queue">
       <div className="q-head">
         <h2>Up Next</h2>
         <span className="q-owner">{queue.owner === 'provider' ? 'provider queue' : `${order.length} tracks`}</span>

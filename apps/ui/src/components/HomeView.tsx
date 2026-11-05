@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LibraryAlbum } from '@cadence/protocol';
 import { api } from '../app';
 import { useUi } from '../hooks';
@@ -16,7 +16,25 @@ function Shelf({ title, subtitle, albums, onSelectAlbum }: {
   onSelectAlbum(album: LibraryAlbum): void;
 }) {
   const railRef = useRef<HTMLDivElement>(null);
-  const scroll = (direction: -1 | 1) => railRef.current?.scrollBy({ left: direction * 540, behavior: 'smooth' });
+  const [edges, setEdges] = useState<{ left: boolean; right: boolean }>({ left: true, right: true });
+  const updateEdges = useCallback(() => {
+    const el = railRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({ left: el.scrollLeft <= 2 || max <= 4, right: el.scrollLeft >= max - 2 || max <= 4 });
+  }, []);
+  useEffect(() => {
+    updateEdges();
+    window.addEventListener('resize', updateEdges);
+    return () => window.removeEventListener('resize', updateEdges);
+  }, [updateEdges, albums]);
+  const scroll = (direction: -1 | 1) => {
+    const el = railRef.current;
+    if (!el) return;
+    const card = el.querySelector('.home-album-card') as HTMLElement | null;
+    const step = card ? card.offsetWidth + 14 : 540;
+    el.scrollBy({ left: direction * step * 2, behavior: 'smooth' });
+  };
 
   if (!albums.length) return null;
   return (
@@ -27,15 +45,15 @@ function Shelf({ title, subtitle, albums, onSelectAlbum }: {
           {subtitle && <p>{subtitle}</p>}
         </div>
         <div className="shelf-controls">
-          <button className="shelf-arrow" aria-label={`Scroll ${title} left`} onClick={() => scroll(-1)}>
+          <button className="shelf-arrow" aria-label={`Scroll ${title} left`} disabled={edges.left} onClick={() => scroll(-1)}>
             <Arrow direction="back" />
           </button>
-          <button className="shelf-arrow" aria-label={`Scroll ${title} right`} onClick={() => scroll(1)}>
+          <button className="shelf-arrow" aria-label={`Scroll ${title} right`} disabled={edges.right} onClick={() => scroll(1)}>
             <Arrow direction="forward" />
           </button>
         </div>
       </div>
-      <div className="home-rail" ref={railRef}>
+      <div className="home-rail" ref={railRef} onScroll={updateEdges}>
         {albums.map((album, index) => (
           <button
             className="home-album-card"
