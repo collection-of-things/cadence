@@ -4,6 +4,9 @@ import { App } from './App';
 import { session } from './app';
 import './styles.css';
 
+// Screenshot/dev seam: lets capture scripts drive the mock session.
+(window as unknown as { __cadenceSession?: typeof session }).__cadenceSession = session;
+
 void session.init();
 
 createRoot(document.getElementById('root')!).render(

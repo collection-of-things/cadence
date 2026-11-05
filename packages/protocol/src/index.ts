@@ -99,6 +99,8 @@ export interface TrackRef {
   source: TrackSource;
   /** ReplayGain track gain in dB, if known. */
   replayGainDb?: number;
+  /** Raw lyrics text — LRC (synced) or plain. UI parses. */
+  lyrics?: string;
   /** Honest per-track availability (region locks, key refusals). */
   availability: "available" | "unavailable" | "unknown";
   availabilityDetail?: string;

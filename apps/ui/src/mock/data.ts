@@ -55,6 +55,23 @@ const ALBUMS: AlbumSpec[] = [
   { key: 'slow-machines', title: 'Slow Machines', artist: 'Tessellate', year: 2022, route: 'youtube-music', provider: 'youtube' },
 ];
 
+/** Demo synced lyrics (LRC) attached to a few mock tracks so the
+ * now-playing lyrics view is exercisable headlessly. */
+const DEMO_LRC = `[00:00.50]Signal on the wire
+[00:04.20]Carry it through the night
+[00:08.90]Static in the distance
+[00:13.40]Everything is fine
+[00:18.10]Hold the line, hold the line
+[00:22.70]We are almost there
+[00:27.30]Neon on the water
+[00:31.80]Voices in the air
+[00:36.50]Hold the line, hold the line
+[00:41.00]We are almost there
+[00:45.60]Signal on the wire
+[00:50.20]Carry it through the night
+[00:54.80]Everything is quiet now
+[00:59.30]Everything is light`;
+
 export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
   const tracks: TrackRef[] = [];
   const albums: LibraryAlbum[] = [];
@@ -90,6 +107,7 @@ export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
         artwork,
         source,
         ...(spec.route === 'local' ? { replayGainDb: -6.2 + rng() * 3 } : {}),
+        ...(spec.route === 'local' && i % 3 === 0 ? { lyrics: DEMO_LRC } : {}),
         availability: 'available',
       });
     }

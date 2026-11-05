@@ -37,6 +37,7 @@ export interface TrackRecord {
   readonly mtimeMs: number;
   readonly size: number;
   readonly availability: "available" | "unavailable";
+  readonly lyrics: string | null;
 }
 
 interface TrackRow {
@@ -62,6 +63,7 @@ interface TrackRow {
   mtime_ms: number;
   size: number;
   availability: string;
+  lyrics: string | null;
 }
 
 const SCHEMA = `
@@ -87,7 +89,8 @@ CREATE TABLE IF NOT EXISTS tracks (
   replay_gain_db REAL,
   mtime_ms INTEGER NOT NULL,
   size INTEGER NOT NULL,
-  availability TEXT NOT NULL DEFAULT 'available'
+  availability TEXT NOT NULL DEFAULT 'available',
+  lyrics TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, artists, album);
 CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album, album_artist);
@@ -104,6 +107,11 @@ export class LibraryDb {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    // Migration: lyrics column for databases created before it existed.
+    const cols = this.db.prepare("PRAGMA table_info(tracks)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "lyrics")) {
+      this.db.exec("ALTER TABLE tracks ADD COLUMN lyrics TEXT");
+    }
   }
 
   /** Close the database. */
@@ -117,11 +125,11 @@ export class LibraryDb {
       INSERT INTO tracks (id, path, title, artists_json, artists_text, primary_artist,
         album, album_artist, duration_ms, track_number, disc_number, year, genre_json,
         artwork_path, format, sample_rate_hz, bit_depth, channels, replay_gain_db,
-        mtime_ms, size, availability)
+        mtime_ms, size, availability, lyrics)
       VALUES (@id, @path, @title, @artistsJson, @artistsText, @primaryArtist,
         @album, @albumArtist, @durationMs, @trackNumber, @discNumber, @year, @genreJson,
         @artworkPath, @format, @sampleRateHz, @bitDepth, @channels, @replayGainDb,
-        @mtimeMs, @size, @availability)
+        @mtimeMs, @size, @availability, @lyrics)
       ON CONFLICT(path) DO UPDATE SET
         title=excluded.title, artists_json=excluded.artists_json,
         artists_text=excluded.artists_text, primary_artist=excluded.primary_artist,
@@ -131,7 +139,8 @@ export class LibraryDb {
         artwork_path=excluded.artwork_path, format=excluded.format,
         sample_rate_hz=excluded.sample_rate_hz, bit_depth=excluded.bit_depth,
         channels=excluded.channels, replay_gain_db=excluded.replay_gain_db,
-        mtime_ms=excluded.mtime_ms, size=excluded.size, availability=excluded.availability
+        mtime_ms=excluded.mtime_ms, size=excluded.size, availability=excluded.availability,
+        lyrics=excluded.lyrics
     `);
     const tx = this.db.transaction((r: TrackRecord) => {
       upsert.run({
@@ -312,5 +321,6 @@ function rowToTrackRef(row: TrackRow): TrackRef {
     },
     ...(row.replay_gain_db !== null ? { replayGainDb: row.replay_gain_db } : {}),
     availability: row.availability === "unavailable" ? "unavailable" : "available",
+    ...(row.lyrics !== null ? { lyrics: row.lyrics } : {}),
   };
 }

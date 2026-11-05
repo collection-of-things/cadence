@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { parseFile } from "music-metadata";
 import type { TrackRecord } from "./library-db.js";
@@ -75,6 +75,7 @@ export class LibraryScanner {
       const artists = normalizeArtists(common.artists, common.artist, common.albumartist);
       const artworkPath = await this.cacheArtwork(path, common.picture?.[0]);
       const year = common.year ?? parseYear(common.date);
+      const lyrics = await this.readLyrics(path, common as { lyrics?: unknown; unsynchronisedLyrics?: unknown });
       return {
         id: trackIdForPath(path),
         path,
@@ -98,6 +99,7 @@ export class LibraryScanner {
         mtimeMs: Math.round(st.mtimeMs),
         size: st.size,
         availability: "available",
+        lyrics,
       };
     } catch {
       // Unparseable audio still gets indexed so the UI can show it honestly.
@@ -113,6 +115,7 @@ export class LibraryScanner {
         durationMs: 0,
         trackNumber: null,
         discNumber: null,
+        lyrics: null,
         year: null,
         genre: [],
         artworkPath: null,
@@ -126,6 +129,25 @@ export class LibraryScanner {
         availability: "unavailable",
       };
     }
+  }
+
+  /** Lyrics: embedded tag first, then a same-name .lrc sidecar (which
+   * wins — it's the format users edit and the only synced-lyrics channel). */
+  private async readLyrics(
+    path: string,
+    common: { lyrics?: unknown; unsynchronisedLyrics?: unknown },
+  ): Promise<string | null> {
+    const embedded = (common.lyrics ?? common.unsynchronisedLyrics) as
+      | Array<{ text?: string } | string>
+      | undefined;
+    let text: string | null = null;
+    if (Array.isArray(embedded) && embedded.length > 0) {
+      const first = embedded[0];
+      text = typeof first === "string" ? first : first?.text ?? null;
+    }
+    const sidecar = path.replace(/\.[^.]+$/, ".lrc");
+    const lrc = await readFile(sidecar, "utf-8").catch(() => null);
+    return lrc ?? text;
   }
 
   /** Write embedded artwork to the thumbnail cache; returns its path. */
