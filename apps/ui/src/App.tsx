@@ -88,13 +88,17 @@ export function App() {
       // Focusable containers own their Enter/Space; other keys still pass.
       if ((e.key === ' ' || e.key === 'Enter') &&
           el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;
-      // Focused scrollable/focusable regions own their arrow keys.
-      if (el?.closest?.('.full-lyrics-scroll, .queue, .lib, .home-scroll, .album-track-list, .src, .sidebar')) return;
+      // Focused scrollable regions own their scrolling keys only.
+      if ((e.key.startsWith('Arrow') || e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') &&
+          el?.closest?.('.full-lyrics-scroll, .queue, .lib, .home-scroll, .album-track-list, .src, .sidebar')) return;
+      // Volume lives behind Ctrl — plain arrows scroll.
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey) return;
       if (tag === 'INPUT') {
         const type = (el as HTMLInputElement).type;
         if (type !== 'range') return;
         if (e.key.startsWith('Arrow')) return;
       }
+      if (document.querySelector('.sheet')) return; // sheet owns its own focus+keys
       const s = session.store.getState();
       switch (e.key) {
         case ' ':
@@ -109,12 +113,16 @@ export function App() {
           session.seek(positionNow() - (e.shiftKey ? 30_000 : 5_000));
           break;
         case 'ArrowUp':
-          e.preventDefault();
-          session.setVolume(s.snapshot.volume + 0.05);
+          if (e.ctrlKey) {
+            e.preventDefault();
+            session.setVolume(s.snapshot.volume + 0.05);
+          }
           break;
         case 'ArrowDown':
-          e.preventDefault();
-          session.setVolume(s.snapshot.volume - 0.05);
+          if (e.ctrlKey) {
+            e.preventDefault();
+            session.setVolume(s.snapshot.volume - 0.05);
+          }
           break;
         case 'q':
         case 'Q':

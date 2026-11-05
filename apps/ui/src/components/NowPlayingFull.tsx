@@ -20,7 +20,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
+    dialogRef.current?.focus();
     // inert the browse app so Tab can't leak into page-order DOM behind
     // the portal; the queue and toasts are body children and stay live.
     const appEl = document.querySelector<HTMLElement>('.app');
@@ -51,8 +51,10 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     return () => {
       document.removeEventListener('keydown', key);
       appEl?.removeAttribute('inert');
+      // Back to whatever was focused when we opened; if that was the page
+      // (body), stay there — a focused button would steal Space from playback.
       if (previous?.isConnected && previous !== document.body) previous.focus();
-      else (document.querySelector<HTMLElement>('.pb-lyr') ?? document.querySelector<HTMLElement>('.sidebar'))?.focus?.();
+      else (document.activeElement as HTMLElement | null)?.blur?.();
     };
   }, [onClose]);
 
@@ -67,7 +69,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     '--npf-c2': css(palette?.[2], 'rgb(40,40,70)'),
   } as React.CSSProperties;
   return (
-    <section ref={dialogRef} className={`full-now ${queueOpen ? "has-queue" : ""}`} role="dialog" aria-modal="true" aria-label="Now playing" style={washVars}
+    <section ref={dialogRef} tabIndex={-1} className={`full-now ${queueOpen ? "has-queue" : ""}`} role="dialog" aria-modal="true" aria-label="Now playing" style={washVars}
       onTouchStart={(e) => { if (e.touches.length === 1) touch.current = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, at: Date.now() }; }}
       onTouchEnd={(e) => {
         const start = touch.current; touch.current = null;

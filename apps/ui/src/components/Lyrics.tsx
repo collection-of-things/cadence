@@ -27,6 +27,13 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
   const [following, setFollowing] = useState(true);
   const unpause = useCallback((ms = 4500) => {
     manualUntil.current = Date.now() + ms;
+    const viewport = scrollRef.current;
+    const target = viewport?.querySelector<HTMLElement>('[data-lyric].active');
+    if (viewport && target) {
+      const centre = viewport.clientHeight / 2;
+      const lineCentre = target.offsetTop - viewport.scrollTop + target.clientHeight / 2;
+      if (Math.abs(lineCentre - centre) < 60) return; // already centred — nothing to follow back to
+    }
     setFollowing(false);
   }, []);
   const follow = useCallback(() => {

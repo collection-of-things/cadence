@@ -102,6 +102,7 @@ export function QueuePanel() {
       if (e.key === 'Escape') {
         e.stopImmediatePropagation();
         session.setQueueOpen(false);
+        document.querySelector<HTMLElement>('.q-toggle')?.focus();
       }
     };
     document.addEventListener('keydown', onKey);

@@ -84,7 +84,17 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
           }
         }} />}
         {collapsed && <span className="sidebar-search-tooltip">Search</span>}
-        {(collapsed || compact) && <span className="sidebar-compact-search-hit" onClick={() => onNavigate('library')} />}
+        {(collapsed || compact) && (
+          <button
+            className="sidebar-compact-search-hit"
+            aria-label="Search your music"
+            onClick={() => {
+              session.setLibraryQuery('');
+              onNavigate('library');
+              setTimeout(() => (document.querySelector<HTMLElement>('.lib-search input') ?? document.querySelector<HTMLElement>('.lib-bar input'))?.focus(), 60);
+            }}
+          />
+        )}
       </label>
 
       <nav className="sidebar-nav" aria-label="Library navigation">
