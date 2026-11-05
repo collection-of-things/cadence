@@ -160,7 +160,7 @@ function DeviceSection() {
         {devices.map((d) => (
           <option key={d.name} value={d.name}>
             {d.name}
-            {d.isDefault ? ' (default)' : ''}
+            {d.isDefault && !/default/i.test(d.name) ? ' (default)' : ''}
           </option>
         ))}
       </select>

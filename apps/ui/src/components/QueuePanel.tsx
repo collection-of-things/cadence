@@ -60,7 +60,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move up"
           disabled={shuffle || index <= 0}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move up'}
-          onClick={(e) => { session.moveQueueItem(index, index - 1); requestAnimationFrame(() => (e.currentTarget as HTMLElement).focus()); }}
+          onClick={(e) => { const btn = e.currentTarget as HTMLElement; session.moveQueueItem(index, index - 1); requestAnimationFrame(() => (btn.isConnected ? btn : (btn.closest('.q-row') as HTMLElement | null))?.focus()); }}
         >
           <UpIcon size={15} />
         </button>
@@ -69,7 +69,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move down"
           disabled={shuffle || index >= count - 1}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move down'}
-          onClick={(e) => { session.moveQueueItem(index, index + 1); requestAnimationFrame(() => (e.currentTarget as HTMLElement).focus()); }}
+          onClick={(e) => { const btn = e.currentTarget as HTMLElement; session.moveQueueItem(index, index + 1); requestAnimationFrame(() => (btn.isConnected ? btn : (btn.closest('.q-row') as HTMLElement | null))?.focus()); }}
         >
           <DownIcon size={15} />
         </button>
@@ -99,7 +99,10 @@ export function QueuePanel() {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') session.setQueueOpen(false);
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        session.setQueueOpen(false);
+      }
     };
     document.addEventListener('keydown', onKey);
     const pos = order.indexOf(queue.currentIndex);

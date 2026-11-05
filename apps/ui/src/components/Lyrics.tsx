@@ -101,9 +101,21 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
         className="full-lyrics-scroll"
         ref={scrollRef}
         aria-label="Synced lyrics"
+        tabIndex={0}
         onWheel={() => unpause()}
         onPointerDown={() => unpause(6000)}
         onTouchMove={() => unpause(6000)}
+        onKeyDown={(e) => {
+          const el = scrollRef.current;
+          if (!el) return;
+          const step = e.key === 'PageDown' ? el.clientHeight : e.key === 'PageUp' ? -el.clientHeight
+            : e.key === 'ArrowDown' ? 64 : e.key === 'ArrowUp' ? -64 : 0;
+          if (step) {
+            e.preventDefault();
+            unpause(6000);
+            el.scrollBy({ top: step });
+          }
+        }}
       >
         {lines.map((line, i) => (
           <p

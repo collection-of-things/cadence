@@ -23,6 +23,7 @@ interface Location {
 
 export function App() {
   const view = useUi((s) => s.view);
+  const viewNonce = useUi((s) => s.viewNonce);
   const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
   const [location, setLocation] = useState<Location>({ page: 'home' });
@@ -59,12 +60,25 @@ export function App() {
   }, [artUrl]);
 
   useEffect(() => {
-    if (previousStoreView.current === view) return;
+    if (viewNonce === 0) return;
+    if (previousStoreView.current === view && location.page === view) return;
+    if (previousStoreView.current !== view || location.page !== view) {
+      if (location.page !== view) setBackStack((stack) => [...stack, location]);
+      setForwardStack([]);
+      setLocation({ page: view });
+    }
     previousStoreView.current = view;
-    setBackStack((stack) => [...stack, location]);
-    setForwardStack([]);
-    setLocation({ page: view });
-  }, [view, location]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewNonce]);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.('button')) e.preventDefault();
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -74,8 +88,8 @@ export function App() {
       // Focusable containers own their Enter/Space; other keys still pass.
       if ((e.key === ' ' || e.key === 'Enter') &&
           el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;
-      // Focused lyrics panel owns its scroll keys.
-      if (el?.closest?.('.full-lyrics-scroll')) return;
+      // Focused scrollable/focusable regions own their arrow keys.
+      if (el?.closest?.('.full-lyrics-scroll, .queue, .lib, .home-scroll, .album-track-list, .src, .sidebar')) return;
       if (tag === 'INPUT') {
         const type = (el as HTMLInputElement).type;
         if (type !== 'range') return;

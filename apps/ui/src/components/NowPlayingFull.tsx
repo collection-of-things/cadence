@@ -27,7 +27,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (session.store.getState().queueOpen) { session.setQueueOpen(false); return; }
+        if (session.store.getState().queueOpen) { event.stopImmediatePropagation?.(); session.setQueueOpen(false); return; }
         onClose(); return;
       }
       if (event.key !== 'Tab') return;
@@ -38,7 +38,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
         dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
           .forEach((el) => { if (visible(el)) controls.push(el); });
       }
-      document.querySelectorAll<HTMLElement>('.queue.open button:not(:disabled), .queue.open [tabindex]:not([tabindex="-1"])')
+      document.querySelectorAll<HTMLElement>('.queue.open button:not(:disabled), .queue.open [tabindex]:not([tabindex="-1"]), .toasts button:not(:disabled)')
         .forEach((el) => { if (visible(el)) controls.push(el); });
       if (!controls.length) return;
       const active = document.activeElement as HTMLElement | null;
@@ -51,7 +51,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     return () => {
       document.removeEventListener('keydown', key);
       appEl?.removeAttribute('inert');
-      if (previous?.isConnected) previous.focus();
+      if (previous?.isConnected && previous !== document.body) previous.focus();
       else (document.querySelector<HTMLElement>('.pb-lyr') ?? document.querySelector<HTMLElement>('.sidebar'))?.focus?.();
     };
   }, [onClose]);

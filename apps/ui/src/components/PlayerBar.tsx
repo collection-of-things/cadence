@@ -40,10 +40,8 @@ function HeartIcon({ size = 18, filled = false }: { size?: number; filled?: bool
 
 function LyricsIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="9" y="2.8" width="6" height="10.4" rx="3" stroke="currentColor" strokeWidth="1.7" />
-      <path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-      <path d="M12 18v3.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+      <path d="M5 6.5h9M5 10.5h14M5 14.5h12M5 18.5h7" />
     </svg>
   );
 }

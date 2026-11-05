@@ -288,10 +288,12 @@
   .sidebar:not(.is-collapsed) .sidebar-search input,
   .sidebar:not(.is-collapsed) .sidebar-section-label,
   .sidebar:not(.is-collapsed) .sidebar-section-head .sidebar-chevron,
-  .sidebar:not(.is-collapsed) .sidebar-nav-row,
   .sidebar:not(.is-collapsed) .sidebar-footer { display: none; }
   .sidebar:not(.is-collapsed) .sidebar-search { justify-content: center; width: 42px; padding: 0; margin-inline: auto; }
   .sidebar:not(.is-collapsed) .sidebar-section-head { justify-content: center; height: 40px; padding: 0; }
+  .sidebar:not(.is-collapsed) .sidebar-nav-row { justify-content: center; padding: 0; width: 44px; height: 40px; margin-inline: auto; }
+  .sidebar:not(.is-collapsed) .sidebar-nav-row .sidebar-row-label { display: none; }
+  .sidebar:not(.is-collapsed) .sidebar-compact-search-hit { display: block; }
   .sidebar:not(.is-collapsed) .sidebar-section-icon { width: auto; }
   .sidebar:not(.is-collapsed) .sidebar-section.has-active .sidebar-section-head { color: var(--shell-accent-ink); background: var(--shell-accent); }
   .cadence-topbar { grid-template-columns: auto minmax(0, 1fr) auto; min-height: 62px; gap: 7px; padding-inline: 9px; }

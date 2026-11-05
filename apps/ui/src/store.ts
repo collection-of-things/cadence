@@ -55,6 +55,7 @@ export interface UiState {
   toasts: Toast[];
   scan: ScanProgress;
   view: 'now' | 'library' | 'sources' | 'home';
+  viewNonce: number;
   libraryQuery: string;
   nowPlayingExpanded: boolean;
   queueOpen: boolean;
@@ -172,6 +173,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     scan: { phase: 'idle', scanned: 0 },
     eqBands: [],
     view: 'now',
+    viewNonce: 0,
     libraryQuery: '',
     nowPlayingExpanded: false,
     queueOpen: false,
@@ -358,7 +360,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const route = get().snapshot.lease?.route ?? 'local';
       void api.audio.setDevice(name).catch(() => pushToast(route, 'Could not switch output device', true));
     },
-    setView: (view) => set({ view }),
+    setView: (view) => set({ view, viewNonce: get().viewNonce + 1 }),
     setLibraryQuery: (libraryQuery) => set({ libraryQuery }),
     setNowPlayingExpanded: (nowPlayingExpanded) => set({ nowPlayingExpanded }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),

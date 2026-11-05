@@ -1819,3 +1819,7 @@ input:focus-visible,
 
 /* queue badges: route colour would stack 4 accents — keep them quiet */
 .queue .route-badge { filter: grayscale(0.72); opacity: 0.62; }
+
+@media (max-width: 1024px) {
+  .toasts { top: 76px; bottom: auto; }
+}
