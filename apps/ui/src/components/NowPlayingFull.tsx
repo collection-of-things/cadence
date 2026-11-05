@@ -26,7 +26,10 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     const appEl = document.querySelector<HTMLElement>('.app');
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { onClose(); return; }
+      if (event.key === 'Escape') {
+        if (session.store.getState().queueOpen) { session.setQueueOpen(false); return; }
+        onClose(); return;
+      }
       if (event.key !== 'Tab') return;
       const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
       const dialog = dialogRef.current;

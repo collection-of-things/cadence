@@ -108,7 +108,6 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
           <p
             data-lyric
             key={`${line.time}-${i}`}
-            role="button"
             tabIndex={-1}
             title={`Jump to ${Math.floor(line.time / 60000)}:${String(Math.floor((line.time % 60000) / 1000)).padStart(2, '0')}`}
             onClick={() => session.seek(line.time)}

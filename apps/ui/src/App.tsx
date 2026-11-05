@@ -69,7 +69,7 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       const tag = el?.tagName ?? '';
-      if (tag === 'TEXTAREA' || el?.isContentEditable) return;
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
       // Focusable row containers own their Enter/Space; don't let the
       // global shortcuts double-fire on them.
       if (el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;

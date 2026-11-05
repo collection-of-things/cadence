@@ -98,8 +98,13 @@ export function QueuePanel() {
   // Land on the playing row when the panel opens.
   useEffect(() => {
     if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') session.setQueueOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
     const pos = order.indexOf(queue.currentIndex);
     if (pos > 0) virtualizer.scrollToIndex(pos, { align: 'center' });
+    return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
