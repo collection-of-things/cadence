@@ -84,8 +84,15 @@ export function SeekBar() {
             if (timeRef.current) timeRef.current.textContent = formatTime(v);
           }}
           onPointerUp={commit}
-          onKeyUp={(e) => {
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') commit();
+          onKeyDown={(e) => {
+            // Drive seeks off the live position — the focused input's own
+            // value goes stale while the rAF writer holds back.
+            const delta = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 5000
+              : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -5000
+              : e.key === 'Home' ? -Infinity : e.key === 'End' ? Infinity : 0;
+            if (!delta) return;
+            e.preventDefault();
+            session.seek(Math.max(0, Math.min(duration, positionNow() + delta)));
           }}
           onBlur={() => {
             scrubbing.current = false;

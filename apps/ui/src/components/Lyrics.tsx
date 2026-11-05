@@ -72,6 +72,7 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
             // First position set snaps; subsequent line changes glide.
             const instant = reduced || activeWasInitial;
             viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: instant ? 'instant' : 'smooth' });
+            setFollowing(true);
           }
         }
       }

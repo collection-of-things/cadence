@@ -60,7 +60,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move up"
           disabled={shuffle || index <= 0}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move up'}
-          onClick={() => session.moveQueueItem(index, index - 1)}
+          onClick={(e) => { session.moveQueueItem(index, index - 1); requestAnimationFrame(() => (e.currentTarget as HTMLElement).focus()); }}
         >
           <UpIcon size={15} />
         </button>
@@ -69,7 +69,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move down"
           disabled={shuffle || index >= count - 1}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move down'}
-          onClick={() => session.moveQueueItem(index, index + 1)}
+          onClick={(e) => { session.moveQueueItem(index, index + 1); requestAnimationFrame(() => (e.currentTarget as HTMLElement).focus()); }}
         >
           <DownIcon size={15} />
         </button>

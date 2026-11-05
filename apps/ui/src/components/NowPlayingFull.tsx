@@ -48,7 +48,12 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
       controls[(((idx + step) % controls.length) + controls.length) % controls.length]?.focus();
     };
     document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); appEl?.removeAttribute('inert'); previous?.focus(); };
+    return () => {
+      document.removeEventListener('keydown', key);
+      appEl?.removeAttribute('inert');
+      if (previous?.isConnected) previous.focus();
+      else (document.querySelector<HTMLElement>('.pb-lyr') ?? document.querySelector<HTMLElement>('.sidebar'))?.focus?.();
+    };
   }, [onClose]);
 
   if (!track) return null;

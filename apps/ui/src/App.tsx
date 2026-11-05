@@ -11,6 +11,7 @@ import { SettingsSheet } from './components/SettingsSheet';
 import { Sidebar, type ShellPage } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
+import { createPortal } from 'react-dom';
 import { TopBar } from './components/TopBar';
 import { positionNow, useMediaSession, useUi } from './hooks';
 import { extractPalette, DEFAULT_PALETTE } from './palette';
@@ -22,9 +23,10 @@ interface Location {
 
 export function App() {
   const view = useUi((s) => s.view);
-  const npExpanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null && s.view === 'now');
+  const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
   const [location, setLocation] = useState<Location>({ page: 'home' });
+  const npExpanded = expanded && location.page === 'now';
   const [backStack, setBackStack] = useState<Location[]>([]);
   const [forwardStack, setForwardStack] = useState<Location[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -32,11 +34,8 @@ export function App() {
   useMediaSession();
 
   useEffect(() => {
-    const unsub = session.store.subscribe((state, prev) => {
-      if (state.view !== 'now' && state.nowPlayingExpanded) session.setNowPlayingExpanded(false);
-    });
-    return unsub;
-  }, []);
+    if (location.page !== 'now' && expanded) session.setNowPlayingExpanded(false);
+  }, [location.page, expanded]);
 
   useEffect(() => {
     previousStoreView.current = 'home';
@@ -70,9 +69,11 @@ export function App() {
       const el = e.target as HTMLElement | null;
       const tag = el?.tagName ?? '';
       if (tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
-      // Focusable row containers own their Enter/Space; don't let the
-      // global shortcuts double-fire on them.
-      if (el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;
+      // Focusable containers own their Enter/Space; other keys still pass.
+      if ((e.key === ' ' || e.key === 'Enter') &&
+          el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;
+      // Focused lyrics panel owns its scroll keys.
+      if (el?.closest?.('.full-lyrics-scroll')) return;
       if (tag === 'INPUT') {
         const type = (el as HTMLInputElement).type;
         if (type !== 'range') return;
@@ -181,7 +182,7 @@ export function App() {
       </div>
       {!npExpanded && <PlayerBar />}
       <QueuePanel />
-      <Toasts />
+{createPortal(<Toasts />, document.body)}
     </div>
   );
 }
