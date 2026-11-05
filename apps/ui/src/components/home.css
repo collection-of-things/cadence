@@ -129,3 +129,11 @@
 @media (prefers-reduced-motion: reduce) {
   .home-album-card *, .home-shelf *, .album-page * { scroll-behavior: auto !important; transition-duration: 0.001ms !important; }
 }
+
+/* Lead shelf: larger, more editorial cards */
+.home-scroll > .home-shelf:first-child .home-album-card,
+.home-scroll > .home-shelf:first-child .home-card { flex-basis: min(28%, 288px); width: auto; }
+/* Rail edge: fade the clipped card instead of a hard cut */
+.home-rail { mask-image: linear-gradient(90deg, black calc(100% - 56px), transparent); -webkit-mask-image: linear-gradient(90deg, black calc(100% - 56px), transparent); }
+/* Reserve the floating bar's space so the next section never hides */
+.home-scroll { padding-bottom: 120px; }
