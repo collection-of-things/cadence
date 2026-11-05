@@ -12,3 +12,11 @@ test/fixtures/generated/
 # packaging staging + output
 services/audio/bin/
 apps/desktop/release/
+
+# secrets — never tracked
+.env
+.env.*
+*.pem
+*.key
+id_*
+credentials*
