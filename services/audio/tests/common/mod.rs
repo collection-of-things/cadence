@@ -21,6 +21,7 @@ pub fn decode_all(path: &Path, channels: Option<u32>) -> Result<(Vec<f32>, u32)>
         seek_ms: 0,
         kind: PcmKind::F32,
         channels,
+        info: None,
     })?;
     let mut out = Vec::new();
     let mut buf = vec![0f32; 8192];

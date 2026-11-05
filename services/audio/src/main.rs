@@ -114,6 +114,7 @@ fn decode_file(
         seek_ms: 0,
         kind: PcmKind::F32,
         channels: Some(ch),
+        info: Some(info.clone()),
     })?;
     let target = rate.unwrap_or(info.sample_rate_hz);
     let mut resampler = if target != info.sample_rate_hz {

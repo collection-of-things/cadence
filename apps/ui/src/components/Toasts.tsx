@@ -2,6 +2,7 @@ import { useUi } from '../hooks';
 import { session } from '../app';
 import { CloseIcon } from '../icons';
 import { providerForRoute, RouteBadge } from './RouteBadge';
+import './controls.css';
 
 export function Toasts() {
   const toasts = useUi((s) => s.toasts);

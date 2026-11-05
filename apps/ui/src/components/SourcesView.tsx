@@ -5,6 +5,7 @@ import { artistsLine, formatTime } from '../format';
 import { useUi } from '../hooks';
 import { NoteIcon, PlusIcon, SearchIcon } from '../icons';
 import { providerForRoute, RouteBadge, routeLabel } from './RouteBadge';
+import './controls.css';
 
 const STATE_META: Record<RouteCapabilities['state'], { label: string; tone: 'ok' | 'warn' | 'dim' }> = {
   ready: { label: 'Ready', tone: 'ok' },
@@ -54,6 +55,7 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
         <RouteBadge provider={providerForRoute(cap.route)} />
         <span className="src-route-name">{routeLabel(cap.route)}</span>
         <span className={`chip chip-${meta.tone} src-state`} title={cap.stateDetail}>
+          <i className="src-dot" aria-hidden />
           {meta.label}
         </span>
       </header>
@@ -221,6 +223,11 @@ export function SourcesView() {
           <RouteCard key={c.route} cap={c} />
         ))}
       </div>
+      {capabilities.length === 0 && (
+        <div className="src-empty" role="status">
+          No playback routes reported yet.
+        </div>
+      )}
     </div>
   );
 }

@@ -196,10 +196,9 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
             };
             engine.set_device(name)
         }
-        // NOTE: not in audio-ipc.ts — the contract comments reference
-        // audio.feed for pcm-stream sources but the method is not declared.
-        // Sane interpretation: {queueId, dataBase64, final?} pushing
-        // little-endian PCM in the depth declared at audio.load.
+        // {queueId, dataBase64?, final?, abort?} pushing little-endian PCM
+        // in the depth declared at audio.load. dataBase64 may be omitted
+        // on control-only frames (final/abort).
         "audio.feed" => {
             use base64::Engine as _;
             // dataBase64 is optional for control-only frames (final/abort).

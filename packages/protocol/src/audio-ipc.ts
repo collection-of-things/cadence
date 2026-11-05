@@ -41,13 +41,17 @@ export type AudioRpcRequest =
       method: "audio.prefetch";
       params: { queueId: string; path: string; generationId: number; replayGainDb?: number };
     }
+  /** Drop an installed prefetch — queue edits must cancel the successor
+   *  the engine would otherwise promote at the boundary. */
+  | { method: "audio.clearPrefetch"; params: { generationId: number } }
   /** Push a PCM chunk into the pcm-stream source opened under `queueId`
    *  (base64 little-endian interleaved frames in the declared depth).
    *  `final` marks end-of-stream (remaining buffered audio plays out);
-   *  `abort` discards the stream immediately. */
+   *  `abort` discards the stream immediately. dataBase64 is omitted on
+   *  control-only frames (final/abort). */
   | {
       method: "audio.feed";
-      params: { queueId: string; dataBase64: string; final?: boolean; abort?: boolean };
+      params: { queueId: string; dataBase64?: string; final?: boolean; abort?: boolean };
     }
   | { method: "audio.play"; params: { generationId: number } }
   | { method: "audio.pause"; params: { generationId: number } }
