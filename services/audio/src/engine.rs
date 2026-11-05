@@ -338,9 +338,13 @@ impl OutputCore {
     /// so the real-time path does not allocate after warmup.
     pub fn pull_s16(&mut self, out: &mut [i16]) {
         let mut tmp = std::mem::take(&mut self.scratch16);
-        tmp.resize(out.len(), 0.0);
-        self.pull_f32(&mut tmp);
-        for (i, s) in tmp.iter().enumerate() {
+        // Grow-only: after warmup the capacity covers every callback size,
+        // so the RT path never allocates.
+        if tmp.len() < out.len() {
+            tmp.resize(out.len(), 0.0);
+        }
+        self.pull_f32(&mut tmp[..out.len()]);
+        for (i, s) in tmp[..out.len()].iter().enumerate() {
             out[i] = (*s * i16::MAX as f32).round().clamp(-32768.0, 32767.0) as i16;
         }
         self.scratch16 = tmp;

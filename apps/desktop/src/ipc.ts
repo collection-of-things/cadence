@@ -18,6 +18,9 @@ import {
 
 /** Inbound adapters for window.cadence. */
 export interface IpcDeps {
+  /** The app's primary window — coordinator/library events go only here, not
+   * to hidden provider playback views. */
+  readonly mainWindow?: () => BrowserWindow | null;
   readonly coordinator: Coordinator;
   readonly library: LibraryService;
   readonly registry: AdapterRegistry;
@@ -136,8 +139,9 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
 
   // --- outbound events ----------------------------------------------------------
   const broadcast = (channel: string, payload: unknown): void => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(channel, payload);
+    const target = deps.mainWindow?.() ?? BrowserWindow.getAllWindows()[0];
+    if (target !== undefined && !target.webContents.isDestroyed()) {
+      target.webContents.send(channel, payload);
     }
   };
   const unsubCoordinator = coordinator.onEvent((e: CoordinatorEvent) => {

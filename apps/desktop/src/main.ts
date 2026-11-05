@@ -245,6 +245,10 @@ async function main(): Promise<void> {
   }
 
   const unbindEvents = registerIpcHandlers({
+    mainWindow: () =>
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes("cadence-app")) ??
+      BrowserWindow.getAllWindows()[0] ??
+      null,
     coordinator,
     library,
     registry,
