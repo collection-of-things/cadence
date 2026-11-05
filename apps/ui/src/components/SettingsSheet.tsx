@@ -188,16 +188,17 @@ export function SettingsSheet() {
       if (!focusables.length) return;
       const first = focusables[0]!;
       const last = focusables[focusables.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === sheetRef.current)) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && (active === last || active === sheetRef.current)) {
         e.preventDefault();
         first.focus();
       }
     };
     window.addEventListener('keydown', onKey, true);
-    sheetRef.current?.focus();
+    (sheetRef.current?.querySelector('button, input, select') as HTMLElement | null)?.focus();
     return () => window.removeEventListener('keydown', onKey, true);
   }, [open]);
 

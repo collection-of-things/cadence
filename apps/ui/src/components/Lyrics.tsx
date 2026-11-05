@@ -32,16 +32,28 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
   const follow = useCallback(() => {
     manualUntil.current = 0;
     setFollowing(true);
+    // Recenter on the active line right now, not on the next line change.
+    const viewport = scrollRef.current;
+    const target = viewport?.querySelector<HTMLElement>('[data-lyric].active');
+    if (viewport && target) {
+      viewport.scrollTo({
+        top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2,
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      });
+    }
   }, []);
   useEffect(() => {
     if (!lines.length) return;
     let frame = 0;
     let active = -2;
+    let activeWasInitial = true;
     const tick = () => {
       const position = positionNow();
       let next = -1;
       for (let i = 0; i < lines.length && lines[i]!.time <= position; i++) next = i;
       if (next !== active) {
+        const wasInitial = active === -2;
+        activeWasInitial = wasInitial;
         active = next;
         const viewport = scrollRef.current;
         if (viewport) {
@@ -56,10 +68,10 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
           });
           const target = elements[Math.max(0, next)];
           if (target && Date.now() > manualUntil.current) {
-            viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
-            setFollowing((f) => f || true);
-          } else if (target && Date.now() <= manualUntil.current) {
-            // user is reading elsewhere in the panel — leave the view alone
+            const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            // First position set snaps; subsequent line changes glide.
+            const instant = reduced || activeWasInitial;
+            viewport.scrollTo({ top: target.offsetTop - viewport.clientHeight / 2 + target.clientHeight / 2, behavior: instant ? 'instant' : 'smooth' });
           }
         }
       }

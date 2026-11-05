@@ -162,6 +162,7 @@ export function PlayerBar() {
           aria-label="Lyrics view"
           aria-pressed={lyricsOn}
           title="Lyrics"
+          disabled={!track}
           onClick={() => {
             if (!lyricsOn) session.setView('now');
             session.setNowPlayingExpanded(!lyricsOn);

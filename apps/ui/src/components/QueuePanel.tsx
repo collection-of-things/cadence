@@ -37,11 +37,10 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
         if (Number.isInteger(from) && from !== index) session.moveQueueItem(from, index);
       }}
       onClick={() => session.playQueueId(item.queueId)}
-      role="button"
       aria-current={current || undefined}
       tabIndex={0}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') session.playQueueId(item.queueId);
+        if (e.key === 'Enter' && e.target === e.currentTarget) session.playQueueId(item.queueId);
       }}
     >
       <span className={`q-eq ${current ? 'on' : ''}`} aria-hidden="true">

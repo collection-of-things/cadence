@@ -22,7 +22,7 @@ interface Location {
 
 export function App() {
   const view = useUi((s) => s.view);
-  const npExpanded = useUi((s) => s.nowPlayingExpanded);
+  const npExpanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null && s.view === 'now');
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
   const [location, setLocation] = useState<Location>({ page: 'home' });
   const [backStack, setBackStack] = useState<Location[]>([]);
@@ -30,6 +30,13 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const previousStoreView = useRef(view);
   useMediaSession();
+
+  useEffect(() => {
+    const unsub = session.store.subscribe((state, prev) => {
+      if (state.view !== 'now' && state.nowPlayingExpanded) session.setNowPlayingExpanded(false);
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     previousStoreView.current = 'home';
