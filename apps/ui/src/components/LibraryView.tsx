@@ -82,7 +82,7 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
       role="button"
       tabIndex={0}
       onClick={onPlay}
-      onKeyDown={(e) => e.key === 'Enter' && onPlay()}
+      onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onPlay(); }}
     >
       <span className="tr-num">{index + 1}</span>
       {track.artwork ? <img className="tr-art" src={track.artwork.url} alt="" loading="lazy" /> : <span className="tr-art" />}
@@ -159,9 +159,16 @@ function TracksTable({ query }: { query: string }) {
 
 export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlbum): void }) {
   const [tab, setTab] = useState<Tab>('albums');
-  const [text, setText] = useState('');
-  const [query, setQuery] = useState('');
+  const storeQuery = useUi((s) => s.libraryQuery);
+  const [text, setText] = useState(storeQuery);
+  const [query, setQuery] = useState(storeQuery);
   const scan = useUi((s) => s.scan);
+
+  // The sidebar search navigates here carrying its query — adopt it once.
+  useEffect(() => {
+    if (!storeQuery) return;
+    setText(storeQuery);
+  }, [storeQuery]);
 
   useEffect(() => {
     const t = setTimeout(() => {

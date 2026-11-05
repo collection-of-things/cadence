@@ -1,3 +1,4 @@
+import { session } from '../app';
 import { useEffect, useState } from 'react';
 import { SearchIcon } from '../icons';
 import './shell.css';
@@ -93,7 +94,10 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
       <label className="sidebar-search">
         <SearchIcon size={16} />
         {!collapsed && <input aria-label="Search Cadence" placeholder="Search your music" onKeyDown={(event) => {
-          if (event.key === 'Enter') onNavigate('library');
+          if (event.key === 'Enter') {
+            session.setLibraryQuery(event.currentTarget.value.trim());
+            onNavigate('library');
+          }
         }} />}
         {collapsed && <span className="sidebar-search-tooltip">Search</span>}
         {(collapsed || compact) && <span className="sidebar-compact-search-hit" onClick={() => onNavigate('library')} />}

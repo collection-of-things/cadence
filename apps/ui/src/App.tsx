@@ -22,6 +22,7 @@ interface Location {
 
 export function App() {
   const view = useUi((s) => s.view);
+  const npExpanded = useUi((s) => s.nowPlayingExpanded);
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
   const [location, setLocation] = useState<Location>({ page: 'home' });
   const [backStack, setBackStack] = useState<Location[]>([]);
@@ -168,7 +169,7 @@ export function App() {
           {location.page === 'now' && <NowPlaying />}
         </main>
       </div>
-      <PlayerBar />
+      {!npExpanded && <PlayerBar />}
       <QueuePanel />
       <Toasts />
     </div>

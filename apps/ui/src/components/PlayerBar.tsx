@@ -80,8 +80,7 @@ export function PlayerBar() {
   const route = useUi((s) => s.snapshot.lease?.route ?? s.snapshot.current?.track.route);
   const cap = useUi((s) => s.capabilities.find((c) => c.route === route));
   const palette = useUi((s) => s.palette);
-  const [loved, setLoved] = useState(false);
-  const [lyricsOn, setLyricsOn] = useState(false);
+  const lyricsOn = useUi((s) => s.nowPlayingExpanded);
 
   // Retint the shared accent token to the artwork's lead colour; the whole
   // app's accent surfaces (seek fill, toggles, queue highlight) follow it.
@@ -93,7 +92,6 @@ export function PlayerBar() {
 
   // Love state is a per-track stub until the protocol grows favorites.
   const trackId = track?.id;
-  useEffect(() => setLoved(false), [trackId]);
 
   const playing = status === 'playing';
   const busy = status === 'loading' || status === 'buffering';
@@ -124,15 +122,6 @@ export function PlayerBar() {
           <span className="pb-title">{track?.title ?? 'Nothing playing'}</span>
           <span className="pb-artist">{track ? artistsLine(track.artists) : 'Pick something from your library'}</span>
         </div>
-        <button
-          className={`icon-btn pb-love ${loved ? 'on' : ''}`}
-          aria-label={loved ? 'Remove from loved tracks' : 'Love this track'}
-          aria-pressed={loved}
-          disabled={!track}
-          onClick={() => setLoved((v) => !v)}
-        >
-          <HeartIcon size={18} filled={loved} />
-        </button>
       </div>
 
       <div className="pb-center">
@@ -187,10 +176,13 @@ export function PlayerBar() {
         <QueueToggle />
         <button
           className={`icon-btn pb-lyr ${lyricsOn ? 'on' : ''}`}
-          aria-label="Lyrics"
+          aria-label="Lyrics view"
           aria-pressed={lyricsOn}
           title="Lyrics"
-          onClick={() => setLyricsOn((v) => !v)}
+          onClick={() => {
+            if (!lyricsOn) session.setView('now');
+            session.setNowPlayingExpanded(!lyricsOn);
+          }}
         >
           <LyricsIcon size={18} />
         </button>

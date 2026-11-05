@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Tri } from '@cadence/protocol';
 import { session } from '../app';
 import { useUi } from '../hooks';
@@ -178,6 +179,21 @@ export function SettingsSheet() {
         e.stopPropagation();
         setOpen(false);
         btnRef.current?.focus();
+        return;
+      }
+      if (e.key !== 'Tab' || !sheetRef.current) return;
+      const focusables = sheetRef.current.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusables.length) return;
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener('keydown', onKey, true);
@@ -197,22 +213,24 @@ export function SettingsSheet() {
       >
         <GearIcon size={19} />
       </button>
-      {open && (
-        <>
-          <div className="sheet-backdrop" onClick={() => setOpen(false)} />
-          <div className="sheet" role="dialog" aria-label="Settings" ref={sheetRef} tabIndex={-1}>
-            <div className="sheet-head">
-              <h2>Settings</h2>
-              <button className="icon-btn" aria-label="Close settings" onClick={() => setOpen(false)}>
-                <CloseIcon size={15} />
-              </button>
+      {open &&
+        createPortal(
+          <>
+            <div className="sheet-backdrop" onClick={() => setOpen(false)} />
+            <div className="sheet" role="dialog" aria-label="Settings" ref={sheetRef} tabIndex={-1}>
+              <div className="sheet-head">
+                <h2>Settings</h2>
+                <button className="icon-btn" aria-label="Close settings" onClick={() => setOpen(false)}>
+                  <CloseIcon size={15} />
+                </button>
+              </div>
+              <FidelitySection />
+              <EqSection />
+              <DeviceSection />
             </div>
-            <FidelitySection />
-            <EqSection />
-            <DeviceSection />
-          </div>
-        </>
-      )}
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

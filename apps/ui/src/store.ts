@@ -55,6 +55,8 @@ export interface UiState {
   toasts: Toast[];
   scan: ScanProgress;
   view: 'now' | 'library' | 'sources' | 'home';
+  libraryQuery: string;
+  nowPlayingExpanded: boolean;
   queueOpen: boolean;
   palette: Rgb[];
   /** Last EQ bands the user applied (engine doesn't report them back). */
@@ -148,6 +150,8 @@ export interface UiSession {
   listDevices(): Promise<AudioDevice[]>;
   setDevice(name: string | null): void;
   setView(view: UiState['view']): void;
+  setLibraryQuery(query: string): void;
+  setNowPlayingExpanded(expanded: boolean): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
   dismissToast(id: number): void;
@@ -168,6 +172,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     scan: { phase: 'idle', scanned: 0 },
     eqBands: [],
     view: 'now',
+    libraryQuery: '',
+    nowPlayingExpanded: false,
     queueOpen: false,
     palette: DEFAULT_PALETTE,
     ready: false,
@@ -353,6 +359,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       void api.audio.setDevice(name).catch(() => pushToast(route, 'Could not switch output device', true));
     },
     setView: (view) => set({ view }),
+    setLibraryQuery: (libraryQuery) => set({ libraryQuery }),
+    setNowPlayingExpanded: (nowPlayingExpanded) => set({ nowPlayingExpanded }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
     setPalette: (palette) => set({ palette }),
     dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),

@@ -61,8 +61,8 @@ function Artwork() {
 export function NowPlaying() {
   // Narrow selectors: position/fft updates at 2-20Hz must not re-render this
   // tree — the seek bar and Pixi layer read those off-store.
-  const [expanded, setExpanded] = useState(false);
-  const closeFull = useCallback(() => setExpanded(false), []);
+  const expanded = useUi((s) => s.nowPlayingExpanded);
+  const closeFull = useCallback(() => session.setNowPlayingExpanded(false), []);
   const status = useUi((s) => s.snapshot.status);
   const lastError = useUi((s) => s.snapshot.lastError);
   const palette = useUi((s) => s.palette);
@@ -71,7 +71,7 @@ export function NowPlaying() {
   return (
     <div className="np">
       {!expanded && <PixiBackground palette={palette} />}
-      {track && <button className="np-expand" onClick={() => setExpanded(true)} aria-label="Expand now playing">⤢ <span>Full screen</span></button>}
+      {track && <button className="np-expand" onClick={() => session.setNowPlayingExpanded(true)} aria-label="Expand now playing">⤢ <span>Full screen</span></button>}
       {expanded && track && createPortal(<NowPlayingFull onClose={closeFull} />, document.body)}
       {track ? (
         <div className="np-inner">
