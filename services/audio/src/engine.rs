@@ -1035,8 +1035,16 @@ impl Engine {
     /// respawn them (see respawn_pipelines).
     fn rebuild_stream(&self, neg: &Negotiated) -> Result<()> {
         let _serial = self.stream_mu.lock().unwrap();
-        // Another rebuild may have landed while we waited on the lock.
-        if self.core.lock().unwrap().negotiated == *neg {
+        // Another rebuild may have landed while we waited on the lock — only
+        // skip when the format matches AND a healthy sink exists.
+        let healthy = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| !s.is_dead())
+            .unwrap_or(false);
+        if self.core.lock().unwrap().negotiated == *neg && healthy {
             return Ok(());
         }
         if self.monitor_stop.load(Ordering::Acquire) {
@@ -1245,6 +1253,14 @@ impl Engine {
     /// Prefetch a successor under the current lease generation — a stale
     /// generation is rejected like every other generation-gated command, so
     /// a skip can never install the wrong track.
+    /// Drop an installed prefetch — queue edits must cancel the successor
+    /// the engine would otherwise promote at the boundary.
+    pub fn clear_prefetch(&self, generation: u64) -> Result<Value> {
+        self.check_gen(generation)?;
+        self.abort_prefetch();
+        Ok(json!({ "ok": true }))
+    }
+
     pub fn prefetch(
         &self,
         queue_id: &str,
@@ -1512,6 +1528,9 @@ impl Engine {
                         // A concurrent load may have landed while this event
                         // sat in the drain window — only adopt the promotion
                         // if the ended track is still our current one.
+                        // Validate + commit bookkeeping + consume the prefetch
+                        // slot in ONE critical section — a concurrent load in
+                        // the emit gap must not see half-adopted state.
                         let gen = {
                             let mut st = self.state.lock().unwrap();
                             if st.queue_id.as_deref() != Some(ended_queue_id.as_str())
@@ -1524,6 +1543,15 @@ impl Engine {
                             st.queue_id = Some(started_queue_id.clone());
                             st.duration_ms = started_duration_ms;
                             let _ = started_seek_offset_ms;
+                            // promoted prefetch slot consumed — its source and
+                            // ReplayGain become the CURRENT track's.
+                            if let Some(pf) = st.prefetch.take() {
+                                if pf.queue_id == started_queue_id {
+                                    st.source = Some(pf.source);
+                                    st.replay_gain_db = pf.replay_gain_db;
+                                }
+                            }
+                            st.reported_prefetch_ready = false;
                             st.generation
                         };
                         self.emit(
@@ -1543,17 +1571,6 @@ impl Engine {
                                 "gapless": true,
                             }),
                         );
-                        // promoted prefetch slot consumed — its source and
-                        // ReplayGain become the CURRENT track's so seeks and
-                        // stream rebuilds respawn the right file.
-                        let mut st = self.state.lock().unwrap();
-                        if let Some(pf) = st.prefetch.take() {
-                            if pf.queue_id == started_queue_id {
-                                st.source = Some(pf.source);
-                                st.replay_gain_db = pf.replay_gain_db;
-                            }
-                        }
-                        st.reported_prefetch_ready = false;
                     }
                     CoreEvent::Ended { queue_id, instance } => {
                         let gen = {

@@ -154,6 +154,11 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   }
 
   /** Prefetch a successor file for the gapless boundary. */
+  /** Cancel an installed engine prefetch (stale successor after queue edits). */
+  async clearPrefetch(): Promise<void> {
+    await this.client.clearPrefetch(this.lastLoadGeneration).catch(() => undefined);
+  }
+
   async prefetch(item: QueueItem): Promise<void> {
     if (item.track.source.kind !== "file") return;
     this.rememberQueueId(item.queueId);

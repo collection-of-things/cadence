@@ -155,6 +155,7 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
             get_u64(p, "generationId")?,
             p.get("replayGainDb").and_then(|v| v.as_f64()),
         ),
+        "audio.clearPrefetch" => engine.clear_prefetch(get_u64(p, "generationId")?),
         "audio.play" => engine.play(get_u64(p, "generationId")?),
         "audio.pause" => engine.pause(get_u64(p, "generationId")?),
         "audio.stop" => engine.stop(get_u64(p, "generationId")?),

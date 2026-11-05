@@ -11,13 +11,15 @@ type Tab = 'albums' | 'artists' | 'tracks';
 
 function AlbumsGrid({ query }: { query: string }) {
   const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
+  const scan = useUi((s) => s.scan);
   useEffect(() => {
     let live = true;
     api.library.albums(query ? { text: query } : {}).then((a) => live && setAlbums(a));
     return () => {
       live = false;
     };
-  }, [query]);
+    // scan.phase in deps: a finished scan or root removal refetches the grid.
+  }, [query, scan.phase]);
 
   if (!albums) return <div className="lib-status">Loading albums…</div>;
   if (!albums.length) return <div className="lib-status">No albums match.</div>;
@@ -47,13 +49,15 @@ function AlbumsGrid({ query }: { query: string }) {
 
 function ArtistsList({ query }: { query: string }) {
   const [artists, setArtists] = useState<{ name: string; albumCount: number; trackCount: number }[] | null>(null);
+  const scan = useUi((s) => s.scan);
   useEffect(() => {
     let live = true;
     api.library.artists({}).then((a) => live && setArtists(a));
     return () => {
       live = false;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scan.phase refetches after scans
+  }, [scan.phase]);
   if (!artists) return <div className="lib-status">Loading artists…</div>;
   const shown = query ? artists.filter((a) => a.name.toLowerCase().includes(query.toLowerCase())) : artists;
   if (!shown.length) return <div className="lib-status">No artists match.</div>;
@@ -112,6 +116,7 @@ function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; on
 function TracksTable({ query }: { query: string }) {
   const [tracks, setTracks] = useState<TrackRef[] | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scan = useUi((s) => s.scan);
   useEffect(() => {
     let live = true;
     setTracks(null);
@@ -119,7 +124,8 @@ function TracksTable({ query }: { query: string }) {
     return () => {
       live = false;
     };
-  }, [query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scan.phase refetches after scans
+  }, [query, scan.phase]);
 
   const list = tracks ?? [];
   const virtualizer = useVirtualizer({

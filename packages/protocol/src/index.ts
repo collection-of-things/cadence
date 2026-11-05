@@ -234,6 +234,8 @@ export interface RouteAdapter {
   setVolume(volume: number): Promise<void>;
   /** Best-effort prefetch of a successor for gapless-style handoff. */
   prefetch?(item: QueueItem): Promise<void>;
+  /** Cancel an installed prefetch — queue edits make a successor stale. */
+  clearPrefetch?(): Promise<void>;
   /** Release idle engine resources without discarding the login session. */
   releaseIdle?(): Promise<void>;
   /** Apply the user's fidelity-mode preference (no-op where unsupported). */

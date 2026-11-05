@@ -378,6 +378,8 @@ export class Coordinator {
     // engines keep playing through the outage.
     if (route !== "local" && route !== "spotify-librespot") return;
     if (this.activeRoute !== route) return;
+    this.lastError = { route, queueId: this.lease?.queueId ?? "", message: "audio engine unavailable (service down)", retriable: true };
+    this.status = "error"; // never report phantom playback over a dead engine
     this.emitError(route, this.lease?.queueId, "audio engine unavailable (service down)", true);
     this.emitSnapshot();
   }
@@ -567,6 +569,13 @@ export class Coordinator {
       if (adapter.setFidelityMode !== undefined) {
         await adapter.setFidelityMode(this.fidelityMode);
       }
+      // Volume lands before the track starts — the incoming route must not
+      // sound briefly at a stale/default level (muted startup especially).
+      if (adapter.setFidelityMode !== undefined) {
+        await this.withTimeout(adapter.setFidelityMode(this.fidelityMode), 10_000, "adapter.setFidelityMode");
+      }
+      this.volume = this.volumeByRoute.get(route) ?? this.volume;
+      await this.withTimeout(adapter.setVolume(this.muted ? 0 : this.volume), 10_000, "adapter.setVolume");
       await this.withTimeout(adapter.play(item, lease, playOpts), 20_000, "adapter.play");
     } catch (cause) {
       // A timed-out play may still have started audio underneath us — issue
@@ -619,7 +628,16 @@ export class Coordinator {
   private refreshPrefetch(): void {
     if (this.activeAdapter?.prefetch === undefined || this.lease === null) return;
     this.pendingPrefetch = null;
-    void this.prefetchSuccessor(this.activeAdapter);
+    const adapter = this.activeAdapter;
+    // If no valid successor exists, the engine's installed prefetch is
+    // stale — cancel it rather than let it promote a removed track.
+    const nextIdx = QueueOps.nextIndexAfterEnd(this.queue);
+    const next = nextIdx === null ? undefined : this.queue.items[nextIdx];
+    if (next === undefined || next.track.route !== adapter.route) {
+      void adapter.clearPrefetch?.();
+      return;
+    }
+    void this.prefetchSuccessor(adapter);
   }
 
   /** Best-effort gapless: prefetch the next same-route item on the active adapter. */

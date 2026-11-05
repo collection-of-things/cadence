@@ -399,8 +399,8 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
   async signIn(): Promise<void> {
     throw new Error(
       "Spotify (librespot) uses environment credentials — set " +
-        "CADENCE_SPOTIFY_TOKEN or CADENCE_SPOTIFY_USERNAME + " +
-        "CADENCE_SPOTIFY_PASSWORD and restart Cadence.",
+        "CADENCE_SPOTIFY_ACCESS_TOKEN (or CADENCE_SPOTIFY_TOKEN for connect), or " +
+        "CADENCE_SPOTIFY_USERNAME + CADENCE_SPOTIFY_PASSWORD, and restart Cadence.",
     );
   }
 
