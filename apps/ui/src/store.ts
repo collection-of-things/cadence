@@ -54,7 +54,7 @@ export interface UiState {
   generationId: number;
   toasts: Toast[];
   scan: ScanProgress;
-  view: 'now' | 'library' | 'sources';
+  view: 'now' | 'library' | 'sources' | 'home';
   queueOpen: boolean;
   palette: Rgb[];
   /** Last EQ bands the user applied (engine doesn't report them back). */
