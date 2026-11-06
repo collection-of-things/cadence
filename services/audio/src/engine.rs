@@ -2940,6 +2940,14 @@ impl Engine {
                         break;
                     }
                     Gate::DrainUnsupported | Gate::Drained => {
+                        // Reactivate BEFORE the end handler — a drained
+                        // stream stays deactivated until set_active, so
+                        // without this every reuse path (direct load,
+                        // same-format respawn) plays silence and the
+                        // watchdog false-trips 2.5s after each end.
+                        if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                            s.resume();
+                        }
                         self.handle_track_end(qid, inst);
                     }
                     Gate::Playing => {

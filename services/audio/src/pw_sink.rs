@@ -959,10 +959,18 @@ impl Sink for PipeWireSink {
     }
 
     fn resume(&self) {
-        // A drain leaves the stream deactivated — reactivate or the
-        // reused sink stays silent on the next track.
-        let _g = self.tl.lock();
-        let _ = self.stream.set_active(true);
+        // A drain leaves the stream deactivated AND stops the process
+        // callback for good (PipeWire only clears `drained` in
+        // set_active) — reactivate or the next track is silent and the
+        // watchdog false-trips 2.5s later. Reseed the watchdog anchor
+        // so its grace restarts from resume.
+        {
+            let _g = self.tl.lock();
+            let _ = self.stream.set_active(true);
+        }
+        self.last_process_ms
+            .store(self.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+        self.drained.store(false, Ordering::Relaxed);
     }
 }
 
