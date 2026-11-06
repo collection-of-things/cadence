@@ -20,3 +20,4 @@ apps/desktop/release/
 *.key
 id_*
 credentials*
+target-review/

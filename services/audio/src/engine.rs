@@ -1387,9 +1387,17 @@ impl Engine {
                 self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
                 break;
             }
+            // Position is read FRESH per attempt: after a stale retry the
+            // track may be a different one — respawning it at the entry
+            // parameter's offset would skip or mis-place it.
             let (pos, rg) = {
+                let pos = if attempt == 0 {
+                    position_ms
+                } else {
+                    self.core.lock().unwrap().position_ms()
+                };
                 let st = self.state.lock().unwrap();
-                (position_ms, st.replay_gain_db)
+                (pos, st.replay_gain_db)
             };
             match self.spawn_pipeline(&qid, src.clone(), pos, rg, true) {
                 Ok((reader, handle, dur, bypass, _info)) => {
@@ -1506,11 +1514,12 @@ impl Engine {
                         drop(core);
                         *self.prefetch_producer.lock().unwrap() = Some(handle);
                     }
-                    // The plan validated — keep it armed for the boundary
-                    // reopen even though this spawn failed.
+                    // The plan validated but nothing verified renderable —
+                    // stay armed for the boundary reopen without claiming
+                    // readiness.
                     Err(e) => {
                         self.emit_error(Some(&qid), &format!("{e:#}"), true);
-                        arm(true, &qid, &src, rg);
+                        arm(false, &qid, &src, rg);
                     }
                 }
             }
