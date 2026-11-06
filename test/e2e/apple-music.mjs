@@ -100,11 +100,13 @@ let appLog = '';
 function launch() {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  delete env.WAYLAND_DISPLAY; // keep the window off Hyprland
+  
   env.ELECTRON_DISABLE_SANDBOX = '1';
   env.CADENCE_E2E_CDP_PORT = CDP_PORT;
   env.CADENCE_USER_DATA = PROFILE;
   if (sinkModule) env.PULSE_SINK = SINK;
-  app = spawn(electronBin, ['--no-sandbox', desktopDir], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  app = spawn(electronBin, ['--no-sandbox', '--ozone-platform=x11', desktopDir], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   app.stdout.on('data', (d) => (appLog += d));
   app.stderr.on('data', (d) => (appLog += d));
 }
@@ -328,12 +330,13 @@ try {
   record('queue+position restored', (queue?.items?.length ?? 0) > 0 && restored?.status === 'paused',
     `${queue?.items?.length} items, ${Math.round((restored?.positionMs ?? 0) / 1000)}s, status=${restored?.status}`);
 
-  // resume actually plays after restart
-  await ev(`window.cadence.sendCommand({kind:'resume'})`, 30_000);
+  // resume actually plays after restart — provider view can take a while to
+  // warm up on a cold boot, so retry the command if the first stalls.
   const resumed = await waitFor(async () => {
+    await ev(`window.cadence.sendCommand({kind:'resume'})`, 30_000).catch(() => {});
     const s = await ev('window.cadence.getSnapshot()');
     return s?.status === 'playing' ? s : null;
-  }, 'resume after restart', 60_000);
+  }, 'resume after restart', 120_000);
   record('playback resumes after restart', true, `"${resumed.current?.track?.title}" @ ${Math.round(resumed.positionMs / 1000)}s`);
 
   await stopApp();

@@ -12,10 +12,12 @@ const profile = `/tmp/cadence-dbg-${process.pid}`;
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+delete env.WAYLAND_DISPLAY; // keep the window off Hyprland
+
 env.ELECTRON_DISABLE_SANDBOX = '1';
 env.CADENCE_E2E_CDP_PORT = CDP_PORT;
 env.CADENCE_USER_DATA = profile;
-const app = spawn(electronBin, ['--no-sandbox', desktopDir], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+const app = spawn(electronBin, ['--no-sandbox', '--ozone-platform=x11', desktopDir], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 app.stderr.on('data', (d) => process.stderr.write(d));
 
 try {
