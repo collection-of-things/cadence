@@ -79,7 +79,7 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
           Sign in
         </button>
       )}
-      {cap.state === 'ready' && (
+      {cap.state === 'ready' && cap.canSignOut === true && (
         <button className="btn src-signout" onClick={() => session.signOutRoute(cap.route)}>
           Sign out
         </button>

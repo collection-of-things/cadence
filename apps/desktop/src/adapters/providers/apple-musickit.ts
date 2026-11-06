@@ -231,6 +231,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         qualityCeiling: "AAC per MusicKit web (no lossless/Atmos on web)",
       },
       visuals: { kind: "ambient" },
+      canSignOut: true,
       notes: [
         "MusicKit JS in a music.apple.com ECS view (Sidra-style).",
         "Uses the site's own developer token — no paid Apple key.",
@@ -382,6 +383,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.session.hide();
       return;
     }
+    // A second Sign-in click while the popup is open coalesces — don't
+    // stack authorize() calls or popup windows.
+    if (this.signInPending) return;
+    this.signInPending = true;
+    const attempt = ++this.signInAttempt;
     // MusicKit's authorize() opens Apple's own IDMSA sign-in popup in the
     // provider partition — the DOM click on the site's button is gesture-
     // gated and silently no-ops from injected code. Keep it as a fallback.
@@ -395,20 +401,36 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       authed,
       new Promise<boolean>((r) => setTimeout(() => r(true), 5_000)),
     ]);
+    let usedFallback = false;
     if (early === false) {
       // authorize() rejected immediately (no controller, dead page) — try
       // the page's own button before giving up.
+      usedFallback = true;
       await this.session.eval(`window.__cadenceCtl.clickSignIn()`).catch(() => {});
     }
     void authed.then((ok) => {
-      if (ok === false && !this.authorized && !this.destroyed) {
+      this.signInPending = false;
+      // A stale attempt must not hide the window a newer sign-in is using,
+      // and the fallback needs the window to stay visible to be usable.
+      if (
+        ok === false &&
+        !usedFallback &&
+        attempt === this.signInAttempt &&
+        !this.authorized &&
+        !this.destroyed
+      ) {
         // Popup dismissed — tuck the window away, stay unauthenticated.
         this.session.hide();
-        this.emit({ kind: "capabilitiesChanged" });
       }
+      this.emit({ kind: "capabilitiesChanged" });
     });
     this.emit({ kind: "capabilitiesChanged" });
   }
+
+  /** A sign-in attempt is outstanding — suppress duplicate popups. */
+  private signInPending = false;
+  /** Monotonic id for the latest sign-in attempt — stale results drop. */
+  private signInAttempt = 0;
 
   async signOut(): Promise<void> {
     this.signedOut = true; // suppress lazy warm-up before/after clearing

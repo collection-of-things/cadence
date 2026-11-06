@@ -362,7 +362,17 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     },
     signOutRoute(route) {
       if (!api.routes) return;
-      void api.routes.signOut(route).catch((e: unknown) => {
+      void api.routes.signOut(route).then(() => {
+        // Signing out of the active platform drops the shell back to local.
+        const platform = route.startsWith('apple')
+          ? 'apple'
+          : route.startsWith('spotify')
+            ? 'spotify'
+            : route.startsWith('youtube')
+              ? 'youtube'
+              : 'local';
+        if (get().platform === platform) set({ platform: 'local' });
+      }).catch((e: unknown) => {
         const m = e instanceof Error ? e.message : 'Sign-out failed';
         pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
       });

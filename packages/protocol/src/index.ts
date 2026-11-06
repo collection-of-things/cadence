@@ -60,6 +60,8 @@ export interface RouteCapabilities {
     /** "pcm-fft" = real spectrum from our graph; "ambient" = artwork-driven only. */
     kind: "pcm-fft" | "ambient";
   };
+  /** The adapter implements a real sign-out (partition/token reset). */
+  canSignOut?: boolean;
   /** Free-form notes surfaced in the UI tooltip/settings, e.g. known provider limits. */
   notes: string[];
 }
