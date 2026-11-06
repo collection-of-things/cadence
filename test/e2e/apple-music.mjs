@@ -304,6 +304,31 @@ try {
       record('queue remove', (q?.items?.length ?? 0) === playTracks.length, `${q?.items?.length} items`);
     }
 
+    // natural end: insert a successor, seek near the end — the next item
+    // must start on its own (the gapless/promotion path, no explicit skip).
+    if (extra) {
+      await ev(`window.cadence.sendCommand({kind:'insertNext', items:[{queueId:'e2e-tail', track:${JSON.stringify(extra)}}]})`);
+      await sleep(800);
+      const gq = await ev('window.cadence.getQueue()');
+      const gi = gq?.currentIndex ?? -1;
+      const gNext = gq?.items?.[gi + 1];
+      const cur = await ev('window.cadence.getSnapshot()');
+      const durMs = cur?.durationMs ?? 0;
+      if (gNext && durMs > 30_000) {
+        await ev(`window.cadence.sendCommand({kind:'seek', positionMs:${durMs - 6000}})`).catch(() => {});
+        const promoted = await waitFor(async () => {
+          const s = await ev('window.cadence.getSnapshot()');
+          return s?.current?.queueId === gNext.queueId && s?.status === 'playing' ? s : null;
+        }, 'natural end promotion', 30_000);
+        record('natural track end advances to successor', true,
+          `"${promoted.current?.track?.title}" @ ${Math.round((promoted.positionMs ?? 0) / 1000)}s`);
+      } else {
+        record('natural end test', false, `no successor (${durMs}ms track)`);
+      }
+    } else {
+      record('natural end test', false, 'no extra track available');
+    }
+
     // --- stations --------------------------------------------------------------
     // A station streams indefinitely; constituent-song nowPlaying changes
     // must not end the queue item or stall tracking.

@@ -101,7 +101,7 @@ export class ProviderSession {
       win.webContents.on("ipc-message", (e, channel, name, data) => {
         if (channel !== "cadence:provider-event") return;
         const frameUrl = e.senderFrame?.url ?? "";
-        if (frameUrl && !hostAllowed(frameUrl)) return;
+        if (!frameUrl || !hostAllowed(frameUrl)) return;
         const evt = { name: String(name), data };
         for (const l of this.listeners) l(evt);
       });
@@ -137,6 +137,16 @@ export class ProviderSession {
       win.webContents.on("will-navigate", (event, url) => {
         if (!hostAllowed(url)) event.preventDefault();
       });
+      // Server redirects bypass will-navigate — check those too. A
+      // post-redirect landed outside the family gets rolled back.
+      win.webContents.on("will-redirect", (event, url) => {
+        if (!hostAllowed(url)) event.preventDefault();
+      });
+      win.webContents.on("did-navigate", (_e, url) => {
+        if (!hostAllowed(url)) {
+          void win.webContents.loadURL(this.opts.url).catch(() => undefined);
+        }
+      });
       win.webContents.setWindowOpenHandler(({ url }) => {
         if (!hostAllowed(url)) return { action: "deny" };
         // Provider sign-in popups must open in the same account partition.
@@ -146,6 +156,9 @@ export class ProviderSession {
       // provider's hosts too.
       win.webContents.on("did-create-window", (child) => {
         child.webContents.on("will-navigate", (event, url) => {
+          if (!hostAllowed(url)) event.preventDefault();
+        });
+        child.webContents.on("will-redirect", (event, url) => {
           if (!hostAllowed(url)) event.preventDefault();
         });
         child.webContents.setWindowOpenHandler(({ url }) =>
@@ -229,12 +242,13 @@ export class ProviderSession {
   }
 
   /** Cheap signal that the partition likely holds a signed-in session —
-   * cookies can be read without booting the hidden view. */
+   * looks for Apple's media-user-token specifically (a signed-out visit
+   * still leaves anonymous cookies). */
   async hasSessionCookies(): Promise<boolean> {
     try {
       const ses = session.fromPartition(this.partition);
       const cookies = await ses.cookies.get({ url: this.opts.url });
-      return cookies.length > 0;
+      return cookies.some((c) => /media-user-token|media_user_token/.test(c.name));
     } catch {
       return false;
     }
@@ -270,12 +284,9 @@ export class ProviderSession {
     this.win?.hide();
   }
 
-  /** Wipe the partition's storage — full provider sign-out. */
+  /** Wipe the partition's storage — full provider sign-out. Throws on
+   * failure: callers must not report a clean sign-out they can't confirm. */
   async clearData(): Promise<void> {
-    try {
-      await session.fromPartition(this.partition).clearStorageData();
-    } catch {
-      /* best effort */
-    }
+    await session.fromPartition(this.partition).clearStorageData();
   }
 }

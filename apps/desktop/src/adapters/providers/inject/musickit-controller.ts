@@ -257,8 +257,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       const items = (q && q.items) || [];
       const pos = q && typeof q.position === 'number' ? q.position : -1;
       for (let i = items.length - 1; i >= 0; i--) {
-        // Duplicate songs share ids — never remove the item at the playhead.
-        if (i === pos || !ids.has(String(items[i].id))) continue;
+        // Duplicate songs share ids — only ever remove mirrored successors,
+        // i.e. items strictly after the playhead.
+        if (i <= pos || !ids.has(String(items[i].id))) continue;
         try {
           if (typeof mk.removeItem === 'function') await mk.removeItem(i);
           else items.splice(i, 1);

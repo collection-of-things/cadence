@@ -544,10 +544,13 @@ export class AppleMusicCatalog {
       trackResources = trackRel?.data ?? [];
       next = trackRel?.next;
     }
-    while (next && trackResources.length < MAX_TRACKS) {
-      // `next` is a relative API href like "/v1/catalog/us/albums/123/tracks?offset=..."
+    // `next` links can keep returning empty pages — cap by page count too,
+    // and bail when a page adds nothing.
+    for (let pages = 0; next && trackResources.length < MAX_TRACKS && pages < 6; pages++) {
+      const before = trackResources.length;
       const page = (await this.amp(next)) as { data?: AmResource[]; next?: string };
       take(page);
+      if (trackResources.length === before) break;
     }
     if (next) {
       // Pages beyond the cap are dropped — flagged honestly on the page.

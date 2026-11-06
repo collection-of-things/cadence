@@ -91,24 +91,43 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     });
   }
 
+  /** Back off re-installation after a failed attempt so capabilities()
+   * doesn't spin a 30s wait on every poll. */
+  private installBackoffUntil = 0;
+
   async prepare(): Promise<void> {
     await this.session.prepare();
     if (this.installed) return;
+    if (Date.now() < this.installBackoffUntil) {
+      throw new Error("Apple Music provider is still starting");
+    }
     // The controller waits for MusicKit to appear — bounded well under the
-    // 20s catalog IPC wait in the normal case (waits total ~24s max).
-    const ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 30_000);
-    if (ok) this.installed = true;
+    // 30s catalog IPC wait in the normal case.
+    let ok: boolean;
+    try {
+      ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 30_000);
+    } catch (e) {
+      this.installBackoffUntil = Date.now() + 15_000;
+      throw e;
+    }
+    if (ok) {
+      this.installed = true;
+    } else {
+      this.installBackoffUntil = Date.now() + 15_000;
+    }
   }
 
   /** Run a controller call inside the page. Navigations wipe injected state;
-   * the session re-installs on did-finish-load, so retry a transient miss. */
-  private async evalCtl<T>(call: string): Promise<T> {
+   * the session re-installs on did-finish-load, so retry a transient miss.
+   * Non-idempotent calls (POSTs, mutations) are never retried. */
+  private async evalCtl<T>(call: string, opts: { retry?: boolean } = {}): Promise<T> {
     await this.prepare();
     try {
       return await this.session.eval<T>(`window.__cadenceCtl.${call}`);
     } catch (e) {
+      if (opts.retry === false) throw e;
       // Retry only when the controller is actually missing — never on a call
-      // that merely failed (a retried addToLibrary POST would run twice).
+      // that merely failed (a retried POST would run twice).
       const present = await this.session
         .eval<string>(`typeof window.__cadenceCtl`)
         .catch(() => "missing");
@@ -127,6 +146,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   ): Promise<unknown> {
     return this.evalCtl(
       `amp(${JSON.stringify(path)}, ${JSON.stringify(params ?? {})}, ${JSON.stringify(method ?? "get")})`,
+      // Mutations are not idempotent — a timed-out POST may still land.
+      { retry: method === undefined || method === "get" },
     );
   }
 
@@ -152,6 +173,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   private warming = false;
+  /** Set by signOut so the view isn't rewarmed behind a signed-out user. */
+  private signedOut = false;
 
   async capabilities(): Promise<RouteCapabilities> {
     // capabilities() must not boot the hidden view — the UI asks on every
@@ -159,7 +182,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // cookies, warm the view in the background so the real auth state
     // arrives via capabilitiesChanged shortly after.
     if (!this.installed) {
-      if (!this.warming) {
+      // A user who just signed out must stay signed out — don't rewarm the
+      // view off leftover cookies until they sign back in.
+      if (!this.warming && !this.signedOut) {
         this.warming = true;
         void this.session
           .hasSessionCookies()
@@ -246,6 +271,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async prefetch(item: QueueItem): Promise<void> {
     if (!this.installed) return;
     const spec = specFor(item.track);
+    // A station has no track boundary — mirroring gains nothing and MusicKit
+    // would report the stream's song id (not the station id) on advance.
+    if (spec.type === "station") return;
     if (this.mirrored.some((m) => m.providerId === spec.id)) return;
     // Only the real successor may be mirrored — a replaced one must leave the
     // provider queue or it could still promote and play.
@@ -257,7 +285,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       await this.session.eval(
         `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
       );
-      this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: spec.type === "station" });
+      this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: false });
     } catch {
       // Mirroring is an optimization; failure only costs seamlessness.
     }
@@ -299,6 +327,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async signIn(): Promise<void> {
+    this.signedOut = false;
     await this.prepare();
     // The user signs into music.apple.com on Apple's own page — our window,
     // their site, their credentials. MusicKit auth follows the site session.
@@ -307,10 +336,15 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async signOut(): Promise<void> {
-    try {
-      await this.evalCtl(`unauthorize()`);
-    } catch {
-      /* unauthorize may not exist on this build — session clear covers it */
+    this.signedOut = true; // suppress lazy warm-up before/after clearing
+    // Skip unauthorize when the view was never loaded — signing out cold
+    // must not boot the window.
+    if (this.installed) {
+      try {
+        await this.evalCtl(`unauthorize()`);
+      } catch {
+        /* unauthorize may not exist on this build — session clear covers it */
+      }
     }
     this.authorized = false;
     // Kill the live view so the in-memory MusicKit instance can't keep an
@@ -349,16 +383,21 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       return;
     }
     if (name === "error") {
-      const d = data as { message?: string };
-      return this.error(typeof d.message === "string" ? d.message.slice(0, 500) : "Apple Music error", true);
+      const msg =
+        typeof data === "object" && data !== null && "message" in data && typeof (data as { message: unknown }).message === "string"
+          ? (data as { message: string }).message.slice(0, 500)
+          : "Apple Music error";
+      return this.error(msg, true);
     }
     if (name === "nowPlaying") {
-      const d = data as { id?: unknown };
-      this.onNowPlaying(typeof d.id === "string" ? d.id : null);
+      const d = typeof data === "object" && data !== null ? (data as { id?: unknown }) : null;
+      this.onNowPlaying(d !== null && typeof d.id === "string" ? d.id : null);
       return;
     }
     if (name !== "playerState") return;
+    if (typeof data !== "object" || data === null) return;
     const s = data as PagePlayerState;
+    if (typeof s.state !== "string") return; // forged/empty event — ignore
     if (s.isAuthorized !== this.authorized) {
       this.authorized = s.isAuthorized;
       if (this.authorized) this.session.hide(); // sign-in complete — tuck it away
@@ -367,7 +406,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // The engine ended the current track (queue exhausted or state 'ended').
     // Transient 'stopped' (mid-setQueue, unauthorize, stalls) is NOT an end —
     // only trust MusicKit's terminal states and its explicit ended flag.
-    if (s.ended || s.state === "ended" || s.state === "completed") {
+    // Stations are exempt: a stream pauses between songs but never "ends".
+    if ((s.ended || s.state === "ended" || s.state === "completed") && !this.current?.station) {
       if (this.current !== null) {
         this.emit({ kind: "ended", generationId, queueId: this.current.queueId });
       } else {
