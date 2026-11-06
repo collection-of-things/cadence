@@ -422,38 +422,50 @@ def compare(name, cap, ref, ch, label):
     k = best_align(cap, seg)
     # ref[0] would sit at cap[k - seg_off]. A period-aliased pick can
     # shrink the mapped overlap below what the capture actually holds —
-    # resolve it against the content-start anchor and compare under the
-    # mapping with the LARGEST overlap. For aperiodic content a wrong
-    # mapping simply fails the residual, never inflates it.
-    cap_start = k - seg_off
+    # so score BOTH the correlation pick and the content-start anchor by
+    # residual first, overlap only as the tie-break: a wrong mapping
+    # can't inflate a result, only fail it.
     cap_nz0 = np.flatnonzero(np.abs(cap) > 1e-6)
     ref_nz0 = np.flatnonzero(np.abs(ref) > 1e-6)
-    cands = [cap_start]
+    cands = [k - seg_off]
     if len(cap_nz0) and len(ref_nz0):
         cands.append(int(cap_nz0[0]) - int(ref_nz0[0]))
-    cap_start = max(
-        cands, key=lambda c: min(len(ref), len(cap) - c) - max(0, -c)
-    )
-    lo = max(0, -cap_start)  # first ref sample present in the capture
-    end = min(len(ref), len(cap) - cap_start)  # exclusive
-    if end - lo <= len(seg):
-        print(f"  {label}: overlap too short")
+
+    def slice_at(c):
+        lo = max(0, -c)  # first ref sample present in the capture
+        end = min(len(ref), len(cap) - c)  # exclusive
+        if end - lo <= len(seg):
+            return None
+        aa = ref[lo:end]
+        bb = cap[c + lo : c + end]
+        # Trim to where the capture has actual content. The recorder's
+        # per-channel links attach a few ms apart — the head's sparse
+        # channel (every-other-sample zeros) is an attach artifact.
+        nfr = len(bb) // ch
+        allch = np.abs(bb[: nfr * ch]).reshape(nfr, ch).min(axis=1)
+        full = np.nonzero(allch > 1e-6)[0]
+        nzc = np.nonzero(np.abs(bb) > 1e-6)[0]
+        if nzc.size == 0 or full.size == 0:
+            return None
+        st = full[0] * ch
+        aa = aa[st : nzc[-1] + 1]
+        bb = bb[st : nzc[-1] + 1]
+        return aa, bb, nzc, st
+
+    scored = []
+    for c in cands:
+        r = slice_at(c)
+        if r is None:
+            continue
+        aa, bb, nzc, st = r
+        mx_c = float(np.abs(bb - aa).max())
+        cov_c = (nzc[-1] + 1 - st) / len(ref)
+        scored.append((mx_c, -cov_c, aa, bb, nzc, st))
+    if not scored:
+        print(f"  {label}: overlap too short or aligned span silent")
         return False, -1
-    a = ref[lo:end]
-    b = cap[cap_start + lo : cap_start + end]
-    # Trim to where the capture has actual content. The recorder's per-
-    # channel links attach a few ms apart — the head's sparse channel
-    # (every-other-sample zeros) is an attach artifact, not a dropout.
-    nfr = len(b) // ch
-    allch = np.abs(b[: nfr * ch]).reshape(nfr, ch).min(axis=1)
-    full = np.nonzero(allch > 1e-6)[0]
-    nz = np.nonzero(np.abs(b) > 1e-6)[0]
-    if nz.size == 0 or full.size == 0:
-        print(f"  {label}: aligned span is silent")
-        return False, -1
-    start = full[0] * ch
-    a = a[start : nz[-1] + 1]
-    b = b[start : nz[-1] + 1]
+    scored.sort(key=lambda t: (t[0], t[1]))
+    mx_c, _, a, b, nz, start = scored[0]
     res = b - a
     mx = float(np.abs(res).max())
     rms = float(np.sqrt((res ** 2).mean()))
@@ -476,10 +488,8 @@ def compare(name, cap, ref, ch, label):
     # period-aliased alignment can't deflate this: the content span is
     # measured on the raw capture, not the aligned window.
     # Coverage = the VERIFIED-matching compared span vs the file —
-    # the mapping above already resolved aliased alignments toward the
-    # largest overlap, and only samples that matched count (residual is
-    # gated separately). A truncated or noise-padded capture cannot
-    # inflate this.
+    # only samples that matched count (the mapping won on residual
+    # first). A truncated or noise-padded capture cannot inflate this.
     coverage = (nz[-1] + 1 - start) / len(ref)
     cov_ok = coverage >= 0.85
     print(
