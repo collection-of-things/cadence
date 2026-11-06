@@ -2159,7 +2159,7 @@ impl Engine {
         let mut mono_buf = Vec::with_capacity(8192);
         let mut tap_buf = vec![0f32; 8192];
         let mut monitor_stalled = false;
-        let mut deferred_device_error: Option<String> = None;
+        let mut deferred_device_error: Option<(String, u64)> = None;
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2443,27 +2443,41 @@ impl Engine {
                 }
             }
 
-            // device loss -> honest error + stop. The error is consumed by
-            // device_error(), so a pending boundary defers handling to the
-            // next tick rather than losing it.
-            let device_error = deferred_device_error
-                .take()
-                .or_else(|| self.caps.lock().unwrap().device_error());
-            if let Some(msg) = device_error {
-                let pending_boundary = {
+            // device loss -> honest error + stop. The error is bound to
+            // the generation that owned the device when it died — a newer
+            // load supersedes it entirely, and an un-adopted boundary
+            // defers handling to the next tick.
+            let device_error = deferred_device_error.take().or_else(|| {
+                self.caps
+                    .lock()
+                    .unwrap()
+                    .device_error()
+                    .map(|msg| (msg, self.state.lock().unwrap().generation))
+            });
+            if let Some((msg, err_gen)) = device_error {
+                let verdict = {
                     let core = self.core.lock().unwrap();
                     let st = self.state.lock().unwrap();
-                    core.ended_pending
+                    if st.generation != err_gen {
+                        // Superseded by a newer load — its own error
+                        // paths handle whatever the device does next.
+                        2
+                    } else if core.ended_pending
                         || core
                             .active
                             .as_ref()
                             .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+                    {
+                        1
+                    } else {
+                        0
+                    }
                 };
-                if pending_boundary {
+                if verdict == 1 {
                     // A guarded rebuild would bail during adoption — defer
                     // to the next tick after the drain settles it.
-                    deferred_device_error = Some(msg);
-                } else {
+                    deferred_device_error = Some((msg, err_gen));
+                } else if verdict == 0 {
                     // Try the default output once — an unplugged headphone
                     // shouldn't end the session when speakers are available.
                     let was_default = {
@@ -2487,14 +2501,22 @@ impl Engine {
                                 let pending = {
                                     let core = self.core.lock().unwrap();
                                     let st = self.state.lock().unwrap();
-                                    core.ended_pending
-                                        || core
-                                            .active
-                                            .as_ref()
-                                            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+                                    st.generation == err_gen
+                                        && (core.ended_pending
+                                            || core
+                                                .active
+                                                .as_ref()
+                                                .is_some_and(|r| {
+                                                    Some(r.instance)
+                                                        != Some(st.current_instance)
+                                                }))
                                 };
                                 if pending {
-                                    deferred_device_error = Some(msg);
+                                    deferred_device_error = Some((msg, err_gen));
+                                    continue;
+                                }
+                                // Superseded while switching — drop it.
+                                if self.state.lock().unwrap().generation != err_gen {
                                     continue;
                                 }
                                 eprintln!("device fallback failed: {e:#}");
@@ -2503,29 +2525,35 @@ impl Engine {
                     }
                     // Check + destroy atomically — a boundary or load
                     // landing between them must not be torn down.
-                    {
+                    let handled = {
                         let mut core = self.core.lock().unwrap();
                         let mut st = self.state.lock().unwrap();
-                        let pending = core.ended_pending
+                        if st.generation != err_gen {
+                            false // superseded — drop silently
+                        } else if core.ended_pending
                             || core
                                 .active
                                 .as_ref()
                                 .is_some_and(|r| {
                                     Some(r.instance) != Some(st.current_instance)
-                                });
-                        if pending {
-                            deferred_device_error = Some(msg);
-                            continue;
+                                })
+                        {
+                            deferred_device_error = Some((msg.clone(), err_gen));
+                            false
+                        } else {
+                            core.clear_all();
+                            core.paused = true;
+                            st.state = PlayState::Error;
+                            true
                         }
-                        core.clear_all();
-                        core.paused = true;
-                        st.state = PlayState::Error;
-                        drop(st);
-                        drop(core);
+                    };
+                    if !handled {
+                        continue;
                     }
                     self.emit_error(None, &format!("output device lost: {msg}"), false);
                     self.emit_state(Some("device lost"));
                 }
+                // verdict == 2: superseded — drop the error entirely
             }
 
             // position ~10Hz while playing
