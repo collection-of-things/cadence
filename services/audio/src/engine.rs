@@ -224,7 +224,7 @@ impl OutputCore {
                     let want = (out.len() - filled).min(tmp.len());
                     let got = c.read(&mut tmp[..want]);
                     for i in 0..got {
-                        out[filled + i] = tmp[i] as f32 / i32::MAX as f32;
+                        out[filled + i] = tmp[i] as f32 / 2147483648.0f32;
                     }
                     got
                 }
@@ -285,7 +285,10 @@ impl OutputCore {
                     let want = (out.len() - filled).min(tmp.len());
                     let got = c.read(&mut tmp[..want]);
                     for i in 0..got {
-                        out[filled + i] = (tmp[i] * i32::MAX as f32) as i32;
+                        out[filled + i] = (tmp[i] as f64 * 2147483648.0)
+                            .round()
+                            .clamp(i32::MIN as f64, i32::MAX as f64)
+                            as i32;
                     }
                     got
                 }
@@ -319,7 +322,7 @@ impl OutputCore {
         while i < out.len() {
             let n = (out.len() - i).min(tap.len());
             for j in 0..n {
-                tap[j] = out[i + j] as f32 / i32::MAX as f32;
+                tap[j] = out[i + j] as f32 / 2147483648.0f32;
             }
             let _ = self.fft_tap.write(&tap[..n]);
             i += n;
@@ -335,7 +338,7 @@ impl OutputCore {
             while i < out.len() {
                 let n = (out.len() - i).min(tap.len());
                 for j in 0..n {
-                    tap[j] = out[i + j] as f32 / i32::MAX as f32;
+                    tap[j] = out[i + j] as f32 / 2147483648.0f32;
                 }
                 let _ = d.tap.write(&tap[..n]);
                 i += n;
@@ -356,7 +359,11 @@ impl OutputCore {
         }
         self.pull_f32(&mut tmp[..out.len()]);
         for (i, s) in tmp[..out.len()].iter().enumerate() {
-            out[i] = (*s * i16::MAX as f32).round().clamp(-32768.0, 32767.0) as i16;
+            // ffmpeg's s16<->f32 convention scales by 2^15: s16-representable
+            // values round-trip exactly. (32768.0, not i16::MAX.)
+            out[i] = (*s * 32768.0)
+                .round()
+                .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
         }
         self.scratch16 = tmp;
     }
@@ -586,7 +593,13 @@ struct EngineState {
     duration_ms: u64,
     fidelity: bool,
     eq_bands: Vec<(f64, f64)>,
+    /// ReplayGain user toggle — tag gains are only applied when enabled.
+    /// Off by default: mpv-style transparent loudness.
+    replay_gain: bool,
     replay_gain_db: Option<f64>,
+    /// A native-format stream that failed to open once on this device —
+    /// don't re-attempt it on every spawn/seek. Cleared on set_device.
+    native_failed: Option<Negotiated>,
     /// honesty flag for the current render track
     fidelity_bypass: bool,
     feeds: HashMap<String, Arc<Feed>>,
@@ -616,6 +629,10 @@ struct TrackPlan {
     neg: Negotiated,
     rplan: ResamplePlan,
     bypass: bool,
+    /// True when `neg` came from the device's native acceptance of the
+    /// source format (not the device default). Lets the spawn path fall
+    /// back to the default negotiation if that stream won't open.
+    native: bool,
     /// Probe result for file sources — threaded into DecodeRequest so the
     /// producer's ffmpeg spawn doesn't re-run ffprobe.
     info: Option<AudioInfo>,
@@ -661,7 +678,9 @@ impl Engine {
                 duration_ms: 0,
                 fidelity: false,
                 eq_bands: Vec::new(),
+                replay_gain: false,
                 replay_gain_db: None,
+                native_failed: None,
                 fidelity_bypass: false,
                 feeds: HashMap::new(),
                 prefetch: None,
@@ -825,7 +844,20 @@ impl Engine {
     // ------------------------- pipeline construction ----------------------
 
     /// Negotiate stream params for a source; returns (negotiated, bypass).
-    fn negotiate(&self, src_rate: u32, src_channels: u32, src_depth: BitDepth) -> (Negotiated, bool) {
+    ///
+    /// When `prefer_native` and the device can run the source's native
+    /// rate/channels in a depth-preserving format, open the stream at those
+    /// parameters — no in-graph resample and no bit-depth loss. This is the
+    /// DEFAULT path too (mpv-style): rendering is transparent unless the
+    /// device can't take the source format. `bypass` is still only reported
+    /// for strict fidelity mode.
+    fn negotiate(
+        &self,
+        src_rate: u32,
+        src_channels: u32,
+        src_depth: BitDepth,
+        prefer_native: bool,
+    ) -> (Negotiated, bool) {
         let caps = self.caps.lock().unwrap().clone();
         let fidelity = self.state.lock().unwrap().fidelity;
         if fidelity {
@@ -833,12 +865,38 @@ impl Engine {
                 return (
                     Negotiated {
                         rate: src_rate,
-                        channels: src_channels.min(caps.max_channels()),
+                        // accepts() validated exactly this channel count —
+                        // open it, not a clamped guess at a different one.
+                        channels: src_channels,
                         kind,
                         device_name: caps.name(),
                     },
                     true,
                 );
+            }
+        } else if prefer_native {
+            // Default path: run the stream at the source's native
+            // rate/channels when the device can carry them — no in-graph
+            // resample, no double resample at the OS mixer. DSP still
+            // applies (this is not fidelity bypass). "Depth-preserving"
+            // is scoped to the f32 graph: it carries <=24-bit integer and
+            // float sources exactly; a 32-bit-INTEGER source can only be
+            // rendered bit-exact by the fidelity bypass s32 pipe, so its
+            // S32-accepting devices get the native rate but lose the low
+            // byte through f32 like every other format.
+            if let Some(kind) = caps.accepts(src_rate, src_channels, src_depth) {
+                if src_depth.preserved_by(kind) {
+                    let neg = Negotiated {
+                        rate: src_rate,
+                        channels: src_channels,
+                        kind,
+                        device_name: caps.name(),
+                    };
+                    // Skip a format this device already failed to open.
+                    if self.state.lock().unwrap().native_failed.as_ref() != Some(&neg) {
+                        return (neg, false);
+                    }
+                }
             }
         }
         (
@@ -853,6 +911,15 @@ impl Engine {
     }
 
     fn plan_track(&self, src: &SourceSpec, seek_ms: u64) -> Result<TrackPlan> {
+        self.plan_track_opts(src, seek_ms, true)
+    }
+
+    fn plan_track_opts(
+        &self,
+        src: &SourceSpec,
+        seek_ms: u64,
+        prefer_native: bool,
+    ) -> Result<TrackPlan> {
         let (src_rate, src_channels, src_depth, duration_ms, info) = match src {
             SourceSpec::File { path } => {
                 let info = self.decoder.probe(path)?;
@@ -871,7 +938,24 @@ impl Engine {
             } => (*sample_rate_hz, *channels, *bit_depth, 0, None),
         };
 
-        let (neg, mut bypass) = self.negotiate(src_rate, src_channels, src_depth);
+        let (neg, mut bypass) =
+            self.negotiate(src_rate, src_channels, src_depth, prefer_native);
+        // Track whether the negotiation landed on the device's native
+        // acceptance of the source format vs. its default — the spawn path
+        // falls back to the default when a native stream won't open.
+        let native = {
+            let caps = self.caps.lock().unwrap().clone();
+            let fidelity = self.state.lock().unwrap().fidelity;
+            let default_neg = Negotiated {
+                rate: caps.default_rate(),
+                channels: caps.default_channels(),
+                kind: caps.default_kind(),
+                device_name: caps.name(),
+            };
+            // Only the non-fidelity preference falls back to the device
+            // default — strict fidelity stays honest about what it took.
+            prefer_native && !fidelity && neg != default_neg
+        };
         if !src_depth.preserved_by(neg.kind) {
             // negotiated format can't carry source bit-exactly -> not bypass
             bypass = false;
@@ -887,6 +971,7 @@ impl Engine {
             neg,
             rplan,
             bypass,
+            native,
             info,
         })
     }
@@ -906,7 +991,27 @@ impl Engine {
         rebuild_ok: bool,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let plan = self.plan_track(&src, seek_ms)?;
-        self.spawn_pipeline_planned(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+        let native = plan.native;
+        let attempted = plan.neg.clone();
+        let res =
+            self.spawn_pipeline_planned(queue_id, src.clone(), seek_ms, rg_db, rebuild_ok, plan);
+        match res {
+            // Only retry when the stream itself failed to open (sink is
+            // absent) — pipeline-construction errors propagate honestly.
+            Err(e) if native && rebuild_ok && self.sink.lock().unwrap().is_none() => {
+                // A device may advertise the source format yet fail to open
+                // a stream at it — remember the failure so later spawns
+                // (seeks, respawns, boundary reopens) go straight to the
+                // device default instead of a doomed open every time.
+                self.state.lock().unwrap().native_failed = Some(attempted);
+                eprintln!(
+                    "native stream negotiation failed ({e:#}); retrying at device default"
+                );
+                let plan = self.plan_track_opts(&src, seek_ms, false)?;
+                self.spawn_pipeline_planned(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+            }
+            other => other,
+        }
     }
 
     /// spawn_pipeline over a caller-computed plan — lets prefetch() reuse
@@ -925,6 +1030,13 @@ impl Engine {
         let rplan = plan.rplan;
         let bypass = plan.bypass;
         let info = plan.info;
+        // ReplayGain is opt-in: tagged gains only reach DSP when the user
+        // enabled them. Off by default = mpv-style transparent loudness.
+        let rg_db = if self.state.lock().unwrap().replay_gain {
+            rg_db
+        } else {
+            None
+        };
 
         {
             // A missing/dead sink (open failed earlier) must retry the open —
@@ -1130,6 +1242,8 @@ impl Engine {
             crate::sink::CpalCaps::new(name)?
         };
         *self.caps.lock().unwrap() = new_caps;
+        // New device: the cached native-open failure belongs to the old one.
+        self.state.lock().unwrap().native_failed = None;
         // Default negotiated for the new device; next spawn refines it.
         let neg = {
             let caps = self.caps.lock().unwrap().clone();
@@ -1192,24 +1306,30 @@ impl Engine {
             }
         }
         if let Some((qid, src, rg)) = prefetch {
-            // rebuild_ok:false — a format-mismatched prefetch must NOT swap
-            // the stream (that would erase the active track we just set);
-            // the boundary reopen path handles it honestly instead.
-            match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
-                Ok((reader, handle, _dur, _bypass, _info)) => {
-                    let ready = reader.ready.clone();
-                    self.core.lock().unwrap().set_next(reader);
-                    *self.prefetch_producer.lock().unwrap() = Some(handle);
-                    let mut st = self.state.lock().unwrap();
-                    st.prefetch = Some(PrefetchState {
-                        queue_id: qid,
-                        source: src,
-                        replay_gain_db: rg,
-                        ready,
-                    });
-                    st.reported_prefetch_ready = false;
+            // A format-mismatched prefetch can't render on the rebuilt
+            // stream — check BEFORE spawning so it stays armed for the
+            // boundary reopen instead of surfacing a spurious error.
+            let compatible = self
+                .plan_track(&src, 0)
+                .map(|p| p.neg == self.core.lock().unwrap().negotiated)
+                .unwrap_or(false);
+            if compatible {
+                match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
+                    Ok((reader, handle, _dur, _bypass, _info)) => {
+                        let ready = reader.ready.clone();
+                        self.core.lock().unwrap().set_next(reader);
+                        *self.prefetch_producer.lock().unwrap() = Some(handle);
+                        let mut st = self.state.lock().unwrap();
+                        st.prefetch = Some(PrefetchState {
+                            queue_id: qid,
+                            source: src,
+                            replay_gain_db: rg,
+                            ready,
+                        });
+                        st.reported_prefetch_ready = false;
+                    }
+                    Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
                 }
-                Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
             }
         }
     }
@@ -1459,6 +1579,35 @@ impl Engine {
         Ok(json!({ "ok": true }))
     }
 
+    /// ReplayGain toggle: per-track tag gains are applied only when enabled
+    /// (off by default). A change mid-track respawns the pipeline at its
+    /// position, like set_eq — skipped on fidelity bypass (no DSP runs) and
+    /// on live pcm-streams (can't respawn; the flag applies to the next
+    /// load — spawn_pipeline_planned re-reads it there).
+    pub fn set_replay_gain(&self, enabled: bool) -> Result<Value> {
+        let (changed, live_stream, bypass, tagged) = {
+            let mut st = self.state.lock().unwrap();
+            let was = st.replay_gain;
+            st.replay_gain = enabled;
+            (
+                was != enabled,
+                matches!(st.source, Some(SourceSpec::PcmStream { .. })),
+                st.fidelity_bypass,
+                st.replay_gain_db.is_some()
+                    || st
+                        .prefetch
+                        .as_ref()
+                        .is_some_and(|p| p.replay_gain_db.is_some()),
+            )
+        };
+        // Nothing loaded carries a tag -> no audible change -> no respawn.
+        if changed && !bypass && !live_stream && tagged {
+            let pos = self.core.lock().unwrap().position_ms();
+            self.respawn_pipelines(pos);
+        }
+        Ok(json!({ "ok": true }))
+    }
+
     pub fn feed(&self, queue_id: &str, data: &[u8], is_final: bool, abort: bool) -> Result<Value> {
         let feed = {
             let st = self.state.lock().unwrap();
@@ -1689,6 +1838,7 @@ impl Engine {
                                         st.current_instance = reopen_instance;
                                         st.queue_id = Some(pf.queue_id.clone());
                                         st.source = Some(pf.source);
+                                        st.replay_gain_db = pf.replay_gain_db;
                                         st.duration_ms = dur;
                                         st.fidelity_bypass = bypass;
                                         st.state = PlayState::Playing;
@@ -2057,7 +2207,7 @@ fn bytes_to_f32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<f32> {
                 if matches!(depth, BitDepth::Float) {
                     f32::from_le_bytes([c[0], c[1], c[2], c[3]])
                 } else {
-                    i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / i32::MAX as f32
+                    i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0f32
                 }
             })
             .collect(),
@@ -2066,12 +2216,12 @@ fn bytes_to_f32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<f32> {
             .map(|c| {
                 let v = (c[0] as i32) | ((c[1] as i32) << 8) | ((c[2] as i32) << 16);
                 let v = if v & 0x800000 != 0 { v | !0xFFFFFF } else { v };
-                v as f32 / 8388607.0
+                v as f32 / 8388608.0
             })
             .collect(),
         _ => bytes // 16-bit and anything narrower
             .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / i16::MAX as f32)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect(),
     }
 }
@@ -2081,7 +2231,10 @@ fn bytes_to_i32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<i32> {
     match depth {
         BitDepth::Float => bytes
             .chunks_exact(4)
-            .map(|c| (f32::from_le_bytes([c[0], c[1], c[2], c[3]]) * i32::MAX as f32) as i32)
+            .map(|c| {
+                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64 * 2147483648.0;
+                v.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+            })
             .collect(),
         BitDepth::Int(32) => bytes
             .chunks_exact(4)
@@ -2239,6 +2392,98 @@ mod tests {
         let retired: Vec<TrackReader> = c.retired.drain(..).collect();
         drop(retired);
         assert!(c.retired.is_empty());
+    }
+
+    /// pull_s16 must round-trip s16-representable values exactly — the
+    /// f32→i16 conversion uses the 2^15 scale, not i16::MAX (issue #1).
+    #[test]
+    fn pull_s16_round_trips_exact() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::S16,
+            device_name: "test".into(),
+        };
+        let (core, _tap, _cons) = Engine::make_core(neg, None);
+        let vals = [
+            -1.0f32,
+            -0.5,
+            -1.0 / 32768.0,
+            0.0,
+            0.25,
+            1.0 - 1.0 / 32768.0,
+            1.0,
+        ];
+        let (prod, cons) = ringbuf::channel::<f32>(64);
+        assert!(prod.write_all(&vals));
+        prod.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::F32(cons),
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            c.paused = false;
+            let mut out = [0i16; 7];
+            c.pull_s16(&mut out);
+            assert_eq!(out, [-32768, -16384, -1, 0, 8192, 32767, 32767]);
+        }
+    }
+
+    /// pull_s32 passes an s32 pipe through untouched and scales an f32 pipe
+    /// at 2^31 — both bit-exact for representable values.
+    #[test]
+    fn pull_s32_paths_are_exact() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::S32,
+            device_name: "test".into(),
+        };
+        let (core, _tap, _cons) = Engine::make_core(neg, None);
+        // s32 pipe: bit-exact passthrough (bypass path)
+        let vals = [i32::MIN, -1_000_000_000, 0, 1_000_000_000, i32::MAX];
+        let (prod, cons) = ringbuf::channel::<i32>(64);
+        assert!(prod.write_all(&vals));
+        prod.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::S32(cons),
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            c.paused = false;
+            let mut out = [0i32; 5];
+            c.pull_s32(&mut out);
+            assert_eq!(out, vals);
+        }
+        // f32 pipe -> s32 sink: 2^31 scale, representable values exact
+        let fvals = [-1.0f32, -0.5, 0.0, 0.25, 1.0];
+        let (prodf, consf) = ringbuf::channel::<f32>(64);
+        assert!(prodf.write_all(&fvals));
+        prodf.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q2".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::F32(consf),
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            let mut out = [0i32; 5];
+            c.pull_s32(&mut out);
+            assert_eq!(out, [i32::MIN, -1073741824, 0, 536870912, i32::MAX]);
+        }
     }
 
     /// Once the reader drains, a waiting push completes.

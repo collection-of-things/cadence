@@ -124,6 +124,32 @@ function FidelitySection() {
   );
 }
 
+function ReplayGainSection() {
+  const enabled = useUi((s) => s.snapshot.replayGain ?? false);
+  return (
+    <section className="set-sec" aria-label="ReplayGain">
+      <div className="set-row">
+        <div className="set-txt">
+          <span className="set-label">ReplayGain</span>
+          <span className="set-sub">
+            {enabled
+              ? 'On — applying per-track gain from file tags.'
+              : 'Off — tagged ReplayGain values are ignored.'}
+          </span>
+        </div>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          aria-label="ReplayGain"
+          checked={enabled}
+          onChange={(e) => session.setReplayGain(e.currentTarget.checked)}
+        />
+      </div>
+    </section>
+  );
+}
+
 function DeviceSection() {
   const current = useUi((s) => s.snapshot.output?.deviceName);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -227,6 +253,7 @@ export function SettingsSheet() {
                 </button>
               </div>
               <FidelitySection />
+              <ReplayGainSection />
               <EqSection />
               <DeviceSection />
             </div>

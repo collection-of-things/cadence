@@ -14,7 +14,7 @@ import type {
   RouteId,
 } from "@cadence/protocol";
 import type { AdapterRegistry } from "../adapters/registry.js";
-import { isFidelityCapable, isRestartRestorable } from "../adapters/types.js";
+import { isFidelityCapable, isReplayGainCapable, isRestartRestorable } from "../adapters/types.js";
 import { parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -74,6 +74,7 @@ export class Coordinator {
   private volume = 1;
   private muted = false;
   private fidelityMode = false;
+  private replayGain = false;
   private readonly volumeByRoute = new Map<RouteId, number>();
   private output: ActiveOutput | null = null;
   private lastError: PlaybackSnapshot["lastError"];
@@ -129,6 +130,7 @@ export class Coordinator {
       volume: this.volume,
       muted: this.muted,
       fidelityMode: this.fidelityMode,
+      replayGain: this.replayGain,
       ...(this.output !== null ? { output: this.output } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
     };
@@ -363,6 +365,16 @@ export class Coordinator {
         this.persistSoon();
         return;
       }
+      case "setReplayGain": {
+        this.replayGain = cmd.enabled;
+        const adapter = this.activeAdapter;
+        if (adapter !== null && isReplayGainCapable(adapter)) {
+          await this.guarded(() => adapter.setReplayGain(cmd.enabled), "setReplayGain");
+        }
+        this.emitSnapshot();
+        this.persistSoon();
+        return;
+      }
     }
   }
 
@@ -568,6 +580,9 @@ export class Coordinator {
       // must reach the adapter even when it was toggled while stopped.
       if (adapter.setFidelityMode !== undefined) {
         await this.withTimeout(adapter.setFidelityMode(this.fidelityMode), 10_000, "adapter.setFidelityMode");
+      }
+      if (adapter.setReplayGain !== undefined) {
+        await this.withTimeout(adapter.setReplayGain(this.replayGain), 10_000, "adapter.setReplayGain");
       }
       // Volume lands before the track starts — the incoming route must not
       // sound briefly at a stale/default level (muted startup especially).
@@ -928,6 +943,7 @@ export class Coordinator {
     this.volume = parsed.volume;
     this.muted = parsed.muted;
     this.fidelityMode = parsed.fidelityMode;
+    this.replayGain = parsed.replayGain;
     for (const [route, v] of Object.entries(parsed.volumeByRoute)) {
       if (v !== undefined) this.volumeByRoute.set(route as RouteId, v);
     }
@@ -962,6 +978,7 @@ export class Coordinator {
       volume: this.volume,
       muted: this.muted,
       fidelityMode: this.fidelityMode,
+      replayGain: this.replayGain,
       volumeByRoute: Object.fromEntries(this.volumeByRoute) as Partial<Record<RouteId, number>>,
     };
     try {

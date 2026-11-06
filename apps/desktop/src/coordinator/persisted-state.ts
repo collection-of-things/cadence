@@ -12,6 +12,7 @@ export interface PersistedPlayback {
   readonly volume: number;
   readonly muted: boolean;
   readonly fidelityMode: boolean;
+  readonly replayGain: boolean;
   readonly volumeByRoute: Partial<Record<RouteId, number>>;
 }
 
@@ -59,6 +60,7 @@ export function parsePersistedPlayback(u: unknown): PersistedPlayback | null {
     volume: typeof p.volume === "number" && Number.isFinite(p.volume) ? Math.min(Math.max(p.volume, 0), 1.5) : 1,
     muted: p.muted === true,
     fidelityMode: p.fidelityMode === true,
+    replayGain: p.replayGain === true,
     volumeByRoute,
   };
 }

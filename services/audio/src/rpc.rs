@@ -173,6 +173,11 @@ fn dispatch(engine: &Engine, method: &str, p: &Value) -> Result<Value> {
                 .and_then(|v| v.as_bool())
                 .context("missing enabled")?,
         ),
+        "audio.setReplayGain" => engine.set_replay_gain(
+            p.get("enabled")
+                .and_then(|v| v.as_bool())
+                .context("missing enabled")?,
+        ),
         "audio.setEq" => {
             let bands = p
                 .get("bands")

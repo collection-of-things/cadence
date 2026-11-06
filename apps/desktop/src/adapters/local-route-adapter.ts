@@ -9,7 +9,7 @@ import type {
   Tri,
 } from "@cadence/protocol";
 import type { AudioServiceClient } from "../audio/audio-client.js";
-import type { FidelityCapable, RestartRestorable } from "./types.js";
+import type { FidelityCapable, ReplayGainCapable, RestartRestorable } from "./types.js";
 
 /** The item's source could not be expressed to the audio engine. */
 export class UnplayableSource extends Error {
@@ -27,7 +27,8 @@ export class UnplayableSource extends Error {
  * and are only upgraded once the engine reports them (event.trackEnded's
  * gapless flag, event.output's exclusive flag).
  */
-export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, FidelityCapable {
+export class LocalRouteAdapter
+  implements RouteAdapter, RestartRestorable, FidelityCapable, ReplayGainCapable {
   readonly route = "local" as const;
   private readonly client: AudioServiceClient;
   private readonly listeners = new Set<(e: AdapterEvent) => void>();
@@ -44,6 +45,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     }
   }
   private fidelityMode = false;
+  private replayGain = false;
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
 
@@ -182,6 +184,10 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   async restoreAfterEngineRestart(item: QueueItem, positionMs: number): Promise<void> {
     const source = fileSourceOf(item);
     this.rememberQueueId(item.queueId);
+    // The engine forgot user settings on restart — re-apply them before
+    // loading so the restored item renders with the same DSP state.
+    await this.client.setFidelityMode(this.fidelityMode);
+    await this.client.setReplayGain(this.replayGain);
     await this.client.load({
       queueId: item.queueId,
       generationId: this.lastLoadGeneration,
@@ -195,6 +201,12 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   async setFidelityMode(enabled: boolean): Promise<void> {
     this.fidelityMode = enabled;
     await this.client.setFidelityMode(enabled);
+  }
+
+  /** Toggle ReplayGain application on the engine (tag gains → DSP gain). */
+  async setReplayGain(enabled: boolean): Promise<void> {
+    this.replayGain = enabled;
+    await this.client.setReplayGain(enabled);
   }
 
   /** Tear down the service. */

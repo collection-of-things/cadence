@@ -60,6 +60,8 @@ export type AudioRpcRequest =
   | { method: "audio.setVolume"; params: { volume: number } }
   /** Strict local fidelity: bypass EQ/resample/DSP when the device accepts the source format. */
   | { method: "audio.setFidelityMode"; params: { enabled: boolean } }
+  /** ReplayGain user toggle: tag gains apply only when enabled (off by default). */
+  | { method: "audio.setReplayGain"; params: { enabled: boolean } }
   | { method: "audio.setEq"; params: { bands: { freqHz: number; gainDb: number }[] } }
   | { method: "audio.listDevices"; params: {} }
   | { method: "audio.setDevice"; params: { name: string | null } } // null = default

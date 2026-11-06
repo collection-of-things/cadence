@@ -30,3 +30,14 @@ export interface FidelityCapable {
 export function isFidelityCapable(a: RouteAdapter): a is RouteAdapter & FidelityCapable {
   return "setFidelityMode" in a && typeof a.setFidelityMode === "function";
 }
+
+/** Adapters whose engine can apply per-track ReplayGain on request. */
+export interface ReplayGainCapable {
+  /** Enable or disable ReplayGain application on the route's engine. */
+  setReplayGain(enabled: boolean): Promise<void>;
+}
+
+/** True when the adapter supports the ReplayGain toggle. */
+export function isReplayGainCapable(a: RouteAdapter): a is RouteAdapter & ReplayGainCapable {
+  return "setReplayGain" in a && typeof a.setReplayGain === "function";
+}

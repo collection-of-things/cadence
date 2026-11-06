@@ -366,6 +366,11 @@ export class MockCadenceApi implements CadenceApi {
         }
         break;
       }
+      case 'setReplayGain': {
+        s.replayGain = cmd.enabled;
+        this.emitSnapshot();
+        break;
+      }
     }
   }
 

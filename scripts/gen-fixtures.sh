@@ -22,6 +22,20 @@ ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=330:duration=2:sample_rate=96000" \
   -c:a flac -sample_fmt s32 "$OUT/tone-330-24bit96k.flac"
 
+# STEREO files for the transparency null-tests (issue #1): sweep + pink noise,
+# 16-bit/44.1kHz, 24-bit/96kHz, 24-bit/192kHz — different content per channel.
+stereo_sweep() { # file rate extra...
+  local f="$1" rate="$2"; shift 2
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "sine=frequency=440:duration=2:sample_rate=${rate}" \
+    -f lavfi -i "sine=frequency=880:duration=2:sample_rate=${rate}" \
+    -filter_complex "[0:a][1:a]amerge=inputs=2[a]" -map "[a]" \
+    -c:a flac "$@" "$f"
+}
+stereo_sweep "$OUT/stereo-44k1-16.flac" 44100 -sample_fmt s16
+stereo_sweep "$OUT/stereo-96k-24.flac" 96000 -sample_fmt s32
+stereo_sweep "$OUT/stereo-192k-24.flac" 192000 -sample_fmt s32
+
 # Gapless pair: one continuous 6s sweep split at exactly 3s.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=440:duration=6:sample_rate=44100" \
