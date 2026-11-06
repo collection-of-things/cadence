@@ -83,14 +83,14 @@ const TEXT_MUTANTS = {
     },
     {
       name: "skip-clears-promotion",
-      find: `                         /\\ UNCHANGED <<generation, lease, status, currentIndex,
-                                        active, sounding, pendingPrefetch,
-                                        armedGen, armedQid, inFlight,`,
-      replace: `                         /\\ armedGen' = 0
-                         /\\ armedQid' = 0  \\* MUTANT: skip kills promotion window
-                         /\\ UNCHANGED <<generation, lease, status, currentIndex,
-                                        active, sounding, pendingPrefetch,
-                                        inFlight,`,
+      find: `                   /\\ UNCHANGED <<generation, lease, status, currentIndex,
+                                  active, sounding, pendingPrefetch,
+                                  armedGen, armedQid, inFlight,`,
+      replace: `                   /\\ armedGen' = 0
+                   /\\ armedQid' = 0  \\* MUTANT: skip kills promotion window
+                   /\\ UNCHANGED <<generation, lease, status, currentIndex,
+                                  active, sounding, pendingPrefetch,
+                                  inFlight,`,
       expects: ["PlayingMeansSounding", "AdvanceTerminates"],
     },
   ],

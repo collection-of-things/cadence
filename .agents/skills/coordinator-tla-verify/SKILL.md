@@ -103,6 +103,12 @@ see "extending" below.
 - `sounding` models engine truth as seen through events; `stoppedBad ⊆
   Routes` tolerates a reported teardown failure per-route — a second
   unreported double-sounding still violates.
+- The queue is `succ`/`removed` (VARIABLES, not constants): `QueueRemove`
+  unlinks a non-live item, which is how the null-successor teardown in
+  `BeginStart` becomes reachable — the ended link's `succ[endedQid]`
+  recomputes to 0 after its target is removed behind it.
+- `BeginStart` order matches code: staleness check → removed-item no-op
+  → null-successor teardown (status, lease, adapter stop) → real start.
 - ended-advance staleness is a (generation, queueId) pair check: the
   link must skip BEFORE `startItem` clears promotion state — the code
   checks inside the chain task, the model has a matching "skip keeps

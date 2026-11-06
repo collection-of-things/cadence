@@ -632,6 +632,9 @@ describe("model finding: no successor when the advance link runs", () => {
     const snap = coordinator.getSnapshot();
     expect(snap.status).toBe("stopped");
     expect(snap.lease).toBeNull();
+    // The teardown told the adapter to stop — a resurrected engine can't
+    // out-sound the dead session.
+    expect(local.calls).toContain("stop:g1");
     done();
   });
 });
