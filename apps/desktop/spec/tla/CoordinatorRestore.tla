@@ -114,7 +114,9 @@ EngineRestarted ==
     /\ engineUp' = TRUE
     /\ restarted' = TRUE
     /\ status' = "paused"
-    /\ UNCHANGED <<stored, restored, queue, position, playsIssued, userPlayed>>
+    \* each restart needs a fresh explicit command before playing
+    /\ userPlayed' = FALSE
+    /\ UNCHANGED <<stored, restored, queue, position, playsIssued>>
 
 \* Explicit user commands drive all playback after restore.
 UserPlay ==

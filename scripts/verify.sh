@@ -8,8 +8,10 @@ step "pnpm install (frozen)" && timeout 300 pnpm install --prefer-offline --froz
 step "typecheck" && timeout 300 pnpm -r typecheck || fail=1
 step "build" && timeout 300 pnpm -r build || fail=1
 step "unit tests" && timeout 300 pnpm -r test || fail=1
-step "tla+ specs (model check + mutants)" && \
-  timeout 900 node apps/desktop/scripts/check-specs.mjs --mutants || fail=1
+step "tla+ specs (model check + mutants)" && {
+  timeout 600 node apps/desktop/scripts/check-specs.mjs &&
+  timeout 900 node apps/desktop/scripts/check-specs.mjs --mutants
+} || fail=1
 step "cargo build" && timeout 600 cargo build --manifest-path services/audio/Cargo.toml || fail=1
 step "cargo test" && timeout 600 cargo test --manifest-path services/audio/Cargo.toml || fail=1
 step "audio fixtures + headless playback probe" && \

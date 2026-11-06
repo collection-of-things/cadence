@@ -98,15 +98,25 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe("model finding: unguarded chain links drop the next command", () => {
   it("a rejection in the ended-advance link must not eat the next command", async () => {
     const { coordinator, local, done } = rig((a) => {
-      a.throwSyncPrepare = new Error("prepare exploded synchronously");
       // keep pendingPrefetch null so `ended` takes the immediate chain path
       a.failPrefetch = new Error("no prefetch");
     });
-    // failStart's error listener throws — the throw escapes the link.
-    coordinator2ListenerHack();
-    function coordinator2ListenerHack() {
-      // (declared for hoisting; body below)
-    }
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await flush();
+    // Arm the throw AFTER the autoplay committed the lease, and make
+    // failStart's error emission throw through a crashing listener — the
+    // throw escapes the chain link.
+    local.throwSyncPrepare = new Error("prepare exploded synchronously");
+    coordinator.onEvent((e) => {
+      if (e.kind === "error") throw new Error("ui listener crash");
+    });
+    local.emitAdapterEvent({ kind: "ended", generationId: 1 });
+    await flush();
 
     // The next user command must still run.
     await coordinator.handleCommand({ kind: "setVolume", volume: 0.5 });
@@ -117,8 +127,6 @@ describe("model finding: unguarded chain links drop the next command", () => {
   it("a rejection in the restart link must not eat the next command", async () => {
     const { coordinator, done } = rig();
     const registry = (coordinator as unknown as { registry: AdapterRegistry }).registry;
-    const local = (coordinator as unknown as { local?: never }).local;
-    void local;
     await coordinator.handleCommand({
       kind: "setQueue",
       items: [fakeItem("a")],
@@ -357,8 +365,6 @@ describe("model finding: promotion mid-handoff desyncs queue intent", () => {
 
     // During b's prepare the engine self-promotes b on the live generation;
     // then the prepare fails. The lease names b — the index must stay b.
-    local.failPrepare = new Error("prepare refused");
-    const origPrepare = local.prepare.bind(local);
     local.prepare = () => {
       local.calls.push("prepare");
       local.emitAdapterEvent({
@@ -367,7 +373,7 @@ describe("model finding: promotion mid-handoff desyncs queue intent", () => {
         queueId: qb,
         promoted: true,
       });
-      return origPrepare();
+      return Promise.reject(new Error("prepare refused"));
     };
     await coordinator.handleCommand({ kind: "play", queueId: qb });
     await flush();
@@ -390,25 +396,40 @@ describe("model finding: resurrected outgoing engine stays audible", () => {
     const qb = coordinator.getQueue().items[1]!.queueId;
     const qc = coordinator.getQueue().items[2]!.queueId;
 
-    // Hand off to the yt item; while the incoming play is in flight the
-    // just-stopped local engine self-promotes b on the old generation.
-    const origPlay = yt.play.bind(yt);
-    yt.play = (item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }) => {
-      local.emitAdapterEvent({
-        kind: "started",
-        generationId: 1,
-        queueId: qb,
-        promoted: true,
-      });
-      return origPlay(item, lease, opts);
+    // Track physical output: play marks the engine sounding, stop clears.
+    let localSounding = true;
+    const origLocalPlay = local.play.bind(local);
+    const origLocalStop = local.stop.bind(local);
+    local.play = (item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }) => {
+      localSounding = true;
+      return origLocalPlay(item, lease, opts);
+    };
+    let resurrected = false;
+    local.stop = (lease: PlaybackLease) => {
+      const p = origLocalStop(lease);
+      localSounding = false;
+      if (!resurrected) {
+        resurrected = true;
+        // The just-stopped engine self-promotes on the OLD generation —
+        // output resumes after the stop returned.
+        local.emitAdapterEvent({
+          kind: "started",
+          generationId: 1,
+          queueId: qb,
+          promoted: true,
+        });
+        localSounding = true;
+      }
+      return p;
     };
     await coordinator.handleCommand({ kind: "play", queueId: qc });
     await flush();
 
-    // The outgoing engine got a second stop at commit — it cannot keep
-    // sounding alongside yt.
+    // The commit's awaited re-stop silenced the resurrected engine before
+    // the incoming play — it cannot keep sounding alongside yt.
     const stops = local.calls.filter((c) => c.startsWith("stop:"));
     expect(stops.length).toBeGreaterThanOrEqual(2);
+    expect(localSounding).toBe(false);
     done();
   });
 });
@@ -451,5 +472,77 @@ describe("persisted state: corrupt settings must not restore", () => {
       },
     };
     expect(parsePersistedPlayback(corrupt)).toBeNull();
+  });
+});
+
+describe("model finding: advance target follows the ended item", () => {
+  it("a prepare failure does not let a stale advance skip the successor", async () => {
+    // [a,b,c], a playing. User picks b; b's prepare is deferred. a's engine
+    // reports ended → the advance link is queued. b's prepare then fails and
+    // the lease rolls back to a — the advance must target a's successor (b),
+    // not c (the provisional index's successor).
+    const { coordinator, local, done } = rig();
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b"), fakeItem("c")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await flush();
+    const qb = coordinator.getQueue().items[1]!.queueId;
+
+    const origPrepare = local.prepare.bind(local);
+    let armed = true;
+    local.prepare = () => {
+      local.calls.push("prepare");
+      if (!armed) return origPrepare();
+      armed = false;
+      return new Promise<void>((_res, rej) => {
+        queueMicrotask(() => rej(new Error("prepare refused")));
+        // While b's prepare is pending, a's engine reports ended.
+        local.emitAdapterEvent({ kind: "ended", generationId: 1 });
+      });
+    };
+    local.failPrefetch = new Error("no prefetch");
+    await coordinator.handleCommand({ kind: "play", queueId: qb });
+    await flush();
+    await new Promise((r) => setTimeout(r, 30));
+
+    // The ended track was a — its successor is b. The advance may retry b
+    // (which will fail again) but must never start c.
+    expect(local.playedItems.every((i) => i.queueId !== coordinator.getQueue().items[2]!.queueId)).toBe(
+      true,
+    );
+    done();
+  });
+});
+
+describe("model finding: hung restart restore wedges the chain", () => {
+  it("restoreAfterEngineRestart is bounded like every adapter call", async () => {
+    vi.useFakeTimers();
+    const { coordinator, done } = rig();
+    const registry = (coordinator as unknown as { registry: AdapterRegistry }).registry;
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    const adapter = registry.get("local") as ControlledAdapter;
+    (adapter as unknown as Record<string, unknown>).restoreAfterEngineRestart = () =>
+      new Promise(() => {});
+    coordinator.notifyEngineRestarted("local");
+    await vi.advanceTimersByTimeAsync(20_000);
+    // The chain survived the wedged restore — the next command runs.
+    let doneCmd = false;
+    const p = coordinator.handleCommand({ kind: "setVolume", volume: 0.4 }).then(() => {
+      doneCmd = true;
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await p;
+    expect(doneCmd).toBe(true);
+    expect(coordinator.getSnapshot().volume).toBe(0.4);
+    done();
   });
 });

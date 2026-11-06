@@ -26,14 +26,31 @@ const ROUTES: ReadonlySet<string> = new Set([
 function isTrack(u: unknown): boolean {
   if (typeof u !== "object" || u === null) return false;
   const t = u as Record<string, unknown>;
-  return (
-    typeof t.id === "string" &&
-    t.id.length > 0 &&
-    typeof t.route === "string" &&
-    t.route.length > 0 &&
-    typeof t.durationMs === "number" &&
-    t.durationMs >= 0
-  );
+  if (typeof t.id !== "string" || t.id.length === 0) return false;
+  if (typeof t.route !== "string" || !ROUTES.has(t.route)) return false;
+  if (typeof t.provider !== "string" || t.provider.length === 0) return false;
+  if (typeof t.title !== "string") return false;
+  if (!Array.isArray(t.artists)) return false;
+  if (typeof t.durationMs !== "number" || t.durationMs < 0) return false;
+  if (
+    t.availability !== "available" &&
+    t.availability !== "unavailable" &&
+    t.availability !== "unknown"
+  ) {
+    return false;
+  }
+  // Every route's engine reads track.source — a track without a usable
+  // source is a crash at play time, not a valid restore.
+  const src = t.source;
+  if (typeof src !== "object" || src === null) return false;
+  const kind = (src as Record<string, unknown>).kind;
+  if (kind === "file") {
+    return typeof (src as Record<string, unknown>).path === "string";
+  }
+  if (kind === "provider") {
+    return typeof (src as Record<string, unknown>).providerItemId === "string";
+  }
+  return false;
 }
 
 function isQueueState(u: unknown): u is QueueState {

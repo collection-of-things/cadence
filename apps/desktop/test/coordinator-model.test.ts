@@ -41,9 +41,13 @@ interface Real {
   yt: FakeAdapter;
   /** Adapters whose engine currently has output started. */
   sounding: Map<RouteId, boolean>;
+  /** One-shot injected faults, keyed `route:method`. */
+  inject: Map<string, "fail" | "delay">;
   /** Command promises still in flight. */
   pending: Promise<void>[];
 }
+
+type AdapterMethod = "prepare" | "play" | "stop" | "setVolume";
 
 function realRig(): Real {
   vi.useFakeTimers();
@@ -57,6 +61,7 @@ function realRig(): Real {
     ["local", false],
     ["youtube-music", false],
   ]);
+  const inject = new Map<string, "fail" | "delay">();
   for (const a of [local, yt]) {
     const origPlay = a.play.bind(a);
     const origStop = a.stop.bind(a);
@@ -68,6 +73,24 @@ function realRig(): Real {
       sounding.set(a.route, false);
       return origStop(lease);
     };
+    // Outermost: one-shot injected faults — a failed call never reaches
+    // the adapter; a delayed call resolves on a 25ms engine stall.
+    for (const m of ["prepare", "play", "stop", "setVolume"] as AdapterMethod[]) {
+      const inner = (a[m] as (...a: unknown[]) => Promise<unknown>).bind(a);
+      (a as unknown as Record<string, unknown>)[m] = (...args: unknown[]) => {
+        const key = `${a.route}:${m}`;
+        const mode = inject.get(key);
+        if (mode === "fail") {
+          inject.delete(key);
+          return Promise.reject(new Error(`injected ${m} failure`));
+        }
+        if (mode === "delay") {
+          inject.delete(key);
+          return new Promise((res) => setTimeout(() => res(inner(...args)), 25));
+        }
+        return inner(...args);
+      };
+    }
     // The engine's own reports move physical truth too: a `started` means
     // output began, an `ended` means it stopped on its own.
     a.onEvent((e) => {
@@ -78,7 +101,7 @@ function realRig(): Real {
   registry.register(local);
   registry.register(yt);
   const coordinator = new Coordinator({ registry, store, persistDebounceMs: 0 });
-  return { coordinator, local, yt, sounding, pending: [] };
+  return { coordinator, local, yt, sounding, inject, pending: [] };
 }
 
 /** The spec's settled-state invariant, checked on the real snapshot. */
@@ -225,6 +248,29 @@ class WaitPromotionCmd implements fc.AsyncCommand<Model, Real> {
   }
 }
 
+/** One-shot fault: the next call of the named method on the lease's
+ * adapter rejects or resolves 25ms late — covers failed prepares, failed
+ * and slow outgoing stops (the resurrect window), wedged volumes. */
+class InjectFaultCmd implements fc.AsyncCommand<Model, Real> {
+  constructor(
+    readonly which: 0 | 1,
+    readonly method: AdapterMethod,
+    readonly mode: "fail" | "delay",
+  ) {}
+  check(_m: Readonly<Model>): boolean {
+    return true;
+  }
+  async run(_m: Model, r: Real): Promise<void> {
+    const engine = this.which === 0 ? r.local : r.yt;
+    r.inject.set(`${engine.route}:${this.method}`, this.mode);
+    await flush();
+    checkInvariants(r);
+  }
+  toString(): string {
+    return `inject(${this.which},${this.method},${this.mode})`;
+  }
+}
+
 class MiscCmd implements fc.AsyncCommand<Model, Real> {
   constructor(
     readonly what: "pause" | "resume" | "setMuted" | "stop",
@@ -272,6 +318,13 @@ const allCommands = [
     )
     .map(([d, m, p]) => new EmitStartedCmd(d, m, p)),
   fc.constant(new WaitPromotionCmd()),
+  fc
+    .tuple(
+      fc.constantFrom(0, 1) as fc.Arbitrary<0 | 1>,
+      fc.constantFrom("prepare", "play", "stop", "setVolume") as fc.Arbitrary<AdapterMethod>,
+      fc.constantFrom("fail", "delay") as fc.Arbitrary<"fail" | "delay">,
+    )
+    .map(([w, m, mode]) => new InjectFaultCmd(w, m, mode)),
   fc
     .constantFrom("pause", "resume", "setMuted", "stop")
     .map((w) => new MiscCmd(w as "pause" | "resume" | "setMuted" | "stop", 1)),

@@ -12,10 +12,10 @@ The coordinator's highest-risk promises are model-checked with TLA+ via
 ## Run
 
 ```sh
-# fast: pass configs only (must all be clean)
+# pass configs only (must all be clean)
 node apps/desktop/scripts/check-specs.mjs
 
-# full: pass configs + every mutation (each mutant must be REJECTED)
+# mutations only (each mutant must be REJECTED by its declared property)
 node apps/desktop/scripts/check-specs.mjs --mutants
 ```
 
@@ -39,21 +39,34 @@ tla-ts always exits 0 — the runner parses stdout for `^Error` /
 - `StalePositionNoEffect`: events from a dead generation cannot change
   `positionMs`/`status` — the gate drops them.
 
-`CoordinatorHandoff.tla` — prepare → outgoing-stop → commit → play.
-- `SingleAudible`: at most one route's engine sounds (unless a stop
-  failure was reported).
+`CoordinatorHandoff.tla` — prepare → outgoing-stop → commit →
+resile (awaited re-stop, cross-route) → play.
+- `SingleAudible`: at most one route's engine sounds, excluding routes
+  whose stop failure was reported (`stoppedBad` is per-route) and the
+  `resile` phase itself (the incoming engine may report `started` while
+  the awaited re-stop is still resolving — dual-sounding that survives
+  the phase still violates).
 - `StopBeforePlay`: incoming play is only attempted after outgoing
   teardown was attempted.
 - `PrepareFailRollback`: a failed prepare leaves queue intent on the item
-  the surviving lease names.
+  the surviving lease names — not a remembered previous index (a
+  self-promotion during prepare can move the lease).
 - `PendingPrefetchSound`: `pendingPrefetch` only ever names the live
   lease's successor on the active adapter.
-- `NoStaleAdvance`: an `ended`-advance link queued under generation G can
-  only run while G is still the lease's generation.
-- `AdoptedWhenEligible`: an adopt-promotion link that still names the
-  promoted item adopts it instead of issuing a real play.
+- `NoStaleAdvance`: an `ended`-advance link never issues a real play
+  over a lease minted after it was queued.
+- `NoMovedAdvance`: an advance never runs a real start while the lease
+  names a different item than the track that ended — generation alone
+  cannot see a same-generation promotion or a prepare-fail rollback.
+- `AdvanceTargetSound`: an advance that reaches a real play targets the
+  successor of the ENDED item, recomputed at run time — not a provisional
+  index baked at event time.
 - `PlayingLeaseSound`: when settled and playing, the lease names the
-  current queue item (foreign promotions excepted — see warn path).
+  current queue item or a known-foreign promotion (`lease.qid ∉ Items`,
+  the documented warn path — NOT the old sticky `foreignPromo` flag,
+  which would exempt the property forever after one foreign event).
+- `PlayingMeansSounding`: settled and playing ⇒ a live lease whose
+  engine is sounding, or an advance is owed/armed/queued.
 - `StartCompletes`, `AdvanceTerminates` (liveness): handoffs settle and
   every ended-obligated advance resolves — truncated runs at the step
   bound do not count.
@@ -87,8 +100,15 @@ see "extending" below.
   scope. `EnginePromoted` only fires inside promotion windows or
   mid-handoff and only toward the successor / installed prefetch / a
   foreign id.
-- `sounding` models engine truth as seen through events; `stopFailed`
-  tolerates a reported teardown failure.
+- `sounding` models engine truth as seen through events; `stoppedBad ⊆
+  Routes` tolerates a reported teardown failure per-route — a second
+  unreported double-sounding still violates.
+- ended-advance staleness is a (generation, queueId) pair check: the
+  link must skip BEFORE `startItem` clears promotion state — the code
+  checks inside the chain task, the model has a matching "skip keeps
+  armed/prefetch" branch.
+- The promotion window is `armedGen`/`armedQid` (the ended lease's
+  identity), not a boolean — the timer re-validates before enqueueing.
 - tla-ts quirks hit so far: errors are stdout-only (exit 0); `x' = a \/ b`
   parses as `(x' = a) \/ b` — always parenthesize primed disjunctions;
   `INIT`/`NEXT` config silently ignores fairness — use
@@ -114,10 +134,18 @@ see "extending" below.
 
 ## Mutation checks
 
-`check-specs.mjs --mutants` runs two kinds:
+`check-specs.mjs --mutants` runs ONLY mutations (pass configs run in the
+default mode — CI/verify.sh call both):
 - `*.mutant-*.cfg` files: constants flip a guard to the buggy shape.
+  Each declares `\* EXPECTS <Name>|<Name>` — the run must be rejected
+  by one of the named properties.
 - `TEXT_MUTANTS` in `check-specs.mjs`: textual rewrites of the spec back
-  to the buggy code shape (each names the invariant that must fire).
+  to the buggy code shape, each with `expects: [...]` of acceptable
+  blamed properties.
+
+A mutant rejected by a parse error, a crash, a timeout, or the WRONG
+property counts as a failure — a green mutant run means every guard
+provably kills its own property, nothing else.
 
 To prove a NEW property can fail: add a constant or a TEXT_MUTANTS entry
 that removes its guard, run `--mutants`, and confirm the checker rejects
@@ -127,7 +155,8 @@ it with your invariant's name.
 
 - Model indivisible code actions as indivisible TLA actions: one `await`
   boundary per action. The coordinator's commit point is
-  `this.lease = lease` — the spec has a matching `CommitLease` action.
+  `this.lease = lease` (`CommitLease`), followed by the awaited re-stop
+  of the outgoing engine (`ResilenceResolve`) before `PlayResolve`.
 - Keep env actions faithful: they should only be able to do what the
   adapter contract allows, but every allowed interleaving must be modeled
   (that is where the bugs live).
