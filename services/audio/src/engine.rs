@@ -1351,7 +1351,19 @@ impl Engine {
         let new_caps: Arc<dyn DeviceCaps> = if self.cfg.null_sink {
             crate::sink::initial_caps(&self.cfg)?
         } else {
-            crate::sink::CpalCaps::new(name)?
+            let caps = crate::sink::CpalCaps::new(name)?;
+            if !caps.has_supported_configs() {
+                // A busy `hw:` device answers supported_output_configs only
+                // while no stream holds the PCM — drop ours briefly and
+                // re-probe. A failed rebuild leaves sink=None, which the
+                // next spawn recovers.
+                if let Some(mut s) = self.sink.lock().unwrap().take() {
+                    s.stop();
+                }
+                crate::sink::CpalCaps::new(name)?
+            } else {
+                caps
+            }
         };
         *self.caps.lock().unwrap() = new_caps;
         // New device: the cached native-open failure belongs to the old one.

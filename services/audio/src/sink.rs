@@ -197,12 +197,28 @@ impl CpalCaps {
                 .ok_or_else(|| anyhow!("no output device named {n:?}"))?,
         };
         let default_cfg = device.default_output_config()?;
+        let cfgs = std::sync::OnceLock::new();
+        // Query the supported configs EAGERLY — on a direct `hw:` device
+        // the query fails with EBUSY once our stream holds the PCM handle,
+        // so the only window to learn the device's real capabilities is
+        // before the first stream opens. A failure here stays uncached
+        // and re-queries lazily later.
+        if let Ok(it) = device.supported_output_configs() {
+            let _ = cfgs.set(it.collect());
+        }
         Ok(Arc::new(CpalCaps {
             device,
             default_cfg,
             error: Arc::new(Mutex::new(None)),
-            cfgs: std::sync::OnceLock::new(),
+            cfgs,
         }))
+    }
+
+    /// True when supported_output_configs was captured at construction —
+    /// false when the query failed (e.g. a busy `hw:` device); callers
+    /// that can free the PCM handle may retry the construction.
+    pub fn has_supported_configs(&self) -> bool {
+        self.cfgs.get().is_some()
     }
 
     fn kind_of(fmt: cpal::SampleFormat) -> PcmKind {
