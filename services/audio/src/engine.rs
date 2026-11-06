@@ -3023,19 +3023,16 @@ impl Engine {
                         if since.elapsed()
                             > std::time::Duration::from_millis(deadline_ms)
                         {
-                            // Issued-but-unfinished drain: handle the end
-                            // now, but keep watching the entry — the
-                            // !owned+issued path below waits for the
-                            // event and resumes so a late drain can't
-                            // deactivate the reused stream.
+                            // Issued-but-unfinished drain on a stalled
+                            // graph: resume() cancels it (set_active
+                            // clears draining+drained, un-latching the
+                            // stopped callback); queued buffers keep
+                            // playing. A cancelled drain can't complete
+                            // later — no watcher needed.
                             if issued.is_some() {
-                                pending_ends.push_back((
-                                    qid.clone(),
-                                    inst,
-                                    std::time::Instant::now(),
-                                    2000,
-                                    issued,
-                                ));
+                                if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                                    s.resume();
+                                }
                             }
                             self.handle_track_end(qid, inst);
                         } else {
