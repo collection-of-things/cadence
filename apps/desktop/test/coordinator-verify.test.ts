@@ -546,3 +546,46 @@ describe("model finding: hung restart restore wedges the chain", () => {
     done();
   });
 });
+
+describe("model finding: timed advance target is settled at run time", () => {
+  it("a repeat change queued behind a wedged chain affects the armed advance", async () => {
+    vi.useFakeTimers();
+    const { coordinator, local, done } = rig();
+    const microFlush = async () => {
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await microFlush();
+    const qa = coordinator.getQueue().items[0]!.queueId;
+
+    // Wedge the chain on a never-resolving setVolume, then queue a repeat
+    // change and let the promotion window arm + fire behind it. When the
+    // advance link finally runs, repeat=one must make it replay the ended
+    // item — not the successor the timer saw when it fired.
+    const wedged = new Promise<void>(() => {});
+    let wedgedOnce = false;
+    const origSetVolume = local.setVolume.bind(local);
+    local.setVolume = (v: number) => {
+      if (!wedgedOnce) {
+        wedgedOnce = true;
+        return wedged;
+      }
+      return origSetVolume(v);
+    };
+    void coordinator.handleCommand({ kind: "setVolume", volume: 0.5 });
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, queueId: qa });
+    void coordinator.handleCommand({ kind: "setRepeat", repeat: "one" });
+    await vi.advanceTimersByTimeAsync(700); // window fires; link queues
+    await vi.advanceTimersByTimeAsync(10_500); // wedged setVolume times out
+    await microFlush();
+
+    const lastPlay = local.calls.filter((c) => c.startsWith("play:")).at(-1);
+    expect(lastPlay).toBe(`play:${qa}:g2`);
+    done();
+  });
+});

@@ -81,13 +81,26 @@ function isQueueState(u: unknown): u is QueueState {
       return false;
     }
   }
-  // Queue ops index into shuffleOrder when shuffle is on — a non-array
-  // order is a runtime crash, not a restorable queue.
+  // Queue ops index and map into shuffleOrder — a present non-array is a
+  // runtime crash regardless of the shuffle flag, and a live shuffle
+  // needs a full permutation of the item indices.
   if (typeof q.shuffle !== "boolean") return false;
-  if (q.shuffle === true) {
+  if (q.shuffleOrder !== undefined) {
     if (
       !Array.isArray(q.shuffleOrder) ||
       !q.shuffleOrder.every((n) => typeof n === "number" && Number.isInteger(n))
+    ) {
+      return false;
+    }
+  }
+  if (q.shuffle === true) {
+    const items = q.items as unknown[];
+    const order = q.shuffleOrder as number[] | undefined;
+    if (
+      order === undefined ||
+      order.length !== items.length ||
+      new Set(order).size !== order.length ||
+      !order.every((n) => n >= 0 && n < items.length)
     ) {
       return false;
     }

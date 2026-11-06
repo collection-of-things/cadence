@@ -39,8 +39,9 @@ interface Real {
   coordinator: Coordinator;
   local: FakeAdapter;
   yt: FakeAdapter;
-  /** Adapters whose engine currently has output started. */
-  sounding: Map<RouteId, boolean>;
+  /** Adapters whose engine currently has output — the generation it
+   * started under (0 = silent). */
+  sounding: Map<RouteId, number>;
   /** Adapter calls currently in flight (the model's handoff phases). */
   adapterInFlight: number;
   /** Command promises currently in flight. */
@@ -65,9 +66,9 @@ function realRig(): Real {
   const registry = new AdapterRegistry();
   const local = new FakeAdapter("local");
   const yt = new FakeAdapter("youtube-music");
-  const sounding = new Map<RouteId, boolean>([
-    ["local", false],
-    ["youtube-music", false],
+  const sounding = new Map<RouteId, number>([
+    ["local", 0],
+    ["youtube-music", 0],
   ]);
   const inject = new Map<string, "fail" | "delay">();
   const real: Real = {
@@ -89,14 +90,14 @@ function realRig(): Real {
       // physical truth: the engine is audible only once play RESOLVES —
       // a rejected play produced no output
       origPlay(item, lease, opts).then((v) => {
-        sounding.set(a.route, true);
+        sounding.set(a.route, lease.generationId);
         return v;
       });
     a.stop = (lease) => {
       real.stopPending.add(a.route);
       return origStop(lease).then(
         (v) => {
-          sounding.set(a.route, false);
+          sounding.set(a.route, 0);
           real.stopPending.delete(a.route);
           real.stopFailed.delete(a.route);
           return v;
@@ -134,7 +135,9 @@ function realRig(): Real {
     // The engine's own reports move physical truth — under the adapter
     // contract a `started` is authoritative only for the live lease's
     // generation (a stale `started` is a gated-out stale report; the
-    // model's env has the same scope). An `ended` always means silence.
+    // model's env has the same scope). A stale `ended` likewise refers to
+    // older output — the tracker records the sounding generation and only
+    // clears it for an `ended` of that same generation.
     a.onEvent((e) => {
       const live = real.coordinator.getSnapshot().lease;
       if (
@@ -143,9 +146,11 @@ function realRig(): Real {
         live.generationId === e.generationId &&
         live.route === a.route
       ) {
-        sounding.set(a.route, true);
+        sounding.set(a.route, e.generationId);
       }
-      if (e.kind === "ended") sounding.set(a.route, false);
+      if (e.kind === "ended" && sounding.get(a.route) === e.generationId) {
+        sounding.set(a.route, 0);
+      }
     });
   }
   registry.register(local);
@@ -162,7 +167,7 @@ function realRig(): Real {
 function checkInvariants(real: Real): void {
   const snap = real.coordinator.getSnapshot();
   const soundingCount = [...real.sounding.entries()].filter(
-    ([route, on]) => on && !real.stopPending.has(route) && !real.stopFailed.has(route),
+    ([route, gen]) => gen !== 0 && !real.stopPending.has(route) && !real.stopFailed.has(route),
   ).length;
   if (soundingCount > 1) {
     console.log("DUAL", JSON.stringify({

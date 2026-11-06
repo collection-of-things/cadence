@@ -450,7 +450,7 @@ export class Coordinator {
   private enqueueStart(
     index: number,
     opts: { positionMs?: number; routeOverride?: RouteId } = {},
-    expected?: { generationId: number; queueId: string; targetQueueId?: string },
+    expected?: { generationId: number; queueId: string },
   ): void {
     this.extendChain(() => {
       // The event that queued this link belonged to a specific lease — its
@@ -463,13 +463,24 @@ export class Coordinator {
       ) {
         return Promise.resolve();
       }
-      // When the target is a queueId (a successor picked at fire time),
-      // resolve the index NOW — a queued mutation can have moved it.
-      const idx =
-        expected?.targetQueueId !== undefined
-          ? this.queue.items.findIndex((it) => it.queueId === expected.targetQueueId)
-          : index;
-      return idx >= 0 ? this.startItem(idx, opts) : Promise.resolve();
+      if (expected === undefined) {
+        // A user-commanded start: the index was captured at dispatch.
+        return index >= 0 && index < this.queue.items.length
+          ? this.startItem(index, opts)
+          : Promise.resolve();
+      }
+      // An ended-driven advance: recompute the successor of the ENDED
+      // item now — queue ops that preserve queueIds (move, remove,
+      // insertNext, setRepeat, setShuffle) may have run behind this link.
+      const endedIdx = this.queue.items.findIndex((it) => it.queueId === expected.queueId);
+      if (endedIdx < 0) return Promise.resolve();
+      const nextIdx = QueueOps.nextIndexAfterEnd({
+        ...this.queue,
+        currentIndex: endedIdx,
+      });
+      return nextIdx !== null && nextIdx >= 0 && nextIdx < this.queue.items.length
+        ? this.startItem(nextIdx, opts)
+        : Promise.resolve();
     });
   }
 
@@ -863,9 +874,9 @@ export class Coordinator {
         // ourselves — a redundant load here would restart a track already
         // playing, which is exactly the seam the engine exists to remove.
         if (this.pendingPrefetch !== null) {
-          // The link resolves the successor at FIRE time and the index at
-          // RUN time — a queue mutation inside the window or behind the
-          // queued link must not redirect the advance.
+          // The link recomputes the successor of the ended item when it
+          // runs — the timer only validates that the ended lease still
+          // stands before queueing it.
           const endedGen = e.generationId;
           this.promotionTimer = setTimeout(() => {
             this.promotionTimer = null;
@@ -878,50 +889,16 @@ export class Coordinator {
             ) {
               return;
             }
-            const endedIdx = this.queue.items.findIndex((it) => it.queueId === endedQid);
-            if (endedIdx < 0) return;
-            const nextIdx = QueueOps.nextIndexAfterEnd({
-              ...this.queue,
-              currentIndex: endedIdx,
-            });
-            const targetQid = nextIdx === null ? undefined : this.queue.items[nextIdx]?.queueId;
-            if (targetQid === undefined) return;
-            this.enqueueStart(-1, {}, {
+            this.enqueueStart(0, {}, {
               generationId: endedGen,
               queueId: endedQid,
-              targetQueueId: targetQid,
             });
           }, 600);
           return;
         }
         {
           const endedGen = e.generationId;
-          this.extendChain(() => {
-            // The advance was queued for the ended track's lease — its
-            // generation AND the item it names. If either moved (a newer
-            // start committed, or a prepare failure rolled intent back),
-            // the link is stale and must not stomp the live state.
-            if (
-              this.lease?.generationId !== endedGen ||
-              this.lease.queueId !== endedQid
-            ) {
-              return Promise.resolve();
-            }
-            // Recompute the successor of the ENDED item now — the queue
-            // may have changed since the event.
-            const endedIdx = this.queue.items.findIndex((it) => it.queueId === endedQid);
-            if (endedIdx < 0) return Promise.resolve();
-            const nextIdx = QueueOps.nextIndexAfterEnd({
-              ...this.queue,
-              currentIndex: endedIdx,
-            });
-            const qid = nextIdx === null ? undefined : this.queue.items[nextIdx]?.queueId;
-            if (qid === undefined) return Promise.resolve();
-            const nowIdx = this.queue.items.findIndex((it) => it.queueId === qid);
-            return nowIdx >= 0
-              ? this.startItem(nowIdx, {})
-              : Promise.resolve();
-          });
+          this.enqueueStart(0, {}, { generationId: endedGen, queueId: endedQid });
         }
         return;
       }
