@@ -640,6 +640,9 @@ struct PrefetchState {
     source: SourceSpec,
     replay_gain_db: Option<f64>,
     ready: Arc<AtomicBool>,
+    /// the generation that armed it — a slot from an older generation
+    /// must never reopen against a newer track's end
+    generation: u64,
 }
 
 /// Producer thread bookkeeping (join handle kept so abort can detach cleanly).
@@ -1572,6 +1575,7 @@ impl Engine {
                     source: src.clone(),
                     replay_gain_db: rg,
                     ready: Arc::new(AtomicBool::new(ready)),
+                    generation: gen,
                 });
                 st.reported_prefetch_ready = false;
             }
@@ -1612,6 +1616,7 @@ impl Engine {
                             source: src,
                             replay_gain_db: rg,
                             ready,
+                            generation: gen,
                         });
                         st.reported_prefetch_ready = false;
                         drop(st);
@@ -1689,9 +1694,11 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             if core.rebuilding || core.negotiated != reader.neg {
                 reader.pipe.abort();
+                st.state = PlayState::Error;
                 drop(st);
                 drop(core);
                 drop(handle);
+                self.emit_state(Some("stream rebuild in flight"));
                 bail!("stream rebuild in flight — retry load");
             }
             core.set_active(reader);
@@ -1809,6 +1816,7 @@ impl Engine {
                             source: src.clone(),
                             replay_gain_db: rg_db,
                             ready: Arc::new(AtomicBool::new(false)),
+                            generation,
                         });
                         st.reported_prefetch_ready = false;
                     }
@@ -1847,6 +1855,7 @@ impl Engine {
                 source: src,
                 replay_gain_db: rg_db,
                 ready,
+                generation,
             });
             st.reported_prefetch_ready = false;
             drop(st);
@@ -1869,6 +1878,7 @@ impl Engine {
                 replay_gain_db: rg_db,
                 // "ready" in the control sense: validated and reproducible
                 ready: Arc::new(AtomicBool::new(true)),
+                generation,
             });
             st.reported_prefetch_ready = false;
         }
@@ -2220,9 +2230,12 @@ impl Engine {
                             st.fidelity_bypass = started_bypass;
                             let _ = started_seek_offset_ms;
                             // promoted prefetch slot consumed — its source and
-                            // ReplayGain become the CURRENT track's.
+                            // ReplayGain become the CURRENT track's. A slot
+                            // from another generation is dropped, not adopted.
                             if let Some(pf) = st.prefetch.take() {
-                                if pf.queue_id == started_queue_id {
+                                if pf.queue_id == started_queue_id
+                                    && pf.generation == st.generation
+                                {
                                     st.source = Some(pf.source);
                                     st.replay_gain_db = pf.replay_gain_db;
                                 }
@@ -2271,7 +2284,13 @@ impl Engine {
                             core.ended_pending = false;
                             st.current_instance = 0;
                             st.queue_id = None;
-                            (st.generation, st.prefetch.take())
+                            // A slot armed under another generation must
+                            // not reopen against THIS track's end.
+                            let pf = match st.prefetch.take() {
+                                Some(pf) if pf.generation == st.generation => Some(pf),
+                                _ => None,
+                            };
+                            (st.generation, pf)
                         };
                         self.emit(
                             "event.trackEnded",
@@ -2299,6 +2318,9 @@ impl Engine {
                                     let mut st = self.state.lock().unwrap();
                                     let stale = st.generation != gen
                                         || st.queue_id.is_some()
+                                        // a stop()/pause mid-reopen must
+                                        // not be overridden back to Playing
+                                        || st.state != PlayState::Playing
                                         || core.rebuilding
                                         || core.negotiated != reader.neg;
                                     if stale {
