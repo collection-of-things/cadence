@@ -177,7 +177,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     const posMs = Math.round((mk.currentPlaybackTime || 0) * 1000);
     // Only MusicKit's terminal states mean the track ended — a transient
     // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
-    const naturalEnd = st === STATES.ended || st === STATES.completed;
+    // Lingering 'ended' states post-transition are stale unless the position
+    // is actually at the tail — a real end has already played the track out.
+    const naturalEnd =
+      (st === STATES.ended || st === STATES.completed) &&
+      (item === null ? true : dur === 0 ? false : posMs >= dur - 1500);
     const s = {
       state: st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'

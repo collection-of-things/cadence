@@ -424,15 +424,15 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       if (this.authorized) this.session.hide(); // sign-in complete — tuck it away
       this.emit({ kind: "capabilitiesChanged" });
     }
-    // The engine ended the current track (queue exhausted or state 'ended').
-    // Transient 'stopped' (mid-setQueue, unauthorize, stalls) is NOT an end —
-    // only trust MusicKit's terminal states and its explicit ended flag.
-    // Stations are exempt: a stream pauses between songs but never "ends".
-    if ((s.ended || s.state === "ended" || s.state === "completed") && !this.current?.station) {
+    // The engine ended the current track — the controller's `ended` flag is
+    // terminal-state + position-at-tail, so transients and boundary-linger
+    // states are already filtered. Stations are exempt: a stream pauses
+    // between songs but never "ends".
+    if (s.ended === true && !this.current?.station) {
       // If the engine already advanced to a mirrored successor by the time
       // this end-state arrived, it's a promotion — not an end. Ending the
       // promoted item here would stop playback mid-queue.
-      if (s.nowPlayingId !== null && s.nowPlayingId !== this.current?.providerId) {
+      if (typeof s.nowPlayingId === "string" && s.nowPlayingId !== this.current?.providerId) {
         this.onNowPlaying(s.nowPlayingId, s.queuePos);
         return;
       }

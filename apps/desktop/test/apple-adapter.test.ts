@@ -87,9 +87,12 @@ describe("apple adapter page events", () => {
     expect((ended[0] as { queueId?: string }).queueId).toBe("q1");
   });
 
-  it("unknown nowPlaying emits ended + pauses the page (no phantom audio)", () => {
+  it("unknown nowPlaying needs two sightings before ended + pause", () => {
     (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
     (adapter as any).mirrored = [{ queueId: "q2", providerId: "s2", station: false }];
+    sess.emit("nowPlaying", { id: "ghost-item" });
+    // First sighting: hold — a transient boundary id must not kill the lease.
+    expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
     sess.emit("nowPlaying", { id: "ghost-item" });
     expect(events.some((e) => e.kind === "ended" && (e as { queueId?: string }).queueId === "q1")).toBe(true);
     expect(sess.evals.some((e) => e.includes("pause()"))).toBe(true);

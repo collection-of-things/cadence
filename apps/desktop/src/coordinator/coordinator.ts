@@ -83,6 +83,9 @@ export class Coordinator {
   private chain: Promise<void> = Promise.resolve();
   /** queueId of the successor we asked the active adapter to prefetch. */
   private pendingPrefetch: string | null = null;
+  /** Playhead position the active lease started at — the physical-earliest
+   * point an 'ended' event for it could legitimately arrive. */
+  private leaseStartPositionMs = 0;
   /** Set after an engine `ended` while we wait for a self-promoted started. */
   private promotionTimer: ReturnType<typeof setTimeout> | null = null;
   /** ended events already handled, keyed `${generation}:${queueId}`. */
@@ -500,6 +503,7 @@ export class Coordinator {
       queueId: item.queueId,
       issuedAtMs: this.now(),
     };
+    this.leaseStartPositionMs = opts.positionMs ?? 0;
     if (adapter === undefined) {
       this.lease = lease;
       this.status = "error";
@@ -769,18 +773,21 @@ export class Coordinator {
         // fan-in across adapters sharing the graph). Ended events carry the
         // ended track's queueId — the same track ending twice under the same
         // generation is always a duplicate.
-        // Stale-boundary guard: an item that started seconds ago with a much
-        // longer known duration cannot have physically ended — provider
-        // engines fire lingering end-state events across queue transitions.
+        // Stale-boundary guard: an item cannot have physically ended before
+        // its playback position has elapsed. Provider engines fire lingering
+        // end-state events across queue transitions — suppress them by up to
+        // 10s rather than killing a fresh lease.
         {
           const leaseAgeMs = this.now() - this.lease.issuedAtMs;
           const leaseItem = this.queue.items.find((it) => it.queueId === this.lease?.queueId);
           const durMs = leaseItem?.track.durationMs ?? 0;
           if (
             e.queueId === this.lease.queueId &&
+            this.lease.route !== "local" &&
             durMs > 0 &&
-            leaseAgeMs < Math.min(durMs - 5000, 10_000) &&
-            leaseAgeMs >= 0
+            leaseAgeMs >= 0 &&
+            leaseAgeMs < 10_000 &&
+            this.leaseStartPositionMs + leaseAgeMs < durMs - 5000
           ) {
             return;
           }
@@ -889,6 +896,7 @@ export class Coordinator {
     if (this.lease === null || item === undefined) return;
     this.promotedQueueId = item.queueId;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
+    this.leaseStartPositionMs = 0;
     this.promotedGenerationId = this.lease.generationId;
     if (this.queue.currentIndex !== idx) {
       this.queue = { ...this.queue, currentIndex: idx };
