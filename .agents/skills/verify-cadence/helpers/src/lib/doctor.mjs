@@ -1,7 +1,7 @@
 // doctor.mjs — the read-only "is this worth driving" check.
 // Run this first whenever anything looks off: tools, builds, PipeWire,
 // fixtures, isolation guards. Zero side effects.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
@@ -54,19 +54,8 @@ export async function doctor({ flavor = "dev" } = {}) {
 
   // --- pipewire ----------------------------------------------------------------
   ok("tool:pipewire", have("pipewire"), have("pipewire") ?? "missing — needed for the private audio core");
-  try {
-    const pw = new Pw({ mode: "session" });
-    pw.dump();
-    ok("pipewire:user-session", true, "pw-dump answers (untouched by verification)");
-    if (pw.sinkExists()) {
-      checks.push({
-        name: "pipewire:stale-tap", ok: true,
-        detail: `a ${TAP_NAME} sink exists in the user session — leftover from a session-mode run; verification uses a private core so this is informational`,
-      });
-    }
-  } catch (e) {
-    checks.push({ name: "pipewire:user-session", ok: true, detail: `user session unreachable (${String(e).slice(0, 80)}) — private mode unaffected` });
-  }
+  // The user's real PipeWire session is NEVER probed — not even read-only
+  // pw-dump. The only graph this harness touches is the private core below.
 
   // the real isolation guarantee: a private core + policy WirePlumber
   // must come up with tap ports. This only touches a mkdtemp runtime dir.
@@ -80,13 +69,18 @@ export async function doctor({ flavor = "dev" } = {}) {
     ok("pipewire:private-core", false, `private core failed: ${String(e).slice(0, 160)}`);
   } finally {
     try { await pwv.stop(); } catch {}
+    try { pwv.removeOwnedDirs(); } catch {}
   }
 
   // --- isolation guards --------------------------------------------------------
   ok("isolation:userData", true,
-    "sessions always get a fresh --user-data-dir; the user's real profile (~/.config/cadence) is never touched");
+    "sessions only use harness-owned --user-data dirs (marker file); the real profile (~/.config/cadence) and any unmarked dir are refused");
   ok("isolation:display", true,
     `app only ever runs on a private Xvfb display, never on DISPLAY=${process.env.DISPLAY ?? "unset"}`);
+  ok("isolation:audio-session", true,
+    "only a private PipeWire core is used — there is no session mode; the user's audio server is never probed, re-routed, or cleaned");
+  ok("isolation:app-env", true,
+    "spawned app env drops display/session/audio/override vars (DISPLAY, XAUTHORITY, DBUS_*, PULSE_*, ALSA_*, CADENCE_UI_URL, ...); CADENCE_AUDIO_BIN is pinned to the repo build");
   if (process.env.ELECTRON_RUN_AS_NODE) {
     ok("env:ELECTRON_RUN_AS_NODE", true,
       "set in parent env — sanitized for spawned app processes (harmless)");

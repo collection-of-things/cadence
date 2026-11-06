@@ -24,7 +24,7 @@ export async function run(ctx) {
   ev.check("artwork extracted", withArt >= 5, `${withArt}/5 tracks carry artwork`);
 
   // user path: library tabs
-  await navTo(ctx, "Library");
+  await navTo(ctx, "Library", ".lib");
   await page.locator('.lib-tab:has-text("Artists")').click();
   await shot(ctx, "artists");
   await page.locator('.lib-tab:has-text("Tracks")').click();
@@ -45,7 +45,7 @@ export async function run(ctx) {
     `${snap.current?.track?.title}`);
 
   // album view facts (year/genre/track count from tags)
-  await navTo(ctx, "Library");
+  await navTo(ctx, "Library", ".lib");
   await openAlbumByName(ctx, "Signal Atlas");
   const facts = await page.locator(".album-fact").allTextContents();
   ev.check("album facts show track count", facts.some((f) => /3 tracks/.test(f)),

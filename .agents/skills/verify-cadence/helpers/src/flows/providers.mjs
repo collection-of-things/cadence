@@ -9,7 +9,7 @@ export const name = "providers";
 
 export async function run(ctx) {
   const { page, ev } = ctx;
-  await navTo(ctx, "Sources");
+  await navTo(ctx, "Sources", ".src");
   const caps = await api.capabilities(page);
   ev.dumpState("capabilities", caps);
   await shot(ctx, "sources-capabilities");

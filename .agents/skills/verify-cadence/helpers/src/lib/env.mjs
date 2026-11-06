@@ -49,14 +49,6 @@ export function sh(script, opts = {}) {
   return run("bash", ["-c", script], opts);
 }
 
-/** Child env sanitized for spawning Electron — the agent harness itself may
- * export ELECTRON_RUN_AS_NODE=1, which turns any electron binary into node. */
-export function cleanEnv(extra = {}) {
-  const env = { ...process.env, ...extra };
-  delete env.ELECTRON_RUN_AS_NODE;
-  return env;
-}
-
 export function fixtureTracks() {
   const out = [];
   const walk = (d) => {
@@ -71,8 +63,11 @@ export function fixtureTracks() {
 }
 
 export function newRunDir(slug = "run") {
-  const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-  const dir = join(RUNS_ROOT, `${ts}-${slug}`);
+  // millisecond precision + a collision suffix — two runs in the same
+  // second must never share a dir (stale analysis/evidence poisoning)
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 23);
+  let dir = join(RUNS_ROOT, `${ts}-${slug}`);
+  for (let i = 1; existsSync(dir); i++) dir = join(RUNS_ROOT, `${ts}-${slug}-${i}`);
   for (const sub of ["evidence", "logs", "audio", "state"]) mkdirSync(join(dir, sub), { recursive: true });
   return dir;
 }

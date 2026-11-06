@@ -7,15 +7,26 @@
 //     logs/*.log                 — electron/audio stderr, pw-dump captures
 //     SUMMARY.md                 — verdicts a reviewer can skim
 // Teardown never touches this directory.
-import { appendFileSync, writeFileSync, cpSync, existsSync } from "node:fs";
+//
+// An `attach` against an existing run dir appends to the SAME evidence:
+// checks recorded by earlier verdicts are merged in (marked prior:true)
+// so a later attach can never rewrite history into a false PASS.
+import { appendFileSync, writeFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
-import { nowIso, writeJson } from "./env.mjs";
+import { nowIso, writeJson, readJson } from "./env.mjs";
 
 export class Evidence {
   constructor(runDir) {
     this.dir = runDir;
     this.transcript = join(runDir, "evidence", "transcript.jsonl");
     this.checks = [];
+    // carry forward checks from any earlier verdict in this run dir —
+    // attach evidence adds to the record, it never replaces it
+    const prior = readJson(join(runDir, "verdict.json"));
+    if (prior?.checks?.length) {
+      for (const c of prior.checks) this.checks.push({ ...c, prior: true });
+      this.step("evidence", `carried forward ${prior.checks.length} prior check(s) (verdict ${prior.verdict})`);
+    }
     this.step("run", `run dir ${runDir}`);
   }
 
@@ -34,6 +45,16 @@ export class Evidence {
       throw new AssertionError(name, detail);
     }
     return ok;
+  }
+
+  /** Record a REQUIRED failure without throwing — for top-level catches
+   * (launch crash, flow crash, unknown flow) where the throw would escape
+   * before SUMMARY.md/verdict.json could be written. The verdict is still
+   * FAIL; the evidence still lands. */
+  fail(name, detail = "") {
+    const entry = { name, ok: false, detail, required: true };
+    this.checks.push(entry);
+    this.step("check", `FAIL ${name}${detail ? ` — ${detail}` : ""}`);
   }
 
   shotName(name) { return join(this.dir, "evidence", `${name}.png`); }
@@ -63,7 +84,8 @@ export class Evidence {
       `checks: ${this.checks.length} (${this.checks.length - failed.length - noted.length} pass, ${failed.length} fail, ${noted.length} noted)`,
       "",
       "## checks",
-      ...this.checks.map((c) => `- ${c.ok ? "PASS" : c.required ? "FAIL" : "NOTE"} ${c.name}${c.detail ? ` — ${c.detail}` : ""}`),
+      ...this.checks.map((c) =>
+        `- ${c.ok ? "PASS" : c.required ? "FAIL" : "NOTE"} ${c.name}${c.prior ? " [prior]" : ""}${c.detail ? ` — ${c.detail}` : ""}`),
       "",
       "## artifacts",
       "- evidence/transcript.jsonl — every action + assertion",

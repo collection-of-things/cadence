@@ -19,6 +19,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -82,15 +83,15 @@ def main():
     ap.add_argument("--seek-point-s", type=float, default=None,
                     help="capture time (s) where a seek was issued")
     ap.add_argument("--seek-delta-s", type=float, default=None,
-                    help="expected forward jump (s) in source position")
+                    help="deliberate forward jump (s) issued at seek-point")
     ap.add_argument("--pause-point-s", type=float, default=None,
                     help="capture time (s) where a pause was issued — the following ~1.2s must be silent")
+    ap.add_argument("--seek-tolerance-s", type=float, default=0.75,
+                    help="allowed error around the expected source jump")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     rate, ch = args.rate, args.channels
-    cap = mixdown(read_f32(args.capture), ch)
-    ref = mixdown(ffmpeg_ref(args.ref, rate, 1), 1)
 
     result = {"capture": args.capture, "ref": args.ref, "rate": rate,
               "checks": [], "ok": True}
@@ -100,6 +101,52 @@ def main():
         if not ok:
             result["ok"] = False
         print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
+
+    def finish():
+        if args.out:
+            with open(args.out, "w") as f:
+                json.dump(result, f, indent=2)
+        sys.exit(0 if result["ok"] else 1)
+
+    # --- input validity: reject empty/truncated/misaligned/non-finite PCM ----
+    # A capture that fails here is a broken pipeline, not analyzable audio.
+    # Check the FILE's byte size — np.fromfile silently drops a partial
+    # trailing element, so len(raw)*4 cannot be trusted for alignment.
+    try:
+        file_bytes = os.path.getsize(args.capture)
+        raw = read_f32(args.capture)
+    except (OSError, ValueError) as e:
+        check("capture input valid", False, f"cannot read capture: {e}")
+        finish()
+    frame_bytes = 4 * ch
+    if file_bytes == 0:
+        check("capture input valid", False, "capture file is empty")
+        finish()
+    if file_bytes % 4 != 0:
+        check("capture input valid", False,
+              f"{file_bytes} bytes is not a multiple of 4 (f32 samples) — truncated write")
+        finish()
+    if file_bytes % frame_bytes != 0:
+        check("capture input valid", False,
+              f"{file_bytes} bytes is not a whole number of {ch}-ch f32 frames — truncated write")
+        finish()
+    cap = mixdown(raw, ch)
+    if len(cap) < int(rate * 0.5):
+        check("capture input valid", False,
+              f"only {len(cap) / rate:.2f}s of audio — too short to analyze")
+        finish()
+    if not np.isfinite(cap).all():
+        check("capture input valid", False, "capture contains NaN/Inf samples")
+        finish()
+    try:
+        ref = mixdown(ffmpeg_ref(args.ref, rate, 1), 1)
+    except (subprocess.CalledProcessError, OSError) as e:
+        check("reference decodes", False, f"ffmpeg failed on ref: {e}")
+        finish()
+    if len(ref) == 0 or not np.isfinite(ref).all():
+        check("reference decodes", False, "reference decoded empty or non-finite")
+        finish()
+    check("capture input valid", True, f"{len(cap) / rate:.2f}s f32le@{rate}Hz")
 
     # --- not silent ---------------------------------------------------------
     frame = int(rate * 0.05)  # 50ms windows
@@ -128,8 +175,12 @@ def main():
         a = int((args.pause_point_s + 0.45) * rate)
         b = int((args.pause_point_s + 1.45) * rate)
         hole = cap[a:b]
-        if len(hole) == 0:
-            check("pause silences output", False, "capture ends inside the pause window")
+        # the WHOLE window must be present — a capture that ends early
+        # proves nothing about what followed the pause
+        if len(hole) < b - a:
+            check("pause silences output", False,
+                  f"capture ends inside the pause window ({len(hole) / rate:.2f}s of {1.0:.2f}s required)")
+
         else:
             hole_db = rms_dbfs(hole)
             result["pause_dbfs"] = hole_db
@@ -143,33 +194,52 @@ def main():
     # --- seek moved it --------------------------------------------------------
     if args.seek_point_s is not None and args.seek_delta_s is not None:
         seg_s = 1.5
-        pre = cap[int((args.seek_point_s - seg_s) * rate): int(args.seek_point_s * rate)]
-        post = cap[int((args.seek_point_s + 0.3) * rate): int((args.seek_point_s + 0.3 + seg_s) * rate)]
-        k_pre, s_pre = xcorr_offset(cap, pre)
-        # locate the pre segment inside the REFERENCE (source position), then post
+        # pre segment ends at the seek point; post starts 0.3s after it.
+        # Between the two window CENTERS, source time advances by playback
+        # for (seg_s + 0.3)s of wall time PLUS the deliberate delta — the
+        # expected jump must account for the elapsed capture time between
+        # the sampled windows, not just the seek delta.
+        pre_start = args.seek_point_s - seg_s
+        post_start = args.seek_point_s + 0.3
+        if pre_start < 0:
+            check("seek moved output", False,
+                  f"seek point {args.seek_point_s}s leaves no {seg_s}s pre window")
+            finish()
+        pre = cap[int(pre_start * rate): int(args.seek_point_s * rate)]
+        post = cap[int(post_start * rate): int((post_start + seg_s) * rate)]
+        if len(pre) < int(seg_s * rate) or len(post) < int(seg_s * rate):
+            check("seek moved output", False,
+                  "capture ends inside a seek window — not enough runway")
+            finish()
+        # locate both segments inside the REFERENCE (source position)
         k_ref_pre, sc_pre = xcorr_offset(ref, pre)
         k_ref_post, sc_post = xcorr_offset(ref, post)
         if k_ref_pre is None or k_ref_post is None:
             check("seek moved output", False, "segment too short to align")
         else:
-            src_pre = k_ref_pre / rate
-            src_post = k_ref_post / rate
+            src_pre = (k_ref_pre + len(pre) / 2) / rate
+            src_post = (k_ref_post + len(post) / 2) / rate
             jump = src_post - src_pre
+            # wall time between window centers + deliberate delta
+            elapsed_between_windows = (post_start + seg_s / 2) - (pre_start + seg_s / 2)
+            expected = args.seek_delta_s + elapsed_between_windows
             result["seek"] = {
                 "pre_source_s": src_pre, "post_source_s": src_post,
-                "jump_s": jump, "expected_s": args.seek_delta_s,
+                "jump_s": jump, "expected_s": expected,
+                "seek_delta_s": args.seek_delta_s,
+                "elapsed_between_windows_s": elapsed_between_windows,
                 "score_pre": sc_pre, "score_post": sc_post,
             }
             aligned = sc_pre > 0.25 and sc_post > 0.25
             check("segments align to reference", aligned,
                   f"corr {sc_pre:.2f}/{sc_post:.2f}")
-            check("seek moved output", aligned and abs(jump - args.seek_delta_s) < 2.5,
-                  f"source position jumped {jump:.2f}s at seek (expected ~{args.seek_delta_s}s)")
+            check("seek moved output",
+                  aligned and abs(jump - expected) <= args.seek_tolerance_s,
+                  f"source position jumped {jump:.2f}s at seek "
+                  f"(expected {expected:.2f}s = delta {args.seek_delta_s} + {elapsed_between_windows:.2f}s elapsed, "
+                  f"tol ±{args.seek_tolerance_s}s)")
 
-    if args.out:
-        with open(args.out, "w") as f:
-            json.dump(result, f, indent=2)
-    sys.exit(0 if result["ok"] else 1)
+    finish()
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 // navigate.mjs — the shell a user walks: sidebar, search, album, back/
 // forward, queue panel, now playing, settings, sources, playlist stub.
+// Every click is paired with the destination it must reach — "clicked
+// without throwing" is not a navigation check.
 import { sleep } from "../lib/env.mjs";
 import * as api from "../lib/api.mjs";
-import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, escapeRe } from "../lib/flow.mjs";
+import { seedLibrary, shot, navTo, openAlbumByName, clickTrack } from "../lib/flow.mjs";
 
 export const name = "navigate";
 
@@ -10,21 +12,24 @@ export async function run(ctx) {
   const { page, ev } = ctx;
   await seedLibrary(ctx);
 
-  // sidebar sections
-  for (const label of ["Library", "Sources", "Home"]) {
-    await navTo(ctx, label);
+  // sidebar sections — each click must land on its view
+  for (const [label, marker] of [["Library", ".lib"], ["Sources", ".src"], ["Home", ".home-view"]]) {
+    await navTo(ctx, label, marker);
+    ev.check(`sidebar navigates to ${label}`, true, `reached ${marker}`);
     await shot(ctx, `nav-${label.toLowerCase()}`);
   }
-  ev.check("sidebar sections navigable", true);
 
-  // search drives the library view
+  // search drives the library view — the VISIBLE rows must show the hit,
+  // not just the DB query underneath
   await page.getByLabel("Search Cadence").fill("Meridian");
   await page.keyboard.press("Enter");
-  await page.waitForSelector(".lib", { timeout: 10_000 }).catch(() => {});
-  await sleep(700);
+  const visibleHit = await page
+    .waitForSelector('.lib .tr-row:has-text("Meridian")', { timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
   const hits = await api.tracks(page, { text: "Meridian" });
-  ev.check("search finds fixture track", hits.some((t) => t.title === "Meridian"),
-    `${hits.length} hit(s)`);
+  ev.check("search finds fixture track (visible + query)", visibleHit && hits.some((t) => t.title === "Meridian"),
+    `visible row=${visibleHit}, ${hits.length} api hit(s)`);
   await shot(ctx, "search-meridian");
   // clear both fields — sidebar (shared query) and library (local filter)
   await page.getByLabel("Search Cadence").fill("");
@@ -33,15 +38,17 @@ export async function run(ctx) {
   await sleep(600);
 
   // album open + back/forward — make sure the Albums tab is showing
-  await navTo(ctx, "Library");
+  await navTo(ctx, "Library", ".lib");
   await page.getByRole("button", { name: "Albums" }).first().click().catch(() => {});
   await openAlbumByName(ctx, "Signal Atlas");
   await page.locator(".album-back").click().catch(() => page.getByLabel("Go back").click());
-  await page.waitForSelector(".album-grid, .lib", { timeout: 8_000 });
-  ev.check("album back navigation", true);
+  const backOk = await page.waitForSelector(".album-grid, .lib", { timeout: 8_000 })
+    .then(() => true).catch(() => false);
+  ev.check("album back navigation", backOk);
   await page.getByLabel("Go forward").click();
-  await page.waitForSelector(".album-track-row", { timeout: 8_000 });
-  ev.check("forward returns to album", true);
+  const fwdOk = await page.waitForSelector(".album-track-row", { timeout: 8_000 })
+    .then(() => true).catch(() => false);
+  ev.check("forward returns to album", fwdOk);
   await shot(ctx, "album-forward");
 
   // start something so queue + now-playing have content
@@ -56,22 +63,24 @@ export async function run(ctx) {
   await shot(ctx, "queue-open");
   await page.getByRole("button", { name: "Toggle queue" }).first().click();
 
-  // now playing overlay
+  // now playing overlay — the dialog must actually open, not just the button
   await page.getByLabel("Show now playing").first().click();
-  await sleep(600);
+  const npOk = await page.waitForSelector('.full-now[role="dialog"]', { timeout: 8_000 })
+    .then(() => true).catch(() => false);
+  ev.check("now playing overlay opens", npOk);
   await shot(ctx, "now-playing");
-  ev.check("now playing opens", true);
   await page.keyboard.press("Escape");
 
   // settings sheet
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.waitForSelector(".sheet[role=dialog]", { timeout: 8_000 });
+  const settingsOk = await page.waitForSelector(".sheet[role=dialog]", { timeout: 8_000 })
+    .then(() => true).catch(() => false);
+  ev.check("settings sheet opens", settingsOk);
   await shot(ctx, "settings");
-  ev.check("settings sheet opens", true);
   await page.getByLabel("Close settings").click();
 
   // sources page shows honest route states
-  await navTo(ctx, "Sources");
+  await navTo(ctx, "Sources", ".src");
   const caps = await api.capabilities(page);
   ev.dumpState("capabilities", caps);
   ev.check("local route ready", caps.some((c) => c.route === "local" && c.state === "ready"),

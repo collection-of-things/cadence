@@ -11,13 +11,14 @@ export async function run(ctx) {
   const { page, ev } = ctx;
   const tracks = await seedLibrary(ctx);
 
-  await navTo(ctx, "Library");
+  await navTo(ctx, "Library", ".lib");
   await openAlbumByName(ctx, "Signal Atlas");
 
   // play the album's first track by clicking its row — the real user path
   await clickTrack(ctx, "Beacon");
-  await api.waitStatus(page, "playing");
-  ev.check("click-to-play", true);
+  const sPlay = await api.waitStatus(page, "playing");
+  ev.check("click-to-play", sPlay.current?.track?.title === "Beacon",
+    `now=${sPlay.current?.track?.title} (clicked Beacon)`);
 
   // position advances
   const s1 = await api.snapshot(page);
@@ -80,32 +81,54 @@ export async function run(ctx) {
     `pos=${afterSeek.positionMs}/${dur}`);
   await dumpState(ctx, "after-seek");
 
-  // queue ops: "Add next" on another album's track, then queue panel edits
+  // queue ops: "Add next" on another album's track, then queue panel edits.
+  // Mutations propagate asynchronously — wait on the resulting state, don't
+  // read the queue in the same tick the command was sent.
   await page.getByLabel("Go back").click();
   await page.waitForSelector(".album-grid", { timeout: 8_000 });
   await openAlbumByName(ctx, "Field Notes");
   await page.getByRole("button", { name: "Add North Field next" }).first().click();
-  const q1 = await api.queue(page);
-  const idx = q1.items.findIndex((i) => i.track.title === "North Field");
-  ev.check("add-next queues track", idx === q1.currentIndex + 1,
-    `North Field at index ${idx} (current ${q1.currentIndex})`);
+  const q1 = await waitFor(
+    async () => {
+      const q = await api.queue(page);
+      const idx = q.items.findIndex((i) => i.track.title === "North Field");
+      return idx === q.currentIndex + 1 ? q : null;
+    },
+    { timeout: 8_000, what: "North Field queued at currentIndex+1" },
+  );
+  ev.check("add-next queues track", true,
+    `North Field at index ${q1.currentIndex + 1} (current ${q1.currentIndex})`);
 
   await page.getByRole("button", { name: "Toggle queue" }).first().click();
   await page.waitForSelector(".queue.open", { timeout: 8_000 });
   await shot(ctx, "queue-before-jump");
-  // jump directly to the queued item by clicking its row
+  // jump directly to the queued item by clicking its row — wait for the
+  // EXPECTED track in playing state; a status-only wait can return the
+  // still-playing previous track before the switch lands
   await page.locator('.q-row:has-text("North Field")').first().click();
-  const sJump = await api.waitStatus(page, "playing", 15_000);
-  ev.check("queue row plays", sJump.current?.track?.title === "North Field",
-    `now=${sJump.current?.track?.title}`);
-  // remove the remaining queued item(s) after the current one
+  const sJump = await waitFor(
+    async () => {
+      const s = await api.snapshot(page);
+      return s.status === "playing" && s.current?.track?.title === "North Field" ? s : null;
+    },
+    { timeout: 15_000, what: "North Field playing" },
+  );
+  ev.check("queue row plays", true, `now=${sJump.current?.track?.title}`);
+  // remove the remaining queued item(s) after the current one — verify the
+  // post-mutation queue, not a same-tick read
   const q2 = await api.queue(page);
   const removable = q2.items.filter((i, n) => n > q2.currentIndex).map((i) => i.queueId);
   if (removable.length) {
     await api.send(page, { kind: "remove", queueIds: removable });
-    const q3 = await api.queue(page);
-    ev.check("queue remove", q3.items.length === q2.items.length - removable.length,
-      `${q2.items.length} -> ${q3.items.length}`);
+    const want = q2.items.length - removable.length;
+    const q3 = await waitFor(
+      async () => {
+        const q = await api.queue(page);
+        return q.items.length === want ? q : null;
+      },
+      { timeout: 8_000, what: `queue shrunk to ${want} items` },
+    );
+    ev.check("queue remove", true, `${q2.items.length} -> ${q3.items.length}`);
   }
   await dumpState(ctx, "queue-final");
 }

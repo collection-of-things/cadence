@@ -1,23 +1,32 @@
 // session.mjs — the app lifecycle.
 //
 // Launch model: private Xvfb (never the user's display), private PipeWire
-// daemon (never the user's audio session), fresh --user-data-dir (NEVER the
-// real ~/.config/cadence — the user's own instance may be running and
-// single-instance is keyed on userData).
+// core (never the user's audio session), harness-owned --user-data-dir
+// only (NEVER the real ~/.config/cadence — the user's own instance may be
+// running and single-instance is keyed on userData), sanitized env so no
+// inherited route can steer the app at a real device or stale code.
 //
 // Two flavors:
 //   dev      — repo Electron + apps/desktop (needs pnpm -r build + cargo build)
 //   packaged — apps/desktop/release/linux-unpacked/cadence (needs dist:dir)
 //
 // Ready = the renderer is up AND window.cadence answers getSnapshot().
+// Every launch allocates a CDP port (ephemeral unless --cdp asks for one);
+// the endpoint is proven to belong to the recorded app pid/profile/private
+// display before it is trusted — a fixed port could otherwise be an
+// unrelated running Chromium.
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, writeFileSync, openSync, closeSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, createWriteStream, existsSync, openSync, closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { _electron, chromium } from "playwright-core";
 import {
-  REPO, electronBinary, packagedBinary, cleanEnv, waitFor, writeJson, readJson, sleep,
+  REPO, electronBinary, packagedBinary, waitFor, writeJson, readJson, sleep,
 } from "./env.mjs";
+import {
+  prepareUserData, requireAudioBinary, sanitizedAppEnv, writePrivateAsound,
+  freePort, cdpOccupied, verifyCdpEndpoint, verifyRecordedProcess,
+  procAlive, procStartTime, procIds, UD_MARKER,
+} from "./isolation.mjs";
 import { startXvfb } from "./xvfb.mjs";
 import { Pw } from "./pipewire.mjs";
 
@@ -51,105 +60,246 @@ export async function waitReady(page, timeout = 20_000) {
   );
 }
 
-/** Launch via playwright _electron (in-process control). Used by `run`. */
-export async function launchManaged({ flavor = "dev", userData = null, runDir, pwMode = "private" } = {}) {
-  const ud = userData ?? mkdtempSync(join(tmpdir(), "cadence-verify-ud-"));
-  mkdirSync(ud, { recursive: true });
-  const xvfb = await startXvfb();
-  const pw = await new Pw({ mode: pwMode, logPath: join(runDir, "logs", "pipewire.log") }).start();
-  const logStream = createWriteStream(join(runDir, "logs", "electron.log"), { flags: "a" });
+/** Everything a launch acquired, newest-first for teardown. A partial
+ * failure must still clean up what came up — resources are recorded as
+ * they are acquired, never left for "the caller's catch". */
+function tracked() {
+  return { xvfb: null, pw: null, app: null, proc: null, browser: null, ud: null, recorders: [] };
+}
 
-  let app = null;
+/** In-flight launch resource records. Registered while a launch is in
+ * progress so a SIGTERM/SIGINT arriving MID-launch (before ctx exists)
+ * can still reap the Xvfb/private core/profile already acquired. */
+export const activeLaunches = new Set();
+
+/** Teardown for resources of launches still in progress. The CLI's signal
+ * handler calls this before exiting; safe to call with nothing in flight. */
+export async function teardownActiveLaunches() {
+  for (const r of [...activeLaunches]) {
+    try { await releaseTracked(r); } catch {}
+    activeLaunches.delete(r);
+  }
+}
+
+/** Remove a harness-owned profile dir (marker present). Never called on
+ * paths without the marker. */
+function removeOwnedUserData(ud) {
+  if (ud && existsSync(join(ud, UD_MARKER))) {
+    try { rmSync(ud, { recursive: true, force: true }); } catch {}
+  }
+}
+
+async function releaseTracked(r, { removeOwnedDirs = true } = {}) {
+  for (const rec of r.recorders) { try { await rec.stop(); } catch {} }
+  if (r.app) {
+    try { await quitManaged(r.app); } catch { try { r.app.process().kill("SIGKILL"); } catch {} }
+  }
+  if (r.proc) {
+    // detached spawn: the child leads its own process group — SIGTERM the
+    // group so renderers/utility/audio children cannot be orphaned.
+    try {
+      const ids = procIds(r.proc.pid);
+      if (ids?.pgid === r.proc.pid) process.kill(-r.proc.pid, "SIGTERM");
+      else r.proc.kill("SIGTERM");
+    } catch { try { r.proc.kill("SIGTERM"); } catch {} }
+    await sleep(800);
+    try { r.proc.kill("SIGKILL"); } catch {}
+  }
+  try { await r.browser?.close(); } catch {}
+  try { await r.pw?.stop(); } catch {}
+  try { r.xvfb?.stop(); } catch {}
+  if (removeOwnedDirs) {
+    try { r.pw?.removeOwnedDirs(); } catch {}
+    // the owned profile is as much temp state as the graph dirs — a
+    // failed or finished launch leaves nothing behind but evidence
+    removeOwnedUserData(r.ud);
+  }
+}
+
+/** A failure must leave a diagnosable electron.log even when the process
+ * never got far enough to pipe stderr (managed launches only see stderr
+ * after playwright's handshake resolves). */
+function logLaunchFailure(runDir, e, context = {}) {
   try {
-    if (pwMode === "session") pw.swapDefault();
+    appendFileSync(
+      join(runDir, "logs", "electron.log"),
+      `\n=== cadence-verify launch failure ${new Date().toISOString()} ===\n` +
+        `${e?.stack ?? e}\n` +
+        `context: ${JSON.stringify(context, null, 2)}\n`,
+    );
+  } catch { /* evidence dir gone — nothing to write to */ }
+}
+
+/**
+ * Shared launch prep — fail closed BEFORE any spawn:
+ *  - profile: fresh harness-owned --user-data (never a real profile)
+ *  - audio binary: the repo build, pinned via CADENCE_AUDIO_BIN
+ *  - private ALSA default: pipewire plugin → the private core
+ *  - CDP port: free (ephemeral by default; explicit --cdp must be unused)
+ * Returns {ud, asoundPath, cdpPort, audioBin}.
+ */
+async function prepareLaunch({ userData, runDir, cdpPort }) {
+  const audioBin = requireAudioBinary();
+  // port sanity first — refuse before creating any owned state
+  if (cdpPort == null) {
+    cdpPort = await freePort();
+  } else if (await cdpOccupied(cdpPort)) {
+    throw new Error(
+      `CDP port ${cdpPort} is already in use — refusing to launch: a fixed port could ` +
+        `silently connect to an unrelated browser. Pass --cdp <free port> or omit for ephemeral.`,
+    );
+  }
+  const ud = prepareUserData(userData);
+  const asoundPath = writePrivateAsound(join(runDir, "asound.conf"));
+  return { ud, asoundPath, cdpPort, audioBin };
+}
+
+function appEnvFor({ pw, display, asoundPath, audioBin }) {
+  return sanitizedAppEnv({
+    extra: {
+      DISPLAY: display,
+      XDG_RUNTIME_DIR: pw.runtimeDir,
+      PIPEWIRE_RUNTIME_DIR: pw.runtimeDir,
+      PIPEWIRE_REMOTE: "pipewire-0",
+    },
+    audioBin,
+    asoundPath,
+  });
+}
+
+function appArgs({ flavor, ud, cdpPort }) {
+  const args = baseArgs(ud, [`--remote-debugging-port=${cdpPort}`]);
+  return flavor === "packaged" ? args : [join(REPO, "apps", "desktop"), ...args];
+}
+
+/** Launch via playwright _electron (in-process control). Used by `run`. */
+export async function launchManaged({ flavor = "dev", userData = null, runDir } = {}) {
+  const { ud, asoundPath, cdpPort, audioBin } = await prepareLaunch({
+    userData, runDir, cdpPort: null,
+  });
+  const r = tracked();
+  r.ud = ud;
+  activeLaunches.add(r); // mid-launch SIGTERM can reap these too
+  const logStream = createWriteStream(join(runDir, "logs", "electron.log"), { flags: "a" });
+  try {
+    r.xvfb = await startXvfb();
+    r.pw = new Pw({ mode: "private", logPath: join(runDir, "logs", "pipewire.log") });
+    // assigned BEFORE start() resolves — a rejection still leaves the
+    // half-up daemon reachable by releaseTracked
+    await r.pw.start();
     const bin = flavor === "packaged" ? packagedBinary() : electronBinary();
     if (!bin) throw new Error(`no electron binary for flavor ${flavor} (run builds first)`);
-    const args = flavor === "packaged"
-      ? baseArgs(ud)
-      : [join(REPO, "apps", "desktop"), ...baseArgs(ud)];
-    app = await _electron.launch({
+    r.app = await _electron.launch({
       executablePath: bin,
-      args,
-      env: pw.env(cleanEnv({ DISPLAY: xvfb.display })),
+      args: appArgs({ flavor, ud, cdpPort }),
+      env: appEnvFor({ pw: r.pw, display: r.xvfb.display, asoundPath, audioBin }),
       timeout: 45_000,
     });
-    if (pwMode === "session") pw.restoreDefault();
-    app.process().stderr?.pipe(logStream);
-    app.process().stdout?.pipe(logStream);
-    const page = await app.firstWindow();
+    r.app.process().stderr?.pipe(logStream);
+    r.app.process().stdout?.pipe(logStream);
+    const page = await r.app.firstWindow();
     await waitReady(page);
-    return finishLaunch({ flavor, app, page, xvfb, pw, ud, runDir, managed: true });
+    // the CDP endpoint must belong to this app — not a pre-existing browser
+    const cdp = await verifyCdpEndpoint(cdpPort, r.app.process().pid);
+    if (!cdp.ok) {
+      throw new Error(`CDP endpoint on :${cdpPort} failed ownership check: ${cdp.reasons.join("; ")}`);
+    }
+    activeLaunches.delete(r);
+    return finishLaunch({
+      flavor, app: r.app, page, xvfb: r.xvfb, pw: r.pw, ud, runDir,
+      managed: true, cdpPort, tracked: r,
+    });
   } catch (e) {
-    await teardownRaw({ app, xvfb, pw, managed: true });
+    logLaunchFailure(runDir, e, { flavor, ud, cdpPort });
+    activeLaunches.delete(r);
+    await releaseTracked(r);
     throw e;
   }
 }
 
-/** Spawn electron + fixed CDP port so later CLI calls can attach. `launch`. */
-export async function launchInteractive({ flavor = "dev", userData = null, runDir, cdpPort = 9333, pwMode = "private" } = {}) {
-  const ud = userData ?? mkdtempSync(join(tmpdir(), "cadence-verify-ud-"));
-  mkdirSync(ud, { recursive: true });
-  const xvfb = await startXvfb({ persistent: true });
-  const pw = await new Pw({ mode: pwMode, logPath: join(runDir, "logs", "pipewire.log"), persistent: true }).start();
+/** Spawn electron + CDP port so later CLI calls can attach. `launch`. */
+export async function launchInteractive({ flavor = "dev", userData = null, runDir, cdpPort = null } = {}) {
+  const prep = await prepareLaunch({ userData, runDir, cdpPort });
+  const { ud, asoundPath, audioBin } = prep;
+  cdpPort = prep.cdpPort;
+  const r = tracked();
+  r.ud = ud;
+  activeLaunches.add(r);
   // the process outlives this CLI call — send its output to a real file
   // descriptor, not a pipe that dies with us
   const logFd = openSync(join(runDir, "logs", "electron.log"), "a");
-
-  let proc = null;
   try {
-    if (pwMode === "session") pw.swapDefault();
+    r.xvfb = await startXvfb({ persistent: true });
+    r.pw = new Pw({
+      mode: "private", logPath: join(runDir, "logs", "pipewire.log"), persistent: true,
+    });
+    await r.pw.start();
     const bin = flavor === "packaged" ? packagedBinary() : electronBinary();
     if (!bin) throw new Error(`no electron binary for flavor ${flavor} (run builds first)`);
-    const args = flavor === "packaged"
-      ? baseArgs(ud, [`--remote-debugging-port=${cdpPort}`])
-      : [join(REPO, "apps", "desktop"), ...baseArgs(ud, [`--remote-debugging-port=${cdpPort}`])];
-    proc = spawn(bin, args, {
-      env: pw.env(cleanEnv({ DISPLAY: xvfb.display })),
+    r.proc = spawn(bin, appArgs({ flavor, ud, cdpPort }), {
+      env: appEnvFor({ pw: r.pw, display: r.xvfb.display, asoundPath, audioBin }),
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
     closeSync(logFd);
-    proc.unref();
-    if (pwMode === "session") pw.restoreDefault();
+    r.proc.unref();
     // connectOverCDP does not retry a refused connection — wait for the
-    // DevTools endpoint to bind first
+    // DevTools endpoint to bind first, then prove it is OUR app before
+    // trusting it (an unrelated Chromium on the port must never attach)
     await waitFor(
       async () => {
         try {
-          const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
-          return r.ok;
+          const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+          return res.ok;
         } catch { return null; }
       },
       { timeout: 30_000, every: 400, what: `CDP :${cdpPort}` },
     );
+    const cdp = await verifyCdpEndpoint(cdpPort, r.proc.pid);
+    if (!cdp.ok) {
+      throw new Error(`CDP endpoint on :${cdpPort} failed ownership check: ${cdp.reasons.join("; ")}`);
+    }
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`, { timeout: 30_000 });
+    r.browser = browser;
     const page = await waitFor(
       () => browser.contexts()[0]?.pages()[0] ?? null,
       { timeout: 30_000, what: "CDP page" },
     );
     await waitReady(page);
+    activeLaunches.delete(r);
     return finishLaunch({
-      flavor, app: null, page, xvfb, pw, ud, runDir,
-      managed: false, proc, browser, cdpPort,
+      flavor, app: null, page, xvfb: r.xvfb, pw: r.pw, ud, runDir,
+      managed: false, proc: r.proc, browser, cdpPort, tracked: r,
     });
   } catch (e) {
-    if (proc) proc.kill("SIGKILL");
-    await pw.stop();
-    xvfb.stop();
+    logLaunchFailure(runDir, e, { flavor, ud, cdpPort });
+    activeLaunches.delete(r);
+    try { closeSync(logFd); } catch {}
+    await releaseTracked(r);
     throw e;
   }
 }
 
-async function finishLaunch(o) {
+function finishLaunch(o) {
+  const pid = o.managed ? o.app.process().pid : o.proc.pid;
   const meta = {
     flavor: o.flavor,
-    pid: o.managed ? o.app.process().pid : o.proc.pid,
+    pid,
+    pidStartTime: procStartTime(pid),
     display: o.xvfb.display,
     xvfbPid: o.xvfb.proc.pid,
+    xvfbPidStartTime: procStartTime(o.xvfb.proc.pid),
     userData: o.ud,
     cdpPort: o.cdpPort ?? null,
-    pw: { mode: o.pw.mode, runtimeDir: o.pw.runtimeDir, daemonPid: o.pw.daemon?.pid ?? null, smPid: o.pw.sm?.pid ?? null, tapModuleId: o.pw.tapModuleId, adopted: o.pw.tapAdopted },
-    prevDefaultSink: o.pw.prevDefault,
+    pw: {
+      mode: o.pw.mode,
+      runtimeDir: o.pw.runtimeDir,
+      stateDir: o.pw.stateDir ?? null,
+      daemonPid: o.pw.daemon?.pid ?? null,
+      daemonStartTime: o.pw.daemon ? procStartTime(o.pw.daemon.pid) : null,
+      smPid: o.pw.sm?.pid ?? null,
+      smStartTime: o.pw.sm ? procStartTime(o.pw.sm.pid) : null,
+    },
     runDir: o.runDir,
     managed: o.managed,
     startedAt: new Date().toISOString(),
@@ -186,94 +336,146 @@ export async function quitManaged(app) {
 
 /**
  * Relaunch a managed session after quitManaged: same userData, display and
- * private pw core (session mode: momentary default swap again so the new
- * stream lands on the tap). Mutates ctx.app/ctx.page.
+ * private pw core. ctx.app is registered IMMEDIATELY after launch — before
+ * readiness — so a readiness failure still lets teardown kill the new app.
+ * Mutates ctx.app/ctx.page/meta.
  */
 export async function relaunchManaged(ctx) {
-  if (ctx.pw.mode === "session") ctx.pw.swapDefault();
+  const bin = ctx.flavor === "packaged" ? packagedBinary() : electronBinary();
+  const args = ctx.flavor === "packaged"
+    ? baseArgs(ctx.ud, [`--remote-debugging-port=${ctx.meta.cdpPort}`])
+    : [join(REPO, "apps", "desktop"), ...baseArgs(ctx.ud, [`--remote-debugging-port=${ctx.meta.cdpPort}`])];
+  const logStream = createWriteStream(join(ctx.runDir, "logs", "electron.log"), { flags: "a" });
+  const app = await _electron.launch({
+    executablePath: bin,
+    args,
+    env: appEnvFor({
+      pw: ctx.pw, display: ctx.xvfb.display,
+      asoundPath: join(ctx.runDir, "asound.conf"), audioBin: requireAudioBinary(),
+    }),
+    timeout: 45_000,
+  });
+  ctx.app = app; // tracked from this moment even if readiness fails
+  app.process().stderr?.pipe(logStream);
+  app.process().stdout?.pipe(logStream);
   try {
-    const bin = ctx.flavor === "packaged" ? packagedBinary() : electronBinary();
-    const args = ctx.flavor === "packaged"
-      ? baseArgs(ctx.ud)
-      : [join(REPO, "apps", "desktop"), ...baseArgs(ctx.ud)];
-    const logStream = createWriteStream(join(ctx.runDir, "logs", "electron.log"), { flags: "a" });
-    const app = await _electron.launch({
-      executablePath: bin,
-      args,
-      env: ctx.pw.env(cleanEnv({ DISPLAY: ctx.xvfb.display })),
-      timeout: 45_000,
-    });
-    app.process().stderr?.pipe(logStream);
-    app.process().stdout?.pipe(logStream);
     const page = await app.firstWindow();
     await waitReady(page);
-    ctx.app = app;
     ctx.page = page;
     ctx.meta.pid = app.process().pid;
+    ctx.meta.pidStartTime = procStartTime(ctx.meta.pid);
     writeJson(sessionFile(ctx.runDir), ctx.meta);
     ctx.ev?.step("launch", `relaunch pid=${ctx.meta.pid}`);
     return ctx;
-  } finally {
-    if (ctx.pw.mode === "session") ctx.pw.restoreDefault();
+  } catch (e) {
+    logLaunchFailure(ctx.runDir, e, { relaunch: true, pid: app.process()?.pid });
+    throw e;
   }
 }
 
-export async function teardownRaw({ app, proc, browser, xvfb, pw, managed }) {
-  if (managed && app) {
-    try { await quitManaged(app); } catch { try { app.process().kill("SIGKILL"); } catch {} }
-  } else {
-    try { proc?.kill("SIGTERM"); } catch {}
-    await sleep(800);
-    try { proc?.kill("SIGKILL"); } catch {}
-    try { await browser?.close(); } catch {}
+export async function teardownRaw(ctx) {
+  const r = ctx.tracked ?? { recorders: [] };
+  r.app = ctx.app ?? r.app;
+  r.proc = ctx.proc ?? r.proc;
+  r.browser = ctx.browser ?? r.browser;
+  r.pw = ctx.pw ?? r.pw;
+  r.xvfb = ctx.xvfb ?? r.xvfb;
+  r.ud = ctx.ud ?? r.ud;
+  await releaseTracked(r);
+}
+
+/** Kill a recorded pid ONLY when it is still the exact process the session
+ * recorded (alive + same starttime + expected cmdline/env). A reused pid
+ * is left alone. Returns a short reason string for the transcript. */
+function killRecorded(meta, pid, startTime, { matchArgv = null, matchDisplay = false } = {}) {
+  if (!pid || !procAlive(pid)) return "already dead";
+  if (!startTime) return `skipped kill: no recorded starttime for pid ${pid} — cannot prove identity`;
+  if (procStartTime(pid) !== startTime) {
+    return `skipped kill: starttime mismatch — pid ${pid} was reused`;
   }
-  try { await pw?.stop(); } catch {}
-  try { xvfb?.stop(); } catch {}
+  const v = verifyRecordedProcess(pid, {
+    pidStartTime: startTime,
+    userData: matchArgv ? meta.userData : null,
+    cdpPort: matchArgv ? meta.cdpPort : null,
+    display: matchDisplay ? meta.display : null,
+  });
+  if (!v.ok) return `skipped kill: ${v.reasons.join("; ")}`;
+  try {
+    const ids = procIds(pid);
+    if (ids?.pgid === pid) process.kill(-pid, "SIGTERM"); // detached group leader
+    else process.kill(pid, "SIGTERM");
+  } catch { return "kill failed"; }
+  return "terminated";
 }
 
 /** Teardown a recorded session from a previous CLI call (stop/cleanup). */
 export async function teardownRecorded(runDir) {
   const meta = readJson(sessionFile(runDir));
   if (!meta) throw new Error(`no session.json in ${runDir}`);
-  try { process.kill(meta.pid, "SIGTERM"); } catch {}
+  if (meta.stoppedAt) return meta; // already torn down — pids may be reused
+  const notes = [];
+
+  notes.push(`app pid ${meta.pid}: ${killRecorded(meta, meta.pid, meta.pidStartTime, { matchArgv: true, matchDisplay: true })}`);
   await sleep(1200);
-  try { process.kill(meta.pid, "SIGKILL"); } catch {}
-  try { process.kill(meta.xvfbPid, "SIGTERM"); } catch {}
-  // pipewire re-forks on start — the recorded pid is often a dead parent.
-  // The runtime dir is the stable signature of the whole private graph.
-  if (meta.pw?.runtimeDir) {
-    new Pw({ mode: "private", runtimeDir: meta.pw.runtimeDir }).killByRuntimeDir();
-  }
-  for (const pid of [meta.pw?.smPid, meta.pw?.daemonPid]) {
-    if (pid) { try { process.kill(pid, "SIGTERM"); } catch {} }
-  }
-  if (meta.pw?.mode === "session" && !meta.pw?.adopted && !meta.pw?.runtimeDir) {
-    // session-mode tap sink in the user's daemon: restore + unload
-    const pw = new Pw({ mode: "session" });
-    try { if (meta.prevDefaultSink) pw.runPw("pactl", ["set-default-sink", meta.prevDefaultSink]); } catch {}
-    const r = pw.runPw("pactl", ["-f", "json", "list", "modules"]);
+  if (procAlive(meta.pid) && procStartTime(meta.pid) === meta.pidStartTime) {
     try {
-      for (const m of JSON.parse(r.out)) {
-        if (String(m.argument ?? "").includes(`sink_name=cadence_verify`)) {
-          pw.runPw("pactl", ["unload-module", String(m.index)]);
-        }
-      }
-    } catch { /* fall through */ }
+      const ids = procIds(meta.pid);
+      if (ids?.pgid === meta.pid) process.kill(-meta.pid, "SIGKILL");
+      else process.kill(meta.pid, "SIGKILL");
+    } catch {}
   }
+  notes.push(`xvfb pid ${meta.xvfbPid}: ${killRecorded(meta, meta.xvfbPid, meta.xvfbPidStartTime)}`);
+
+  // pipewire re-forks on start — the recorded pid is often a dead parent.
+  // The runtime dir is the stable signature of the whole private graph;
+  // killByRuntimeDir matches exact NUL env entries + audio-daemon comms.
+  if (meta.pw?.runtimeDir) {
+    const pw = new Pw({ mode: "private", runtimeDir: meta.pw.runtimeDir });
+    pw.killByRuntimeDir();
+    pw.stateDir = meta.pw.stateDir ?? null;
+    pw.removeOwnedDirs();
+  }
+  // there is deliberately NO cleanup path that touches the user's real
+  // PipeWire/Pulse session — even for metadata written by older harness
+  // versions. A stale cadence_verify sink in the user session is the
+  // user's to remove; this tool never sends pactl to a real daemon.
+
+  // owned temp dirs go away after a normal stop; evidence under runDir never does
+  removeOwnedUserData(meta.userData);
+
+  meta.stoppedAt = new Date().toISOString();
+  meta.teardownNotes = notes;
+  writeJson(sessionFile(runDir), meta);
   return meta;
 }
 
-/** Attach to an interactive session recorded in runDir. */
+/**
+ * Attach to an interactive session recorded in runDir. The endpoint must
+ * still belong to the recorded app: pid alive with the same starttime,
+ * cmdline carrying this profile + CDP port, environ on the recorded private
+ * display, and the socket owner inside that pid's tree. A stale or foreign
+ * endpoint is refused — we never attach to an arbitrary browser.
+ */
 export async function attach(runDir) {
   const meta = readJson(sessionFile(runDir));
   if (!meta?.cdpPort) throw new Error(`no attachable session in ${runDir} (launch first)`);
+  if (meta.stoppedAt) throw new Error(`session in ${runDir} was stopped at ${meta.stoppedAt}`);
+  const v = verifyRecordedProcess(meta.pid, meta);
+  if (!v.ok) {
+    throw new Error(`recorded session no longer owns :${meta.cdpPort}: ${v.reasons.join("; ")}`);
+  }
+  const cdp = await verifyCdpEndpoint(meta.cdpPort, meta.pid);
+  if (!cdp.ok) {
+    throw new Error(`CDP :${meta.cdpPort} rejected: ${cdp.reasons.join("; ")}`);
+  }
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${meta.cdpPort}`, { timeout: 10_000 });
   const page = await waitFor(() => browser.contexts()[0]?.pages()[0] ?? null, {
     timeout: 10_000, what: "CDP page",
   });
   const pw = new Pw({
-    mode: meta.pw?.mode ?? "session",
+    mode: "private",
     runtimeDir: meta.pw?.runtimeDir ?? null,
   });
+  if (meta.pw?.stateDir) pw.stateDir = meta.pw.stateDir;
   return { meta, browser, page, pw };
 }
