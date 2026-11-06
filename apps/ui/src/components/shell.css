@@ -309,3 +309,7 @@
 .side-search input, .side-search button { -webkit-app-region: no-drag; }
 [data-platform='mac'] .side-search { padding-top: 46px; }
 .window-drag { position: absolute; z-index: 1; inset: 0 0 auto 0; height: var(--topbar-h); -webkit-app-region: drag; }
+/* the rail is hidden here, so the window controls sit over the top bar again */
+@media (max-width: 900px) {
+  .app.has-rail .topbar { padding-right: calc(12px + var(--wco-right)); }
+}

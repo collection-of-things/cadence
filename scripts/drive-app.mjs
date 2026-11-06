@@ -18,7 +18,9 @@ const expr = readFileSync(exprFile, 'utf8').replaceAll('__FOLDER__', JSON.string
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-const app = spawn(electron, ['.', `--remote-debugging-port=${port}`], { cwd: resolve(root, 'apps/desktop'), env });
+// USER_DATA=<dir> runs beside an already-open Cadence (own lock + library).
+const extra = process.env.USER_DATA ? [`--user-data-dir=${process.env.USER_DATA}`] : [];
+const app = spawn(electron, ['.', `--remote-debugging-port=${port}`, ...extra], { cwd: resolve(root, 'apps/desktop'), env });
 let log = '';
 app.stdout.on('data', (d) => (log += d));
 app.stderr.on('data', (d) => (log += d));

@@ -38,7 +38,9 @@ export function sameLocation(a: Location, b: Location): boolean {
 /** Identity of a location for page-change animation (re-mounts the page). */
 function pageKey(location: Location): string {
   if (location.page === 'album') return `album:${location.album.id}`;
-  if (location.page === 'library') return `library:${location.tab}`;
+  // One key for every Library tab: search can switch tabs while typing, and
+  // a remount would drop the query and focus.
+  if (location.page === 'library') return 'library';
   return location.page;
 }
 
