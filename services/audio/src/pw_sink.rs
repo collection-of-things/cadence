@@ -803,7 +803,6 @@ impl PipeWireCaps {
             t0,
             staged,
             inflight,
-            bytes_per_frame: (T::BYTES * neg.channels as usize) as u64,
             device_delay_frames: latency as u64,
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
@@ -883,6 +882,11 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
                 // the following callbacks (mpv clamps the same way).
                 feed.latency_frames.min(max_frames)
             };
+            // Stamp the intended pull BEFORE read() — between the
+            // staging head advancing and a post-read store, a position
+            // snapshot would miss the frames entirely. Over-counting is
+            // a replay bias; under-counting skips audio.
+            feed.inflight.store(frames as u64, Ordering::Release);
             // PW buffers are aligned to cpu.max-align — safe to cast.
             let out = unsafe {
                 std::slice::from_raw_parts_mut(
@@ -892,7 +896,11 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
             };
             let got = feed.cons.read(out);
             out[got..].fill(T::default());
-            feed.inflight.store(got as u64, Ordering::Release);
+            // `read` counts SAMPLES — the monitor wants frames.
+            feed.inflight.store(
+                got as u64 / feed.channels.max(1) as u64,
+                Ordering::Release,
+            );
             frames * stride
         }
         None => 0,
@@ -990,9 +998,6 @@ pub struct PipeWireSink {
     /// Frames currently pulled into the cycle buffer, shared with the
     /// feed — see Feed::inflight.
     inflight: Arc<AtomicU64>,
-    /// Bytes per interleaved frame (kind size × channels) — converts
-    /// pw_time.queued (bytes) into frames.
-    bytes_per_frame: u64,
     /// Caps' shared error cell — the watchdog writes here (not just the
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
@@ -1157,12 +1162,12 @@ impl Sink for PipeWireSink {
                 // CURRENT cycle's buffer — unheard, but briefly in
                 // neither `staged` nor `delay` — a snapshot between
                 // would let a rebuild skip them. Zero outside process.
-                // + queued: buffers handed back but not yet consumed —
-                // pw_time.queued is BYTES, converted via the negotiated
-                // bytes-per-frame.
+                // (pw_time.queued is NOT usable here: it sums
+                // pw_buffer.size, which the dequeue/fill cycle never
+                // sets — it stays 0. Once handed back, the buffer
+                // belongs to the driver and is inside `delay`.)
                 (delay_secs * self.rate_hz as f64).round() as u64
                     + t.buffered()
-                    + t.queued() / self.bytes_per_frame
                     + self.inflight.load(Ordering::Acquire)
             })
             .unwrap_or(self.device_delay_frames)
