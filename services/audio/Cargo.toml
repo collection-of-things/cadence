@@ -10,6 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 cpal = "0.15"
+pipewire = { version = "0.10.1", features = ["v0_3_49"] }
 rubato = "0.16"
 rustfft = "6"
 serde = { version = "1", features = ["derive"] }

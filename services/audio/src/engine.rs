@@ -1434,7 +1434,7 @@ impl Engine {
         let new_caps: Arc<dyn DeviceCaps> = if self.cfg.null_sink {
             crate::sink::initial_caps(&self.cfg)?
         } else {
-            crate::sink::CpalCaps::new(name)?
+            crate::sink::device_caps(name)?
         };
         // Default negotiated for the new device; next spawn refines it.
         let neg = Negotiated {

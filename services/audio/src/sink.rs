@@ -6,10 +6,66 @@
 
 use crate::decode::{BitDepth, PcmKind};
 use crate::engine::{EngineConfig, OutputCore};
+use crate::pw_sink::PipeWireCaps;
+use crate::ringbuf::{self, Consumer};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Sample type carried to a device — f32/s32/s16, little-endian on wire.
+pub trait PcmSample: Copy + Default + Send + Sync + 'static {
+    const BYTES: usize;
+}
+impl PcmSample for f32 {
+    const BYTES: usize = 4;
+}
+impl PcmSample for i32 {
+    const BYTES: usize = 4;
+}
+impl PcmSample for i16 {
+    const BYTES: usize = 2;
+}
+
+/// Drain the feed ring into a device callback buffer; zero-pad the tail
+/// when the ring is momentarily short (underrun keeps its old contract).
+fn drain<T: PcmSample>(cons: &Consumer<T>, out: &mut [T]) {
+    let n = cons.read(out);
+    out[n..].fill(T::default());
+}
+
+/// Spawn a feeder thread that pulls `core` into a lock-free staging ring.
+/// The device callback drains the ring instead of touching `core`'s mutex,
+/// so a contended callback can never be forced to emit silence.
+/// Returns (consumer, stop-flag, join-handle).
+pub fn spawn_feed<T: PcmSample>(
+    core: &Arc<Mutex<OutputCore>>,
+    pull: fn(&mut OutputCore, &mut [T]),
+    capacity: usize,
+) -> (Consumer<T>, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let (prod, cons) = ringbuf::channel::<T>(capacity);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = Arc::clone(&stop);
+    let core2 = Arc::clone(core);
+    let join = std::thread::Builder::new()
+        .name("pcm-feed".into())
+        .spawn(move || {
+            let mut scratch = vec![T::default(); 2048];
+            while !stop2.load(Ordering::Relaxed) {
+                if prod.free_space() < scratch.len() {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    continue;
+                }
+                {
+                    let mut c = core2.lock().unwrap();
+                    pull(&mut c, &mut scratch);
+                }
+                prod.write(&scratch);
+            }
+        })
+        .expect("spawn pcm-feed");
+    (cons, stop, join)
+}
 
 /// Negotiated stream parameters — reported honestly in event.output.
 #[derive(Debug, Clone, PartialEq)]
@@ -327,66 +383,81 @@ impl DeviceCaps for CpalCaps {
         let err_cb = move |e: cpal::StreamError| {
             *err_flag.lock().unwrap() = Some(e.to_string());
         };
-        // The callback runs on the device's real-time thread: it must never
-        // block on the core mutex. try_lock + silent fallback bounds the wait
-        // to the lock attempt itself; a contended frame renders as silence
-        // rather than risking an xrun (or worse, a priority inversion while a
-        // control thread holds `core` across a device open).
-        let stream = match neg.kind {
+        // The callback runs on the device's real-time thread and must never
+        // block on `core`'s mutex — it drains a lock-free staging ring that
+        // a feeder thread keeps topped up. ~60ms of cover: a momentarily
+        // contended pull no longer surfaces as an audible silence gap.
+        let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
+        let (stream, feed_stop, feed_join) = match neg.kind {
             PcmKind::F32 => {
-                let c = Arc::clone(&core);
-                self.device.build_output_stream::<f32, _, _>(
+                let (cons, feed_stop, feed_join) =
+                    spawn_feed(&core, OutputCore::pull_f32, capacity);
+                let res = self.device.build_output_stream::<f32, _, _>(
                     &config,
-                    move |data: &mut [f32], _| match c.try_lock() {
-                        Ok(mut core) => core.pull_f32(data),
-                        Err(std::sync::TryLockError::Poisoned(p)) => {
-                            p.into_inner().pull_f32(data)
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0.0),
-                    },
+                    move |data: &mut [f32], _| drain(&cons, data),
                     err_cb,
                     None,
-                )?
+                );
+                match res {
+                    Ok(stream) => (stream, feed_stop, feed_join),
+                    Err(e) => {
+                        feed_stop.store(true, Ordering::Relaxed);
+                        let _ = feed_join.join();
+                        return Err(e.into());
+                    }
+                }
             }
             PcmKind::S32 => {
-                let c = Arc::clone(&core);
-                self.device.build_output_stream::<i32, _, _>(
+                let (cons, feed_stop, feed_join) =
+                    spawn_feed(&core, OutputCore::pull_s32, capacity);
+                let res = self.device.build_output_stream::<i32, _, _>(
                     &config,
-                    move |data: &mut [i32], _| match c.try_lock() {
-                        Ok(mut core) => core.pull_s32(data),
-                        Err(std::sync::TryLockError::Poisoned(p)) => {
-                            p.into_inner().pull_s32(data)
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0),
-                    },
+                    move |data: &mut [i32], _| drain(&cons, data),
                     err_cb,
                     None,
-                )?
+                );
+                match res {
+                    Ok(stream) => (stream, feed_stop, feed_join),
+                    Err(e) => {
+                        feed_stop.store(true, Ordering::Relaxed);
+                        let _ = feed_join.join();
+                        return Err(e.into());
+                    }
+                }
             }
             PcmKind::S16 => {
-                let c = Arc::clone(&core);
-                self.device.build_output_stream::<i16, _, _>(
+                let (cons, feed_stop, feed_join) =
+                    spawn_feed(&core, OutputCore::pull_s16, capacity);
+                let res = self.device.build_output_stream::<i16, _, _>(
                     &config,
-                    move |data: &mut [i16], _| match c.try_lock() {
-                        Ok(mut core) => core.pull_s16(data),
-                        Err(std::sync::TryLockError::Poisoned(p)) => {
-                            p.into_inner().pull_s16(data)
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => data.fill(0),
-                    },
+                    move |data: &mut [i16], _| drain(&cons, data),
                     err_cb,
                     None,
-                )?
+                );
+                match res {
+                    Ok(stream) => (stream, feed_stop, feed_join),
+                    Err(e) => {
+                        feed_stop.store(true, Ordering::Relaxed);
+                        let _ = feed_join.join();
+                        return Err(e.into());
+                    }
+                }
             }
         };
         use cpal::traits::StreamTrait;
         stream.play().context("start output stream")?;
-        Ok(Box::new(CpalSink { stream: Some(stream) }))
+        Ok(Box::new(CpalSink {
+            stream: Some(stream),
+            feed_stop,
+            feed_join: Some(feed_join),
+        }))
     }
 }
 
 struct CpalSink {
     stream: Option<cpal::Stream>,
+    feed_stop: Arc<AtomicBool>,
+    feed_join: Option<std::thread::JoinHandle<()>>,
 }
 
 // cpal marks Stream !Send (portability across hosts), but the Cadence engine
@@ -398,6 +469,10 @@ unsafe impl Send for CpalSink {}
 impl Sink for CpalSink {
     fn stop(&mut self) {
         self.stream.take();
+        self.feed_stop.store(true, Ordering::Relaxed);
+        if let Some(j) = self.feed_join.take() {
+            let _ = j.join();
+        }
     }
 }
 
@@ -466,6 +541,20 @@ pub fn open_sink(
     caps.open_stream(neg, Arc::clone(core))
 }
 
+/// Choose the output backend for a named device (or the session default).
+/// On PipeWire systems a native `pw_stream` is required for transparent
+/// output — the pipewire-alsa plugin reprocesses every stream (see
+/// `pw_sink`). Everywhere else CPAL/ALSA is the fallback.
+pub fn device_caps(name: Option<&str>) -> Result<Arc<dyn DeviceCaps>> {
+    match PipeWireCaps::new(name) {
+        Ok(c) => Ok(c as Arc<dyn DeviceCaps>),
+        Err(e) => {
+            eprintln!("audio: pipewire backend unavailable ({e:#}); trying cpal/alsa");
+            CpalCaps::new(name).map(|c| c as Arc<dyn DeviceCaps>)
+        }
+    }
+}
+
 /// Initial device capabilities for the configured mode.
 pub fn initial_caps(cfg: &EngineConfig) -> Result<Arc<dyn DeviceCaps>> {
     if cfg.null_sink {
@@ -475,6 +564,31 @@ pub fn initial_caps(cfg: &EngineConfig) -> Result<Arc<dyn DeviceCaps>> {
             fast: cfg.null_fast,
         }))
     } else {
-        CpalCaps::new(None).map(|c| c as Arc<dyn DeviceCaps>)
+        device_caps(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn drain_zero_pads_underruns() {
+        let (prod, cons) = ringbuf::channel::<i16>(8);
+        prod.write(&[1, 2, 3, 4]);
+        let mut out = [0i16; 8];
+        drain(&cons, &mut out);
+        assert_eq!(out, [1, 2, 3, 4, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn drain_consumes_exactly_what_was_written() {
+        let (prod, cons) = ringbuf::channel::<f32>(16);
+        prod.write(&[1.0, 2.0, 3.0]);
+        let mut out = [9.0f32; 3];
+        drain(&cons, &mut out);
+        assert_eq!(out, [1.0, 2.0, 3.0]);
+        // Ring is empty afterwards — a second drain zero-fills.
+        drain(&cons, &mut out);
+        assert_eq!(out, [0.0, 0.0, 0.0]);
     }
 }

@@ -44,6 +44,13 @@ pub fn channel<T: Copy + Default>(capacity: usize) -> (Producer<T>, Consumer<T>)
 }
 
 impl<T: Copy + Default> Producer<T> {
+    /// Free slots writable without overwriting unread data.
+    pub fn free_space(&self) -> usize {
+        let head = self.s.head.load(Ordering::Acquire);
+        let tail = self.s.tail.load(Ordering::Relaxed);
+        self.s.cap - (tail - head) - 1
+    }
+
     /// Non-blocking write; returns number of elements written (0..=data.len()).
     pub fn write(&self, data: &[T]) -> usize {
         let head = self.s.head.load(Ordering::Acquire);
