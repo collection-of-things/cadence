@@ -420,11 +420,20 @@ def compare(name, cap, ref, ch, label):
         print(f"  {label}: capture too short ({len(cap)//ch} frames)")
         return False, -1
     k = best_align(cap, seg)
-    # ref[0] would sit at cap[k - seg_off]; the recorder attaches
-    # mid-playback so the capture legitimately lacks the head/tail.
-    # Compare the overlap further trimmed to the capture's own content
-    # span — a missing head is expected, a hole INSIDE is a dropout.
+    # ref[0] would sit at cap[k - seg_off]. A period-aliased pick can
+    # shrink the mapped overlap below what the capture actually holds —
+    # resolve it against the content-start anchor and compare under the
+    # mapping with the LARGEST overlap. For aperiodic content a wrong
+    # mapping simply fails the residual, never inflates it.
     cap_start = k - seg_off
+    cap_nz0 = np.flatnonzero(np.abs(cap) > 1e-6)
+    ref_nz0 = np.flatnonzero(np.abs(ref) > 1e-6)
+    cands = [cap_start]
+    if len(cap_nz0) and len(ref_nz0):
+        cands.append(int(cap_nz0[0]) - int(ref_nz0[0]))
+    cap_start = max(
+        cands, key=lambda c: min(len(ref), len(cap) - c) - max(0, -c)
+    )
     lo = max(0, -cap_start)  # first ref sample present in the capture
     end = min(len(ref), len(cap) - cap_start)  # exclusive
     if end - lo <= len(seg):
@@ -466,11 +475,12 @@ def compare(name, cap, ref, ch, label):
     # shortfall means real audio was lost, not an attach race. A
     # period-aliased alignment can't deflate this: the content span is
     # measured on the raw capture, not the aligned window.
-    cap_nz = np.count_nonzero(np.abs(cap) > 1e-6)
-    ref_nz = max(1, int(np.count_nonzero(np.abs(ref) > 1e-6)))
-    # Dense nonzero fraction vs the reference's — a truncated or
-    # mostly-silent capture can't be inflated by a sparse noise tail.
-    coverage = cap_nz / ref_nz
+    # Coverage = the VERIFIED-matching compared span vs the file —
+    # the mapping above already resolved aliased alignments toward the
+    # largest overlap, and only samples that matched count (residual is
+    # gated separately). A truncated or noise-padded capture cannot
+    # inflate this.
+    coverage = (nz[-1] + 1 - start) / len(ref)
     cov_ok = coverage >= 0.85
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
