@@ -28,7 +28,7 @@ use anyhow::{anyhow, Context, Result};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
-use std::sync::atomic::{AtomicU64,AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::decode::PcmKind;
@@ -1211,11 +1211,14 @@ mod layout_tests {
         assert_eq!(d[0], crate::sink::chan::MONO);
     }
 
-    /// A layout name whose channel count mismatches is ignored rather
-    /// than mislabeling the stream.
+    /// A declared name that mismatches the count (or is unknown) is
+    /// left UNPOSITIONED — the graph infers; a same-count guess would
+    /// mislabel speakers.
     #[test]
-    fn layout_name_mismatch_falls_back() {
-        let p = resolve_positions_ref(&neg(2, Some("6.1")));
-        assert_eq!(&p[..2], &[crate::sink::chan::FL, crate::sink::chan::FR]);
+    fn layout_name_mismatch_is_unpositioned() {
+        let n = neg(2, Some("6.1"));
+        assert!(n.positions.is_none());
+        let u = neg(6, Some("9.9.9"));
+        assert!(u.positions.is_none());
     }
 }
