@@ -258,6 +258,11 @@ pub trait Sink: Send {
     fn device_delay_frames(&self) -> u64 {
         0
     }
+    /// The sink's negotiated sample rate, for converting delay frames
+    /// to time. 0 if unknown.
+    fn format_rate_hz(&self) -> u64 {
+        0
+    }
     /// Ask the backend to drain its downstream queue; returns a
     /// completion baseline (see drained_since) or None if unsupported.
     /// Used at end-of-track so the tail plays out fully.

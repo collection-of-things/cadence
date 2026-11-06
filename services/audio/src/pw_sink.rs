@@ -712,7 +712,8 @@ impl PipeWireCaps {
             state,
             drained_seq: Arc::clone(&drained_seq),
             barrier: Arc::new(DrainBarrier {
-                seq: std::sync::atomic::AtomicU64::new(0),
+                req: std::sync::atomic::AtomicU64::new(0),
+                dispatched: std::sync::atomic::AtomicU64::new(0),
                 settled: std::sync::atomic::AtomicU64::new(0),
                 drained_seq,
             }),
@@ -811,12 +812,24 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
 /// newer than the settled point", which no stale event can satisfy —
 /// a stale event posts before the marker, a real one after.
 struct DrainBarrier {
-    /// incremented by each barrier marker dispatch.
-    seq: std::sync::atomic::AtomicU64,
+    /// incremented at REQUEST time — each drain gets a unique id; the
+    /// marker carries it in userdata so waiters key on THEIR marker,
+    /// not just any dispatch.
+    req: std::sync::atomic::AtomicU64,
+    /// request id of the last dispatched marker (markers dispatch
+    /// FIFO, so this is monotonic).
+    dispatched: std::sync::atomic::AtomicU64,
     /// drained_seq value captured at the last marker dispatch — all
     /// drained events queued before that marker are consumed here.
+    /// Monotonic non-decreasing, so a later marker's stamp is always
+    /// a safe (stricter) baseline.
     settled: std::sync::atomic::AtomicU64,
     drained_seq: Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct BarrierUd {
+    barrier: Arc<DrainBarrier>,
+    req_id: u64,
 }
 
 unsafe extern "C" fn drain_barrier_cb(
@@ -827,10 +840,11 @@ unsafe extern "C" fn drain_barrier_cb(
     _size: usize,
     ud: *mut std::ffi::c_void,
 ) -> std::os::raw::c_int {
-    let b = Arc::from_raw(ud as *const DrainBarrier);
-    b.settled
-        .store(b.drained_seq.load(Ordering::Acquire), Ordering::Release);
-    b.seq.fetch_add(1, Ordering::Release);
+    let u = Box::from_raw(ud as *mut BarrierUd);
+    u.barrier
+        .settled
+        .store(u.barrier.drained_seq.load(Ordering::Acquire), Ordering::Release);
+    u.barrier.dispatched.store(u.req_id, Ordering::Release);
     0
 }
 
@@ -984,6 +998,10 @@ impl Sink for PipeWireSink {
             .unwrap_or(self.device_delay_frames)
     }
 
+    fn format_rate_hz(&self) -> u64 {
+        self.rate_hz
+    }
+
     fn request_drain(&self) -> Option<u64> {
         // Marker FIRST, then flush — both under tl. Every stale event
         // was queued before the marker (the loop can't dispatch while
@@ -992,7 +1010,7 @@ impl Sink for PipeWireSink {
         // tail keeps it non-empty). A real completion can only post
         // after the flush → after the marker → it always counts.
         let _g = self.tl.lock();
-        let tag = self.barrier.seq.load(Ordering::Acquire);
+        let tag = self.barrier.req.fetch_add(1, Ordering::AcqRel) + 1;
         unsafe {
             let l = pw::sys::pw_thread_loop_get_loop(self.tl.as_raw_ptr());
             if l.is_null() || (*l).loop_.is_null() {
@@ -1002,8 +1020,10 @@ impl Sink for PipeWireSink {
             let methods =
                 (*lp).iface.cb.funcs as *const spa::sys::spa_loop_methods;
             let invoke = (*methods).invoke?;
-            let ud = Arc::into_raw(Arc::clone(&self.barrier))
-                as *mut std::ffi::c_void;
+            let ud = Box::into_raw(Box::new(BarrierUd {
+                barrier: Arc::clone(&self.barrier),
+                req_id: tag,
+            })) as *mut std::ffi::c_void;
             let r = invoke(
                 (*lp).iface.cb.data,
                 Some(drain_barrier_cb),
@@ -1014,10 +1034,10 @@ impl Sink for PipeWireSink {
                 ud,
             );
             if r < 0 {
-                // Marker never queued — reclaim the userdata Arc and
+                // Marker never queued — reclaim the userdata and
                 // report unsupported so the caller falls back to the
                 // deadline path rather than waiting forever.
-                drop(Arc::from_raw(ud as *const DrainBarrier));
+                drop(Box::from_raw(ud as *mut BarrierUd));
                 return None;
             }
         }
@@ -1026,10 +1046,10 @@ impl Sink for PipeWireSink {
     }
 
     fn drained_since(&self, baseline: u64) -> bool {
-        // The barrier marker must have run (proves every event queued
-        // before our request was delivered and folded into `settled`),
-        // then a strictly newer drained event is a real completion.
-        self.barrier.seq.load(Ordering::Acquire) > baseline
+        // OUR marker must have run (proves every event queued before
+        // this request was delivered and folded into `settled`), then
+        // a strictly newer drained event is a real completion.
+        self.barrier.dispatched.load(Ordering::Acquire) >= baseline
             && self.drained_seq.load(Ordering::Acquire)
                 > self.barrier.settled.load(Ordering::Acquire)
     }

@@ -3017,12 +3017,43 @@ impl Engine {
                         ));
                         break;
                     }
-                    Gate::DrainUnsupported | Gate::Drained => {
-                        // Reactivate BEFORE the end handler — a drained
-                        // stream stays deactivated until set_active, so
-                        // without this every reuse path (direct load,
-                        // same-format respawn) plays silence and the
-                        // watchdog false-trips 2.5s after each end.
+                    Gate::DrainUnsupported => {
+                        // The backend can't report downstream drain —
+                        // but staged==0 only means the ring emptied, not
+                        // that the graph played the tail. Wait out the
+                        // reported device-side delay (bounded by the
+                        // entry deadline) before handling, like mpv's
+                        // ao_drain fallback timing.
+                        let wait_ms = self
+                            .sink
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|s| {
+                                let f = s.device_delay_frames();
+                                let r = s.format_rate_hz().max(1);
+                                f * 1000 / r + 50
+                            })
+                            .unwrap_or(0);
+                        if since.elapsed()
+                            > std::time::Duration::from_millis(wait_ms)
+                        {
+                            self.handle_track_end(qid, inst);
+                        } else {
+                            pending_ends.push_front((
+                                qid,
+                                inst,
+                                since,
+                                deadline_ms,
+                                issued,
+                            ));
+                            break;
+                        }
+                    }
+                    Gate::Drained => {
+                        // Reactivate BEFORE the end handler — `drained`
+                        // latches `draining` upstream, which stops the
+                        // process callback for good.
                         if let Some(s) = self.sink.lock().unwrap().as_ref() {
                             s.resume();
                         }
