@@ -1513,15 +1513,19 @@ impl Engine {
             // Error rather than leave a silent "playing".
             if matches!(src, SourceSpec::PcmStream { .. }) {
                 self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
-                let was_playing = {
+                // Paused streams are dead too — a later play() would set
+                // Playing with no reader and stay silent.
+                let was_live = {
                     let mut st = self.state.lock().unwrap();
-                    let ours = st.generation == gen && st.state == PlayState::Playing;
+                    let ours = st.generation == gen
+                        && (st.state == PlayState::Playing
+                            || st.state == PlayState::Paused);
                     if ours {
                         st.state = PlayState::Error;
                     }
                     ours
                 };
-                if was_playing {
+                if was_live {
                     self.emit_state(Some("live stream ended by device change"));
                 }
                 break;

@@ -15,8 +15,8 @@ import type { FidelityCapable, ReplayGainCapable, RestartRestorable } from "./ty
  * window is one monitor tick (~20ms); a short defer makes it succeed. */
 function isBoundaryRetry(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  return msg.includes("boundary in flight") || msg.includes("rebuild in flight")
-    || msg.includes("during prefetch");
+  return msg.includes("boundary") || msg.includes("rebuild in flight")
+    || msg.includes("mid-spawn") || msg.includes("during prefetch");
 }
 
 /** The item's source could not be expressed to the audio engine. */
