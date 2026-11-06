@@ -1509,9 +1509,21 @@ impl Engine {
                 continue;
             }
             // A live pcm-stream can't be respawned mid-flow — the byte source
-            // belongs to the original load. Report and leave the stream dead.
+            // belongs to the original load. Report and mark the dead stream
+            // Error rather than leave a silent "playing".
             if matches!(src, SourceSpec::PcmStream { .. }) {
                 self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
+                let was_playing = {
+                    let mut st = self.state.lock().unwrap();
+                    let ours = st.generation == gen && st.state == PlayState::Playing;
+                    if ours {
+                        st.state = PlayState::Error;
+                    }
+                    ours
+                };
+                if was_playing {
+                    self.emit_state(Some("live stream ended by device change"));
+                }
                 break;
             }
             // Position is read FRESH per attempt: after a stale retry the
@@ -1566,15 +1578,24 @@ impl Engine {
                     self.emit_error(Some(&qid), &format!("{e:#}"), true);
                     // When a rebuild already cleared the pipeline and this
                     // file track can't respawn, nothing is playing — mark
-                    // it rather than stay silently Playing. (Streams
-                    // don't need a reader; an intact pipeline keeps
-                    // playing either way.)
+                    // it rather than stay silently Playing. Ownership and
+                    // the Error write must be one section: a newer load
+                    // must not be marked failed by a stale respawn.
                     let dead = {
                         let core = self.core.lock().unwrap();
-                        core.active.is_none() && matches!(src, SourceSpec::File { .. })
+                        let mut st = self.state.lock().unwrap();
+                        let ours = st.generation == gen
+                            && st.queue_id.as_deref() == Some(qid.as_str())
+                            && st.current_instance == cur_inst;
+                        let dead = ours
+                            && core.active.is_none()
+                            && matches!(src, SourceSpec::File { .. });
+                        if dead {
+                            st.state = PlayState::Error;
+                        }
+                        dead
                     };
                     if dead {
-                        self.set_state(PlayState::Error);
                         self.emit_state(Some(&format!("{e:#}")));
                     }
                 }
@@ -1982,21 +2003,19 @@ impl Engine {
         }
         {
             let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
             core.clear_all();
             core.paused = true;
             // The stopped event supersedes the un-adopted end.
             core.ended_pending = false;
-        }
-        {
-            let mut st = self.state.lock().unwrap();
             st.queue_id = None;
             st.source = None;
             st.duration_ms = 0;
+            st.state = PlayState::Stopped;
             for (_, f) in st.feeds.drain() {
                 f.close();
             }
         }
-        self.set_state(PlayState::Stopped);
         self.emit_state(None);
         Ok(json!({ "ok": true }))
     }
@@ -2454,6 +2473,19 @@ impl Engine {
                                         break;
                                     }
                                     Err(e) => {
+                                        // A concurrent rebuild or boundary
+                                        // can fail the spawn transiently —
+                                        // retry like the install path does.
+                                        let transient = {
+                                            let core = self.core.lock().unwrap();
+                                            core.rebuilding || core.boundary_seq != seq
+                                        };
+                                        if transient && attempt < 2 {
+                                            std::thread::sleep(
+                                                std::time::Duration::from_millis(25),
+                                            );
+                                            continue;
+                                        }
                                         // A concurrent load may own the slot
                                         // now — only report against ours.
                                         let ours = {
