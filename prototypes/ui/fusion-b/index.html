@@ -1252,7 +1252,7 @@ addEventListener('keydown',e=>{
 /* click outside ctx / queue */
 addEventListener('mousedown',e=>{if(!ctx.contains(e.target))closeCtx()});
 addEventListener('contextmenu',e=>{if(!e.target.closest('#view'))e.preventDefault()});
-addEventListener('resize',()=>closeCtx());
+addEventListener('resize',()=>{closeCtx();updMeta()});
 
 /* =============== boot =============== */
 renderSwitch();renderNav();render();document.body.dataset.svc=S.svc;
