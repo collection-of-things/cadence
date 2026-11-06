@@ -4,9 +4,9 @@ import { wireCloseToTray } from "../src/quit-guard.js";
 /**
  * Regression for the app.quit() hang: on main, the window 'close' handler
  * preventDefaulted unless the tray menu's private `quitting` flag was set,
- * and only that menu item set it. Programmatic quit (app.quit(), Cmd+Q,
- * OS shutdown) emits before-quit but never armed the flag, so the close was
- * vetoed, the window merely hid, and the process never exited.
+ * and only that menu item set it. Programmatic quit (app.quit(), Cmd+Q)
+ * emits before-quit but never armed the flag, so the close was vetoed, the
+ * window merely hid, and the process never exited.
  *
  * The tests replay Electron's event order against the extracted policy.
  */
