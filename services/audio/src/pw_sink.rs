@@ -539,12 +539,13 @@ struct Feed<T> {
     /// Keeping the last pull counted errs toward replay on a rebuild,
     /// never a skip. Written only by the process callback.
     inflight: Arc<AtomicU64>,
-    /// Stream rate — converts tick deltas into frames.
-    rate_hz: u64,
-    /// Last observed pw_time.ticks — the driver's own timeline. It only
-    /// advances when the graph RUNS, so a stall or suspension proves
-    /// no consumption (unlike wall time). -1 = not yet sampled.
-    last_ticks: i64,
+    /// Span of the last silence buffer handed back. The driver queue
+    /// is FIFO: a completed paused callback PROVES the previously
+    /// queued silence played — that span is the stream-specific
+    /// consumption evidence for decrementing `inflight`. Unlike the
+    /// driver timeline, it can't advance while this stream is
+    /// suspended (no callback runs, nothing decrements).
+    last_silence_frames: u64,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
     /// "never scheduled" arm keys on this.
@@ -707,8 +708,7 @@ impl PipeWireCaps {
                     last_process_ms: Arc::clone(&last_process_ms),
                     latency_frames: latency as usize,
                     inflight: Arc::clone(&inflight),
-                    rate_hz: neg.rate as u64,
-                    last_ticks: -1,
+                    last_silence_frames: 0,
                     processed_once: Arc::clone(&processed_once),
                     t0,
                 })
@@ -865,29 +865,16 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
-        // Consumption tracking via the driver's own timeline:
-        // pw_time.ticks only advances when the graph RUNS — a stall
-        // or suspension yields a zero delta, so the held pull survives
-        // (wall time would over-count during a stall). `requested` and
-        // node.latency are only suggestions — ticks are measured
-        // progress. Under-counting biases toward replay only.
-        let consumed = stream
-            .time()
-            .map(|t| {
-                let rate = t.rate();
-                let cur_ticks = t.ticks() as i64;
-                let delta = if feed.last_ticks >= 0 {
-                    (cur_ticks - feed.last_ticks).max(0) as u64
-                } else {
-                    0
-                };
-                feed.last_ticks = cur_ticks;
-                // ticks advance at rate.num/rate.denom per second —
-                // convert to frames at the stream rate.
-                delta * rate.num as u64 * feed.rate_hz
-                    / rate.denom.max(1) as u64
-            })
-            .unwrap_or(0);
+        // Consumption evidence: this callback completed because the
+        // PREVIOUS silence buffer finished playing. Its span is the
+        // measured consumption — decrement by it, never by this
+        // cycle's request (an unstated request can span the whole
+        // mapped region). A suspended stream runs no callback, so a
+        // stale span can't decrement anything. The FIRST paused
+        // callback after real playback decrements 0: the real buffer
+        // may still be playing.
+        let consumed = feed.last_silence_frames;
+        feed.last_silence_frames = (size / stride) as u64;
         drop(buffer);
         let cur = feed.inflight.load(Ordering::Acquire);
         feed.inflight
@@ -942,11 +929,9 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         }
         None => 0,
     };
-    // Baseline THIS pull's hand-off on the driver timeline — a later
-    // paused cycle measures only progress since this buffer went out.
-    if let Ok(t) = stream.time() {
-        feed.last_ticks = t.ticks() as i64;
-    }
+    // A real pull interrupts the silence span — the next paused cycle
+    // must not subtract stale silence as if the pull already played.
+    feed.last_silence_frames = 0;
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as _;
