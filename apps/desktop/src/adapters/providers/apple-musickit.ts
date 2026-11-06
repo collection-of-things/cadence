@@ -467,6 +467,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       // A popup may already be open (opened before the rejection, or by the
       // user) — its close event owns the attempt from here.
       if (this.session.hasOpenPopups) return;
+      // The settle wait is an async boundary too — if sign-out or a newer
+      // attempt took over during it, the fallback click belongs to nobody.
+      if (attempt !== this.signInAttempt || !this.signInPending || this.destroyed) return;
       // authorize() rejected immediately — try the page's own button; if
       // even that can't run, fail loudly so the UI can toast it.
       const clicked = await this.session
@@ -511,6 +514,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
               !this.authorized &&
               !this.destroyed &&
               this.signInPending &&
+              !this.session.hasOpenPopups &&
               attempt === this.signInAttempt
             ) {
               endAttempt();

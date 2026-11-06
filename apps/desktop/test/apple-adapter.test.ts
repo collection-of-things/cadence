@@ -407,4 +407,24 @@ describe("apple adapter page events", () => {
     expect((adapter as any).signInPending).toBe(true);
     (sess as any).eval = orig;
   });
+
+  it("a stale early rejection never invokes the fallback click", async () => {
+    const orig = sess.eval.bind(sess);
+    const resolvers: Array<(v: boolean) => void> = [];
+    let clicks = 0;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      if (expr.includes("cadenceCtl.authorize()"))
+        return new Promise<boolean>((res) => resolvers.push(res));
+      if (expr.includes("clickSignIn()")) clicks++;
+      return Promise.resolve(true);
+    };
+    const p = adapter.signIn(); // attempt 1 — waiting the settle window
+    while (resolvers.length === 0) await new Promise((r) => setImmediate(r));
+    await adapter.signOut(); // invalidates attempt 1 mid-wait
+    resolvers[0]!(false); // stale rejection lands inside the old flow
+    await p;
+    expect(clicks).toBe(0);
+    (sess as any).eval = orig;
+  });
 });
