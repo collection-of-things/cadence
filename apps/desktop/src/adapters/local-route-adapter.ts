@@ -127,7 +127,13 @@ export class LocalRouteAdapter
     // Apply fidelity before load — setFidelityMode after load rebuilds the
     // just-started pipeline (audible blip).
     if (this.fidelityMode) await this.client.setFidelityMode(true);
-    await this.client.load(params);
+    try {
+      await this.client.load(params);
+    } catch (e) {
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.load(params);
+    }
   }
 
   /** Pause under the lease's generation. */
