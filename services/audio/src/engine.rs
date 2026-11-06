@@ -3050,12 +3050,12 @@ impl Engine {
                             .as_ref()
                             .map(|s| s.drain_fallback_ms())
                             .unwrap_or(0)
-                            // Never under the backend's own estimate
-                            // (under-waiting a MEASURED delay is tail
-                            // loss), never past the entry deadline —
-                            // which itself includes the downstream
-                            // delay measured at park time.
-                            .min(deadline_ms)
+                            // Honor the CURRENT measurement (the
+                            // park-time sample may be stale); bound
+                            // only by a sane absolute cap — the entry
+                            // deadline was already enlarged by the
+                            // same delay class at park time.
+                            .min(10_000)
                             .max(50);
                         // Reaching this arm proves staged==0 — stamp
                         // ring0 the first time; the downstream wait
