@@ -415,9 +415,10 @@ export async function teardownRecorded(runDir) {
   if (meta.stoppedAt) return meta; // already torn down — pids may be reused
   const notes = [];
 
-  notes.push(`app pid ${meta.pid}: ${killRecorded(meta, meta.pid, meta.pidStartTime, { matchArgv: true, matchDisplay: true })}`);
+  const appStop = killRecorded(meta, meta.pid, meta.pidStartTime, { matchArgv: true, matchDisplay: true });
+  notes.push(`app pid ${meta.pid}: ${appStop}`);
   await sleep(1200);
-  if (procAlive(meta.pid) && procStartTime(meta.pid) === meta.pidStartTime) {
+  if (appStop === "terminated" && verifyRecordedProcess(meta.pid, meta).ok) {
     try {
       const ids = procIds(meta.pid);
       if (ids?.pgid === meta.pid) process.kill(-meta.pid, "SIGKILL");

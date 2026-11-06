@@ -7,8 +7,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeLaunches, teardownActiveLaunches } from "../src/lib/session.mjs";
-import { UD_MARKER, procAlive } from "../src/lib/isolation.mjs";
+import { activeLaunches, teardownActiveLaunches, teardownRecorded } from "../src/lib/session.mjs";
+import { UD_MARKER, procAlive, procStartTime } from "../src/lib/isolation.mjs";
 import { sleep } from "../src/lib/env.mjs";
 
 test("teardownActiveLaunches reaps resources acquired mid-launch", async () => {
@@ -44,4 +44,24 @@ test("teardownActiveLaunches tolerates empty + already-dead state", async () => 
   activeLaunches.add(r);
   await teardownActiveLaunches();
   assert.equal(activeLaunches.size, 0);
+});
+
+test("recorded teardown never escalates after an ownership check fails", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cadence-stop-test-"));
+  const sentinel = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+  try {
+    writeFileSync(join(dir, "session.json"), JSON.stringify({
+      pid: sentinel.pid,
+      pidStartTime: procStartTime(sentinel.pid),
+      userData: join(dir, "unrelated-profile"),
+      display: ":99",
+    }));
+    const meta = await teardownRecorded(dir);
+    await sleep(100);
+    assert.match(meta.teardownNotes[0], /skipped kill/);
+    assert.equal(procAlive(sentinel.pid), true, "failed ownership must block SIGTERM and SIGKILL");
+  } finally {
+    sentinel.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -4,21 +4,24 @@ Run: `cadence-verify run restart`
 
 Plays Beacon ~4s, quits gracefully (windows destroyed, `app.quit()` →
 will-quit → persistNow), relaunches with the same user-data dir, then
-checks the contract: same queue size, same track, position within 4s of
-quit point, status **paused** (never autoplay), no stray audio stream
-while paused, resume works (transport first, bridge fallback).
+checks ordered queue track identities, currentIndex, the restored track,
+and meaningful persisted/restored positions. Persisted position must be
+within 2.5s of the quit snapshot; restored position must be nonzero and
+within 2s of persisted state. It requires **paused** status, no stray
+stream, graceful quit, and resume on the restored track with advancing
+position and a stream routed to the tap. Transport Play is tried first,
+with bridge resume as the documented fallback.
 
 Relevant defects on main: the app's `win.on('close')` traps programmatic
 `app.quit()` forever — the harness destroys windows first and records
-`quit mode=graceful|killed` so a killed quit (which lets the track end
-inside the fallback window and contaminates persisted state) is visible
-in the transcript, not hidden. Separately: after restore, the transport
+`quit mode=graceful|killed`; a killed quit fails the restore contract.
+Separately: after restore, the transport
 Play click is inert — only the bridge `resume` starts playback; the flow
 records it as a NOTE.
 
-The position check compares the restored position against the last
-*snapshot* before quit (the persisted file can drift a few hundred ms
-behind it — that's expected, not a defect).
+Negative control: `cadence-verify run restart --break no-restore` deletes
+only this run's persisted settings before relaunch and must FAIL.
+Use `run restart`; the flow needs a managed Electron lifecycle handle.
 
 Track-length note: fixtures are 14–16s. The flow's play+screenshot+quit
 sequence spans a few seconds of that, so a quit that runs long can race

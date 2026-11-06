@@ -1,3 +1,8 @@
+---
+name: verify-cadence
+description: Verify Cadence through the real Electron app on a private virtual display and PipeWire core, with smoke, audio, restart, UI flows, and evidence bundles. Use for end-to-end checks and deliberate regression controls.
+---
+
 # verify-cadence — end-to-end verification for the real app
 
 Launch the real Cadence Electron app headlessly, drive it the way a user
@@ -126,7 +131,7 @@ verdict.json                machine-readable result
 - **CDP:** the DevTools port is ephemeral by default; an explicit `--cdp`
   is refused if occupied. After launch AND on every `attach`, the
   endpoint must prove it belongs to the recorded app pid (socket owner
-  inside the pid's process tree, Electron product string, cmdline
+  inside the pid's process tree, cmdline
   carrying the session's `--user-data-dir` and port, environ DISPLAY =
   the private Xvfb) — a stale or foreign browser is rejected.
 - **Process safety:** kills verify recorded pid+starttime and
@@ -152,12 +157,11 @@ is lying, not the app.
 .agents/skills/verify-cadence/helpers/cadence-verify run restart --break no-restore
 ```
 
-Equivalent manual procedure, fully inside the private session: launch
-with `--keep`, then in another shell either
-`cadence-verify eval 'window.cadence.sendCommand({kind:"setMuted",muted:true})' --run-dir <dir>`
-before an attach'd audio flow (mute), or delete
-`<user-data>/cadence-settings.json` after quit before relaunch
-(no-restore). Then `cadence-verify stop --run-dir <dir>`.
+Use the managed commands above for reproducible negative controls.
+For interactive inspection, use `cadence-verify launch`, then
+`attach`/`eval` with its printed `--run-dir`, and finish with `stop`.
+The `restart` flow requires `run restart`; an attached session has no
+managed Electron lifecycle handle.
 
 ## Fixtures
 
@@ -212,9 +216,8 @@ in the run dirs.
 `providers` iterates capabilities from `window.cadence.getCapabilities()`
 and reports route READINESS only — it does not prove provider playback:
 - `local` must be `ready`.
-- streaming routes (`youtube-music`, `apple-musickit`, `spotify-*`) are
-  exercised **only when the capability reports signed-in/ready**; anything
-  else is asserted as a clean skip with its reason recorded.
+- streaming routes (`youtube-music`, `apple-musickit`, `spotify-*`) report
+  their capability state; unavailable routes record a skip and its reason.
 - Apple Music E2E is being built on `feat/apple-music` — when it lands,
   drop its flow files into `helpers/src/flows/` and they run via
   `run <name>`; capabilities already cover the skip/ready decision.
