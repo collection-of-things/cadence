@@ -13,9 +13,21 @@ const port = process.env.CAPTURE_PORT ?? '4517';
 const [outDir, ...shots] = process.argv.slice(2);
 
 const preview = spawn('npx', ['vite', 'preview', '--port', port, '--strictPort'], {
-  cwd: resolve(root, 'apps/ui'), shell: true, stdio: 'ignore',
+  cwd: resolve(root, 'apps/ui'), shell: true, stdio: ['ignore', 'ignore', 'inherit'],
 });
-await new Promise((r) => setTimeout(r, 2500));
+// Wait for the server instead of a fixed sleep; fail fast if it exits
+// (e.g. --strictPort with the port taken) so another server can't answer.
+let exited = false;
+preview.on('exit', () => (exited = true));
+let up = false;
+for (let i = 0; i < 80 && !up && !exited; i++) {
+  try { up = (await fetch(`http://localhost:${port}/`)).ok; } catch { await new Promise((r) => setTimeout(r, 250)); }
+}
+if (!up) {
+  console.error(`vite preview did not start on port ${port}`);
+  preview.kill();
+  process.exit(1);
+}
 try {
   for (const shot of shots) {
     const eq = shot.indexOf('=');

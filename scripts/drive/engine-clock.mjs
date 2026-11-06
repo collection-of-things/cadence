@@ -23,10 +23,21 @@ proc.stdout.on('data', (d) => {
     else if (msg.method && msg.method !== 'event.fft') console.log('event', msg.method, JSON.stringify(msg.params).slice(0, 160));
   }
 });
-const send = (method, params = {}) => new Promise((res) => {
+// Requests reject on a JSON-RPC error, after 15s, or when the engine exits.
+const send = (method, params = {}) => new Promise((res, rej) => {
   rid += 1;
-  pending.set(rid, res);
-  proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: rid, method, params }) + '\n');
+  const id = rid;
+  const timer = setTimeout(() => { pending.delete(id); rej(new Error(`timeout ${method}`)); }, 15000);
+  pending.set(id, (msg) => {
+    clearTimeout(timer);
+    if (msg.error) rej(new Error(`${method}: ${JSON.stringify(msg.error)}`));
+    else res(msg);
+  });
+  proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+});
+proc.on('exit', (code) => {
+  for (const settle of pending.values()) settle({ error: { message: `engine exited (${code})` } });
+  pending.clear();
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 console.log('load', JSON.stringify(await send('audio.load', { queueId: 'q1', generationId: 1, source: { kind: 'file', path: file } })).slice(0, 300));

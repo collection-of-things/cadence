@@ -30,6 +30,7 @@ export function TrackMenu({ track }: { track: TrackRef }) {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setOpen(false);
+        ref.current?.querySelector<HTMLElement>('.row-more')?.focus();
       }
     };
     document.addEventListener('pointerdown', away);
@@ -44,6 +45,7 @@ export function TrackMenu({ track }: { track: TrackRef }) {
   const act = (fn: () => void) => () => {
     fn();
     setOpen(false);
+    ref.current?.querySelector<HTMLElement>('.row-more')?.focus();
   };
 
   return (

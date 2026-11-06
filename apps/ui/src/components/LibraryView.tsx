@@ -116,7 +116,7 @@ function TracksTable({ query }: { query: string }) {
         {virtualizer.getVirtualItems().map((vi) => {
           const track = list[vi.index]!;
           return (
-            <div key={track.id} className="tr-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
+            <div key={track.id} className={`tr-row-wrap ${vi.index % 2 === 0 ? 'is-odd' : ''}`} style={{ transform: `translateY(${vi.start}px)` }}>
               <TrackRow track={track} index={vi.index} variant="list" onPlay={() => session.playTracks(list, vi.index, { kind: 'manual' })} />
             </div>
           );

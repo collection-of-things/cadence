@@ -163,7 +163,7 @@
   cursor: default;
   outline: none;
 }
-.track-list > .track-row:nth-child(odd), .tr-row-wrap:nth-child(odd) .track-row { background: var(--row); }
+.track-list > .track-row:nth-child(odd), .tr-row-wrap.is-odd .track-row { background: var(--row); }
 .track-row:hover { background: var(--row-hover) !important; }
 .track-row:focus-visible { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5); }
 .track-row.is-current { background: var(--accent) !important; color: #fff; }

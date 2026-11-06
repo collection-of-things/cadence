@@ -5,6 +5,7 @@
   await wait(1500);
   const tracks = await c.library.tracks({});
   const t = tracks.find((x) => /long-tone/.test(x.source.path ?? ''));
+  if (!t) return { error: 'no long-tone track in FOLDER', trackCount: tracks.length };
   const statuses = [];
   c.onEvent((e) => { if (e.kind === 'snapshot') statuses.push(e.snapshot.status + '@' + e.snapshot.positionMs); if (e.kind === 'error' || e.kind === 'toast') statuses.push(JSON.stringify(e)); });
   await c.sendCommand({ kind: 'setQueue', items: [{ queueId: 'p1', track: t, origin: { kind: 'manual' } }], startIndex: 0, autoplay: true });

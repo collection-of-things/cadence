@@ -92,7 +92,12 @@ export function App() {
     setLocation(next);
     if (next.page === 'album') {
       const album = next.album;
-      setTabs((list) => [...list.filter((a) => a.id !== album.id), album].slice(-TABS_MAX));
+      // Re-opening a tab keeps its place; only new albums append.
+      setTabs((list) =>
+        list.some((a) => a.id === album.id)
+          ? list.map((a) => (a.id === album.id ? album : a))
+          : [...list, album].slice(-TABS_MAX),
+      );
     }
   }, []);
 

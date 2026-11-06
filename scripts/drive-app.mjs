@@ -44,10 +44,20 @@ if (!target) {
 await sleep(2500);
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((r) => ws.addEventListener('open', r));
+const EVAL_TIMEOUT_MS = 120_000;
 const result = await new Promise((res) => {
+  // A page that closes or never answers must not leave Electron running.
+  const timer = setTimeout(() => {
+    console.log(`Runtime.evaluate gave no answer in ${EVAL_TIMEOUT_MS}ms\n--- app log ---\n${log}`);
+    app.kill();
+    process.exit(1);
+  }, EVAL_TIMEOUT_MS);
   ws.addEventListener('message', (m) => {
     const msg = JSON.parse(m.data);
-    if (msg.id === 1) res(msg.result);
+    if (msg.id === 1) {
+      clearTimeout(timer);
+      res(msg.result);
+    }
   });
   ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }));
 });

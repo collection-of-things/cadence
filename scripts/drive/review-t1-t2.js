@@ -5,7 +5,7 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
   // T1: type in Albums search -> jumps to Songs, keeps text + focus.
-  document.querySelectorAll('.side-row')[3].click();
+  document.querySelector('.side-row[aria-label="Albums"]').click();
   await wait(400);
   const input = document.querySelector('.lib-search input');
   input.focus();

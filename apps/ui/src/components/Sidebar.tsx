@@ -24,8 +24,8 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
       key={key}
       className={`side-row ${active ? 'is-active' : ''}`}
       aria-current={active ? 'page' : undefined}
-      title={collapsed ? label : undefined}
-      aria-label={collapsed ? label : undefined}
+      title={label}
+      aria-label={label}
       onClick={go}
     >
       <span className="side-row-icon">{icon}</span>
