@@ -1170,9 +1170,9 @@ impl Engine {
         expected: Option<(u64, u64)>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let duration_ms = plan.duration_ms;
-        let neg = plan.neg;
-        let rplan = plan.rplan;
-        let bypass = plan.bypass;
+        let mut neg = plan.neg;
+        let mut rplan = plan.rplan;
+        let mut bypass = plan.bypass;
         let info = plan.info;
         // ReplayGain is opt-in: tagged gains only reach DSP when the user
         // enabled them. Off by default = mpv-style transparent loudness.
@@ -1207,7 +1207,7 @@ impl Engine {
                         cur_kind
                     );
                 }
-                self.rebuild_stream(&neg, expected, None)?;
+                let committed = self.rebuild_stream(&neg, expected, None)?;
                 // The open just proved this format works — drop any
                 // remembered native-open failure for it (transient
                 // contention shouldn't downgrade the format forever).
@@ -1216,17 +1216,33 @@ impl Engine {
                     st.native_failed = None;
                 }
                 drop(st);
+                if committed != neg {
+                    // A CPAL fallback opened its own format — the reader
+                    // must be replanned for the REAL stream rate/kind or
+                    // the source plays at the wrong speed/pitch (and a
+                    // stale bypass could claim transparency it can't
+                    // deliver).
+                    if !plan.src_depth.preserved_by(committed.kind) {
+                        bypass = false;
+                    }
+                    let (rp, pb) = resample_plan(
+                        plan.src_rate,
+                        committed.rate,
+                        self.state.lock().unwrap().fidelity,
+                        bypass,
+                    );
+                    rplan = rp;
+                    bypass = bypass && pb;
+                    neg = committed;
+                }
             }
         }
 
-        // Adopt the format ACTUALLY committed by the rebuild — a CPAL
-        // fallback may have opened a different one than `neg` (the
-        // device carries its own default config). The reader must be
-        // built for the real stream format, not the PipeWire plan.
-        let neg = self.core.lock().unwrap().negotiated.clone();
+        // Another rebuild may have committed a different format while we
+        // planned — this reader is only valid for the adopted neg.
         {
             let core = self.core.lock().unwrap();
-            if core.rebuilding {
+            if core.rebuilding || core.negotiated != neg {
                 bail!("stream format changed during spawn — retry");
             }
         }
@@ -1376,7 +1392,7 @@ impl Engine {
         neg: &Negotiated,
         expected: Option<(u64, u64)>,
         caps_override: Option<Arc<dyn DeviceCaps>>,
-    ) -> Result<()> {
+    ) -> Result<Negotiated> {
         let _serial = self.stream_mu.lock().unwrap();
         // Another rebuild may have landed while we waited on the lock — only
         // skip when the format matches AND a healthy sink exists.
@@ -1393,7 +1409,7 @@ impl Engine {
             if let Some(s) = self.sink.lock().unwrap().as_ref() {
                 s.resume();
             }
-            return Ok(());
+            return Ok(neg.clone());
         }
         if self.monitor_stop.load(Ordering::Acquire) {
             bail!("engine is shutting down");
@@ -1457,12 +1473,13 @@ impl Engine {
                 return Err(e);
             }
         };
+        let committed = opened.negotiated;
         {
             let mut core = self.core.lock().unwrap();
             // Commit the format the stream ACTUALLY opened — a CPAL
             // fallback re-negotiates against its own capabilities and
             // may land on a different rate/channels than requested.
-            core.negotiated = opened.negotiated;
+            core.negotiated = committed.clone();
             core.rebuilding = false;
         }
         // Commit the caps that actually serve this stream — the CPAL
@@ -1477,7 +1494,7 @@ impl Engine {
             // atomically under it, so a rebuild can never tear the pair.
             self.sink_gen.fetch_add(1, Ordering::Relaxed);
         }
-        Ok(())
+        Ok(committed)
     }
 
     /// Rebuild caps for a device change and re-negotiate the stream, then

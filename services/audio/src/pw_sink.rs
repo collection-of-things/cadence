@@ -1084,7 +1084,14 @@ impl Sink for PipeWireSink {
                 let rate = t.rate();
                 let delay_secs =
                     t.delay().max(0) as f64 * rate.num as f64 / rate.denom.max(1) as f64;
-                (delay_secs * self.rate_hz as f64).round() as u64 + t.buffered()
+                // + one quantum: frames fill() pulls from staging into
+                // the CURRENT cycle's buffer are unheard but briefly in
+                // neither `staged` nor `delay` — count them or a
+                // rebuild-time position snapshot can skip them (errs
+                // toward replaying a quantum, never skipping).
+                (delay_secs * self.rate_hz as f64).round() as u64
+                    + t.buffered()
+                    + self.device_delay_frames
             })
             .unwrap_or(self.device_delay_frames)
     }

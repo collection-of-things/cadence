@@ -421,7 +421,7 @@ def compare(name, cap, ref, ch, label, min_cov=0.85):
     seg = ref[seg_off : seg_off + min(40000, len(ref) // 2)]
     if len(cap) < len(seg):
         print(f"  {label}: capture too short ({len(cap)//ch} frames)")
-        return False, -1
+        return False, -1, False
     k = best_align(cap, seg)
     # ref[0] would sit at cap[k - seg_off]. A period-aliased pick can
     # shrink the mapped overlap below what the capture actually holds —
@@ -466,7 +466,7 @@ def compare(name, cap, ref, ch, label, min_cov=0.85):
         scored.append((mx_c, -cov_c, aa, bb, nzc, st))
     if not scored:
         print(f"  {label}: overlap too short or aligned span silent")
-        return False, -1
+        return False, -1, False
     scored.sort(key=lambda t: (t[0], t[1]))
     mx_c, _, a, b, nz, start = scored[0]
     res = b - a
