@@ -710,7 +710,12 @@ impl PipeWireCaps {
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
             state,
-            drained_seq,
+            drained_seq: Arc::clone(&drained_seq),
+            barrier: Arc::new(DrainBarrier {
+                seq: std::sync::atomic::AtomicU64::new(0),
+                settled: std::sync::atomic::AtomicU64::new(0),
+                drained_seq,
+            }),
             wd_paused: AtomicBool::new(paused_flag),
         }))
     }
@@ -798,6 +803,37 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
     *chunk.size_mut() = size as _;
 }
 
+/// Ordering barrier for drain requests. `drained` events post to the
+/// main loop via pw_loop_invoke and dispatch FIFO — so after each
+/// flush we queue a marker invoke on the SAME loop; when it runs,
+/// every drained event posted before it has been delivered and folded
+/// into `settled`. Completion then means "a drained event strictly
+/// newer than the settled point", which no stale event can satisfy —
+/// a stale event posts before the marker, a real one after.
+struct DrainBarrier {
+    /// incremented by each barrier marker dispatch.
+    seq: std::sync::atomic::AtomicU64,
+    /// drained_seq value captured at the last marker dispatch — all
+    /// drained events queued before that marker are consumed here.
+    settled: std::sync::atomic::AtomicU64,
+    drained_seq: Arc<std::sync::atomic::AtomicU64>,
+}
+
+unsafe extern "C" fn drain_barrier_cb(
+    _loop: *mut spa::sys::spa_loop,
+    _async: bool,
+    _seq: u32,
+    _data: *const std::ffi::c_void,
+    _size: usize,
+    ud: *mut std::ffi::c_void,
+) -> std::os::raw::c_int {
+    let b = Arc::from_raw(ud as *const DrainBarrier);
+    b.settled
+        .store(b.drained_seq.load(Ordering::Acquire), Ordering::Release);
+    b.seq.fetch_add(1, Ordering::Release);
+    0
+}
+
 // Field order matters: struct fields drop top-to-bottom, and the
 // listeners must unlink from the stream's hook list BEFORE the stream
 // is destroyed — pw_stream_destroy frees the list head, so a listener
@@ -852,6 +888,8 @@ pub struct PipeWireSink {
     /// wait for a count greater than their request baseline (mpv's
     /// pw_stream_flush model, keyed per-request).
     drained_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// FIFO ordering barrier on the main loop — see DrainBarrier.
+    barrier: Arc<DrainBarrier>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -947,23 +985,46 @@ impl Sink for PipeWireSink {
     }
 
     fn request_drain(&self) -> Option<u64> {
-        // flush(drain=true) under tl — a stale `drained` event can't
-        // dispatch while we hold the lock, and drained_since() ignores
-        // counter bumps that aren't accompanied by the stream leaving
-        // Streaming, so posted-but-undispatched events from earlier
-        // drains can never satisfy THIS request.
+        // flush(drain=true), then queue a barrier marker behind every
+        // already-posted `drained` event on the main loop (invokes
+        // dispatch FIFO). drained_since() waits for the marker plus a
+        // post-marker event — so a stale event that was queued before
+        // our request can never satisfy it, and a real completion can
+        // never be swallowed either (it lands after the marker).
         let _g = self.tl.lock();
         self.stream.flush(true).ok()?;
-        Some(self.drained_seq.load(Ordering::Acquire))
+        let tag = self.barrier.seq.load(Ordering::Acquire);
+        unsafe {
+            let l = pw::sys::pw_thread_loop_get_loop(self.tl.as_raw_ptr());
+            if l.is_null() || (*l).loop_.is_null() {
+                return None;
+            }
+            let lp = (*l).loop_;
+            let methods =
+                (*lp).iface.cb.funcs as *const spa::sys::spa_loop_methods;
+            let invoke = (*methods).invoke?;
+            let ud = Arc::into_raw(Arc::clone(&self.barrier))
+                as *mut std::ffi::c_void;
+            invoke(
+                (*lp).iface.cb.data,
+                Some(drain_barrier_cb),
+                spa::sys::SPA_ID_INVALID,
+                std::ptr::null(),
+                0,
+                false,
+                ud,
+            );
+        }
+        Some(tag)
     }
 
     fn drained_since(&self, baseline: u64) -> bool {
-        // Completion needs BOTH a newer drained event AND the stream
-        // deactivated (drain completion → set_active(false) → Paused).
-        // A stale event bumps the counter while our tail still plays —
-        // the stream is still Streaming then, so it can't pass.
-        self.drained_seq.load(Ordering::Acquire) > baseline
-            && self.state.load(Ordering::Acquire) == 2 // Paused
+        // The barrier marker must have run (proves every event queued
+        // before our request was delivered and folded into `settled`),
+        // then a strictly newer drained event is a real completion.
+        self.barrier.seq.load(Ordering::Acquire) > baseline
+            && self.drained_seq.load(Ordering::Acquire)
+                > self.barrier.settled.load(Ordering::Acquire)
     }
 
     fn resume(&self) {
