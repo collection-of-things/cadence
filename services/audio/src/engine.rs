@@ -1317,24 +1317,39 @@ impl Engine {
     /// permitting).
     fn respawn_pipelines(&self, position_ms: u64) {
         // Bounded loop: a gapless promotion can land while we spawn — a
-        // stale install would overwrite the newly-active successor, so
-        // verify the world hasn't moved before installing and retry fresh.
-        for _ in 0..3 {
-            let (cur, gen, live_inst) = {
+        // stale install would overwrite the newly-active successor. A
+        // snapshot is only trustworthy when core and state agree on the
+        // current instance (a pending adoption shows them disagreeing);
+        // the install itself runs inside the `core` lock so the callback
+        // cannot promote between the check and set_active.
+        for attempt in 0..8 {
+            // Lock order: core first, then state (same as emit_position).
+            let live_inst = self
+                .core
+                .lock()
+                .unwrap()
+                .active
+                .as_ref()
+                .map(|r| r.instance);
+            let (cur, gen, cur_inst) = {
                 let st = self.state.lock().unwrap();
-                let live_inst = self
-                    .core
-                    .lock()
-                    .unwrap()
-                    .active
-                    .as_ref()
-                    .map(|r| r.instance);
                 (
                     st.queue_id.clone().zip(st.source.clone()),
                     st.generation,
-                    live_inst,
+                    st.current_instance,
                 )
             };
+            // Promotion mid-flight: active is the successor but state still
+            // describes the ended track. Wait for the monitor's adoption
+            // (~20ms tick) rather than acting on a torn snapshot.
+            if live_inst.is_some() && live_inst != Some(cur_inst) {
+                if attempt == 7 {
+                    eprintln!("respawn: promotion adoption never settled");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                continue;
+            }
             let Some((qid, src)) = cur else { break };
             // A live pcm-stream can't be respawned mid-flow — the byte source
             // belongs to the original load. Report and leave the stream dead.
@@ -1349,24 +1364,30 @@ impl Engine {
             match self.spawn_pipeline(&qid, src.clone(), pos, rg, true) {
                 Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
+                    let mut core = self.core.lock().unwrap();
                     let stale = {
-                        let core = self.core.lock().unwrap();
                         let st = self.state.lock().unwrap();
-                        // A promotion swaps core.active's instance; a load
-                        // bumps the generation. (active == None is fine —
-                        // our own rebuild may have just cleared it.)
-                        core.active
-                            .as_ref()
-                            .is_some_and(|r| Some(r.instance) != live_inst)
-                            || st.generation != gen
+                        st.generation != gen
                             || st.queue_id.as_deref() != Some(qid.as_str())
+                            || core.active.as_ref().map(|r| r.instance) != live_inst
+                            // The track ended/promoted during the spawn —
+                            // the monitor is about to handle it.
+                            || core.events.iter().any(|e| match e {
+                                CoreEvent::Ended { instance, .. }
+                                | CoreEvent::Boundary {
+                                    ended_instance: instance,
+                                    ..
+                                } => live_inst == Some(*instance),
+                            })
                     };
                     if stale {
+                        drop(core);
                         reader.pipe.abort();
                         drop(handle);
                         continue;
                     }
-                    self.core.lock().unwrap().set_active(reader);
+                    core.set_active(reader);
+                    drop(core);
                     *self.producer.lock().unwrap() = Some(handle);
                     let mut st = self.state.lock().unwrap();
                     st.current_instance = inst;
@@ -1401,27 +1422,31 @@ impl Engine {
             }
         }
         *self.prefetch_producer.lock().unwrap() = None;
+        // Re-arm only when the prefetch slot still describes THIS
+        // successor — a promotion (or a newer prefetch) may have claimed
+        // it while we planned.
         let arm = |ready: bool, qid: &str, src: &SourceSpec, rg| {
             let mut st = self.state.lock().unwrap();
-            st.prefetch = Some(PrefetchState {
-                queue_id: qid.to_string(),
-                source: src.clone(),
-                replay_gain_db: rg,
-                ready: Arc::new(AtomicBool::new(ready)),
-            });
-            st.reported_prefetch_ready = false;
+            if st.prefetch.as_ref().map(|p| p.queue_id.as_str()) == Some(qid) {
+                st.prefetch = Some(PrefetchState {
+                    queue_id: qid.to_string(),
+                    source: src.clone(),
+                    replay_gain_db: rg,
+                    ready: Arc::new(AtomicBool::new(ready)),
+                });
+                st.reported_prefetch_ready = false;
+            }
         };
         match self.plan_track(&src, 0) {
             Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
                 match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
                     Ok((reader, handle, _dur, _bypass, _info)) => {
                         let ready = reader.ready.clone();
-                        // A promotion may have consumed the armed slot while
-                        // we spawned — installing `next` for a consumed (or
-                        // already-active) successor would replay it. Verify
-                        // the slot still describes this successor.
+                        // Check + install in ONE critical section — a
+                        // promotion between them would install the playing
+                        // track as its own successor.
+                        let mut core = self.core.lock().unwrap();
                         let stale = {
-                            let core = self.core.lock().unwrap();
                             let st = self.state.lock().unwrap();
                             st.prefetch
                                 .as_ref()
@@ -1437,7 +1462,8 @@ impl Engine {
                             drop(handle);
                             return;
                         }
-                        self.core.lock().unwrap().set_next(reader);
+                        core.set_next(reader);
+                        drop(core);
                         *self.prefetch_producer.lock().unwrap() = Some(handle);
                         let mut st = self.state.lock().unwrap();
                         st.prefetch = Some(PrefetchState {
@@ -1933,6 +1959,9 @@ impl Engine {
                                 "gapless": true,
                             }),
                         );
+                        // The promoted track's bypass flag may differ from
+                        // the ended track's on the same stream — report it.
+                        self.emit_output();
                     }
                     CoreEvent::Ended { queue_id, instance } => {
                         let gen = {
