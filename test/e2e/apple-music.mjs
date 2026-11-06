@@ -306,35 +306,67 @@ try {
 
     // natural end: insert a successor, seek near the end — the next item
     // must start on its own (the gapless/promotion path, no explicit skip).
-    if (extra) {
-      await ev(`window.cadence.sendCommand({kind:'insertNext', items:[{queueId:'e2e-tail', track:${JSON.stringify(extra)}}]})`);
+    // MusicKit's tail seeks are flaky on DRM streams — retry the sequence.
+    let naturalEndDone = false;
+    let diag = '';
+    for (let attempt = 0; extra && attempt < 2 && !naturalEndDone; attempt++) {
+      await ev(`window.cadence.sendCommand({kind:'insertNext', items:[{queueId:'e2e-tail-${attempt}', track:${JSON.stringify(extra)}}]})`);
       await sleep(800);
       const gq = await ev('window.cadence.getQueue()');
-      const gi = gq?.currentIndex ?? -1;
-      const gNext = gq?.items?.[gi + 1];
-      const cur = await ev('window.cadence.getSnapshot()');
-      const durMs = cur?.durationMs ?? 0;
-      if (gNext && durMs > 30_000) {
-        // MusicKit can clamp/refuse seeks right at the stream tail — aim a
-        // little earlier and retry once if the position doesn't land.
-        for (const target of [durMs - 12_000, durMs - 20_000]) {
-          await ev(`window.cadence.sendCommand({kind:'seek', positionMs:${target}})`).catch(() => {});
-          await sleep(1500);
-          const s = await ev('window.cadence.getSnapshot()');
-          if ((s?.positionMs ?? 0) > durMs - 25_000) break;
-        }
-        const promoted = await waitFor(async () => {
-          const s = await ev('window.cadence.getSnapshot()');
-          return s?.current?.queueId === gNext.queueId && s?.status === 'playing' ? s : null;
-        }, 'natural end promotion', 45_000);
+      const gNext = gq?.items?.[(gq?.currentIndex ?? -1) + 1];
+      // Catalog durationMs can under-report the real stream length — read
+      // MusicKit's own playDuration off the provider page for seek targets.
+      let durMs = 0;
+      try {
+        const amTarget = await cdp.findTarget((u) => u.includes('music.apple.com'), 20_000);
+        const pc = new CdpClient(Number(CDP_PORT));
+        await pc.attach(amTarget);
+        durMs = (await pc.eval(
+          `(() => { const mk = window.MusicKit?.getInstance?.(); const d = mk?.nowPlayingItem?.playDuration; return d ? d * 1000 : 0 })()`,
+          20_000)) ?? 0;
+      } catch { /* fall back to metadata */ }
+      if (!durMs) durMs = (await ev('window.cadence.getSnapshot()'))?.durationMs ?? 0;
+      if (!gNext || durMs <= 30_000) {
+        record('natural end test', false, `no successor (${durMs}ms track)`);
+        naturalEndDone = true;
+        break;
+      }
+      let landed = false;
+      for (const target of [durMs - 12_000, durMs - 20_000, durMs - 30_000]) {
+        await ev(`window.cadence.sendCommand({kind:'seek', positionMs:${target}})`).catch(() => {});
+        await sleep(1500);
+        const s = await ev('window.cadence.getSnapshot()');
+        diag += `seek→${Math.round(target / 1000)}s pos=${Math.round((s?.positionMs ?? 0) / 1000)}s ${s?.status}; `;
+        if ((s?.positionMs ?? 0) > durMs - 32_000) { landed = true; break; }
+      }
+      if (!landed) { diag += ' seek never landed;'; continue; }
+      let last = null;
+      const promoted = await waitFor(async () => {
+        const s = await ev('window.cadence.getSnapshot()');
+        last = s;
+        if (s?.current?.queueId === gNext.queueId && s?.status === 'playing') return s;
+        return null;
+      }, 'natural end promotion', 60_000).catch(() => null);
+      if (promoted) {
         record('natural track end advances to successor', true,
           `"${promoted.current?.track?.title}" @ ${Math.round((promoted.positionMs ?? 0) / 1000)}s`);
+        naturalEndDone = true;
       } else {
-        record('natural end test', false, `no successor (${durMs}ms track)`);
+        diag += ` last=${last?.current?.track?.title} ${last?.status} pos=${Math.round((last?.positionMs ?? 0) / 1000)}s qId=${last?.current?.queueId};`;
+        try {
+          const amT = await cdp.findTarget((u) => u.includes('music.apple.com'), 10_000);
+          const pc2 = new CdpClient(Number(CDP_PORT));
+          await pc2.attach(amT);
+          const mk = await pc2.eval(
+            `(() => { const mk = window.MusicKit?.getInstance?.(); const q = mk?.queue; return { st: mk?.playbackState, t: mk?.currentPlaybackTime, dur: mk?.currentPlaybackDuration, pos: q?.position, len: q?.items?.length, items: (q?.items || []).map(i => i.id), np: mk?.nowPlayingItem?.id } })()`,
+            20_000);
+          diag += ` mk=${JSON.stringify(mk)};`;
+        } catch (e) {
+          diag += ` mkProbeErr=${String(e).slice(0, 80)};`;
+        }
       }
-    } else {
-      record('natural end test', false, 'no extra track available');
     }
+    if (!naturalEndDone) record('natural end test', false, diag || 'promotion did not complete');
 
     // --- stations --------------------------------------------------------------
     // A station streams indefinitely; constituent-song nowPlaying changes

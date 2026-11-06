@@ -306,6 +306,9 @@ export class Coordinator {
         this.positionMs = positionMs;
         this.positionAtMs = this.now();
         const lease = this.lease;
+        // Re-base the stale-end baseline — a seek near the tail means a real
+        // end can legitimately arrive soon after.
+        this.leaseStartPositionMs = positionMs;
         const adapter = this.activeAdapter;
         if (lease !== null && adapter !== null) {
           await this.guarded(() => adapter.seek(lease, positionMs), "seek");

@@ -244,9 +244,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
     this.session.setAudioMuted(false);
     this.generation = lease.generationId;
-    // Suppress stale boundary 'ended' events while the new item starts.
-    this.promotedAt = Date.now();
     this.installBackoffUntil = 0; // a real play request waits for install
+    // A pending mirror op must land before the new queue replaces it — else a
+    // stale playLater appends the OLD successor into the NEW provider queue.
+    await this.mirrorChain.catch(() => {});
+    this.mirrored = [];
     await this.prepare();
     const spec = specFor(item.track);
     try {
@@ -461,16 +463,33 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         this.onNowPlaying(s.nowPlayingId, s.queuePos);
         return;
       }
-      // A boundary 'ended' can arrive AFTER the promotion that replaced the
-      // item — ending the just-promoted track would stop playback mid-queue.
-      // End events while the promoted item has barely started are stale.
-      if (this.current !== null && Date.now() - this.promotedAt < 4000) return;
       if (this.current !== null) {
         this.emit({ kind: "ended", generationId, queueId: this.current.queueId });
       } else {
         this.emit({ kind: "ended", generationId });
       }
       return;
+    }
+    // Engine hung at the stream tail: MusicKit sometimes stalls 'playing' at
+    // exactly the duration instead of advancing (seen with library items).
+    // A real end can't run past duration, so treat a persistent tail-stall
+    // as the end it was supposed to report.
+    if (
+      this.current !== null &&
+      !this.current.station &&
+      s.state === "playing" &&
+      s.durationMs > 0 &&
+      s.positionMs >= s.durationMs - 500
+    ) {
+      if (this.tailStuckSince === 0) {
+        this.tailStuckSince = Date.now();
+      } else if (Date.now() - this.tailStuckSince > 2500) {
+        this.tailStuckSince = 0;
+        this.emit({ kind: "ended", generationId, queueId: this.current.queueId });
+        return;
+      }
+    } else {
+      this.tailStuckSince = 0;
     }
     this.emit({ kind: "position", positionMs: s.positionMs, atMs: Date.now(), generationId });
     this.emit({
@@ -507,15 +526,27 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (this.current.station) return;
     const hit = this.mirrored.findIndex((m) => m.providerId === id);
     if (hit === -1) {
-      // Something else started inside the provider queue. Act only on the
-      // SECOND sighting (~750ms apart) — a transient id during a queue
-      // transition must not pause the item that's about to be promoted.
+      // Unrecognized item playing. A transient id during a queue transition
+      // must not pause the item that's about to be promoted — confirm the
+      // same id is still now-playing a beat later before acting.
       if (this.unknownNpId === id) {
         this.unknownNpId = null;
         void this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
         this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
       } else {
         this.unknownNpId = id;
+        // The controller only emits on change — a stable unrecognized item
+        // gets one sighting, so probe once to confirm persistence.
+        setTimeout(() => {
+          if (this.destroyed || this.unknownNpId !== id || this.current === null) return;
+          void this.session
+            .eval<{ id: string | null }>(`window.__cadenceCtl.npId()`)
+            .then((np) => {
+              if (np.id === id) this.onNowPlaying(id);
+              else if (this.unknownNpId === id) this.unknownNpId = null;
+            })
+            .catch(() => {});
+        }, 1500);
       }
       return;
     }
@@ -525,14 +556,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
 
   /** Last unrecognized nowPlaying id — needs two sightings before ending. */
   private unknownNpId: string | null = null;
-
-  /** When a fresh item last started (play or mirror promotion) — stale
-   * boundary ends inside this window must not end the new item. */
-  private promotedAt = 0;
+  /** When the page first reported playback stuck at the stream tail. */
+  private tailStuckSince = 0;
 
   private promoteMirror(hit: number): void {
     if (this.current === null) return;
-    this.promotedAt = Date.now();
     this.unknownNpId = null;
     const promoted = this.mirrored[hit]!;
     this.mirrored = this.mirrored.slice(hit + 1);

@@ -286,6 +286,12 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       if (typeof mk.unauthorize === 'function') return mk.unauthorize();
       return false;
     },
+    // Read-back probe — the adapter uses it to confirm an unrecognized
+    // nowPlaying item is still current before acting on it.
+    npId() {
+      const item = mk.nowPlayingItem;
+      return { id: item ? String(item.id) : null, pos: queueInfo().position };
+    },
     // Best-effort click on the site's own sign-in affordance.
     clickSignIn() {
       const el = document.querySelector(
@@ -296,7 +302,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     },
   };
   post(true);
-  setInterval(() => post(false), 750);
+  // Always post on the tick — a frozen boundary state must keep reaching the
+  // adapter (position-at-tail detection depends on periodic samples, and a
+  // deduped silence looks identical to healthy idle playback).
+  setInterval(() => post(true), 750);
   return true;
   } finally {
     // A failed install must not poison later retries (navigations re-inject).
