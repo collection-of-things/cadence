@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LibraryAlbum } from '@cadence/protocol';
+import type { CatalogArtist, CatalogContainer, LibraryAlbum } from '@cadence/protocol';
 import { session } from './app';
 import { AlbumView } from './components/AlbumView';
 import { HomeView } from './components/HomeView';
@@ -13,17 +13,35 @@ import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
 import { createPortal } from 'react-dom';
 import { TopBar } from './components/TopBar';
+import {
+  ArtistView,
+  CatalogDetailView,
+  ProviderBrowseView,
+  ProviderHomeView,
+  ProviderLibraryView,
+  ProviderRadioView,
+  ProviderSearchView,
+} from './components/provider/views';
+import type { CatalogNav } from './components/provider/catalog';
 import { positionNow, useMediaSession, useUi } from './hooks';
 import { extractPalette, DEFAULT_PALETTE } from './palette';
 
 interface Location {
   page: ShellPage;
   album?: LibraryAlbum;
+  container?: CatalogContainer;
+  artist?: CatalogArtist;
 }
+
+/** Pages that don't update the store's coarse "view" (overlay sync). The
+ * store union only covers home/library/sources/now — feeding it a provider
+ * page would bounce navigation back on the next viewNonce tick. */
+const VIEWLESS: ShellPage[] = ['album', 'playlist', 'detail', 'artist', 'browse', 'radio', 'search', 'localfiles'];
 
 export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
+  const platform = useUi((s) => s.platform);
   const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const hasTrack = useUi((s) => s.snapshot.current !== null);
   const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
@@ -141,13 +159,13 @@ export function App() {
   }, []);
 
   const navigate = (next: Location) => {
-    if (next.page === location.page && !next.album) return; // same page — no history entry
+    if (next.page === location.page && !next.album && !next.container && !next.artist) return;
     setBackStack((stack) => [...stack, location]);
     setForwardStack([]);
     setLocation(next);
-    if (next.page !== 'album' && next.page !== 'playlist') {
-      previousStoreView.current = next.page;
-      session.setView(next.page);
+    if (!VIEWLESS.includes(next.page)) {
+      previousStoreView.current = next.page as typeof view;
+      session.setView(next.page as typeof view);
     }
   };
 
@@ -157,9 +175,9 @@ export function App() {
     setBackStack((stack) => stack.slice(0, -1));
     setForwardStack((stack) => [...stack, location]);
     setLocation(previous);
-    if (previous.page !== 'album' && previous.page !== 'playlist') {
-      previousStoreView.current = previous.page;
-      session.setView(previous.page);
+    if (!VIEWLESS.includes(previous.page)) {
+      previousStoreView.current = previous.page as typeof view;
+      session.setView(previous.page as typeof view);
     }
   };
 
@@ -169,19 +187,32 @@ export function App() {
     setForwardStack((stack) => stack.slice(0, -1));
     setBackStack((stack) => [...stack, location]);
     setLocation(next);
-    if (next.page !== 'album' && next.page !== 'playlist') {
-      previousStoreView.current = next.page;
-      session.setView(next.page);
+    if (!VIEWLESS.includes(next.page)) {
+      previousStoreView.current = next.page as typeof view;
+      session.setView(next.page as typeof view);
     }
   };
 
   const openAlbum = (album: LibraryAlbum) => navigate({ page: 'album', album });
-  const activePage = location.page === 'album' || location.page === 'playlist' ? 'library' : location.page;
+  const catalogNav: CatalogNav = {
+    openAlbum: (container) => navigate({ page: 'detail', container }),
+    openPlaylist: (container) => navigate({ page: 'detail', container }),
+    openArtist: (artist) => navigate({ page: 'artist', artist }),
+  };
+  const isApple = platform === 'apple';
+  const activePage: Extract<ShellPage, 'home' | 'library' | 'sources' | 'now'> =
+    location.page === 'album' || location.page === 'playlist' || location.page === 'detail' || location.page === 'artist'
+      ? 'library'
+      : location.page === 'now'
+        ? 'now'
+        : location.page === 'sources'
+          ? 'sources'
+          : 'home';
 
   return (
     <div className={`app app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
       <Sidebar
-        activePage={location.page === 'playlist' ? 'playlist' : activePage}
+        activePage={activePage}
         collapsed={sidebarCollapsed}
         onNavigate={(page) => navigate({ page })}
       />
@@ -197,10 +228,20 @@ export function App() {
           onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
         />
         <main className="main shell-main">
-          {location.page === 'home' && <HomeView onSelectAlbum={openAlbum} />}
-          {location.page === 'library' && <LibraryView onSelectAlbum={openAlbum} />}
+          {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
+          {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
+          {location.page === 'radio' && <ProviderRadioView nav={catalogNav} />}
+          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} /> : <SourcesView />)}
+          {location.page === 'library' && (isApple ? <ProviderLibraryView nav={catalogNav} /> : <LibraryView onSelectAlbum={openAlbum} />)}
+          {location.page === 'localfiles' && <LibraryView onSelectAlbum={openAlbum} />}
           {location.page === 'album' && location.album && (
             <AlbumView album={location.album} onBack={goBack} />
+          )}
+          {location.page === 'detail' && location.container && (
+            <CatalogDetailView container={location.container} nav={catalogNav} onBack={goBack} />
+          )}
+          {location.page === 'artist' && location.artist && (
+            <ArtistView artist={location.artist} nav={catalogNav} onBack={goBack} />
           )}
           {location.page === 'playlist' && <div className="home-view"><div className="home-scroll"><header className="home-intro"><h1>Playlists</h1></header><div className="home-empty"><div><h2>Playlists are coming soon</h2><p>Your playlists will appear here.</p></div></div></div></div>}
           {location.page === 'sources' && <SourcesView />}

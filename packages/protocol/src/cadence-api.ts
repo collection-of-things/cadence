@@ -16,6 +16,7 @@ import type {
   ScanProgress,
   TrackRef,
 } from "./index.js";
+import type { CatalogPage, CatalogRequest, PlatformId } from "./catalog.js";
 
 export interface CadenceApi {
   // --- playback -------------------------------------------------------------
@@ -54,6 +55,24 @@ export interface CadenceApi {
     /** Trigger a route's sign-in flow (opens its view/focuses window). */
     signIn(route: RouteId): Promise<void>;
     signOut(route: RouteId): Promise<void>;
+  };
+
+  // --- streaming platform -----------------------------------------------------
+  platform: {
+    /** The single active streaming platform ("local" = none). Persisted. */
+    active(): Promise<PlatformId>;
+    setActive(platform: PlatformId): Promise<void>;
+  };
+
+  // --- provider catalog ---------------------------------------------------------
+  catalog: {
+    /**
+     * The provider-neutral browse surface: search, home, browse, radio,
+     * detail pages, user library and lyrics. Rejects when the route has no
+     * catalog implementation or the provider call fails — callers surface
+     * the message honestly.
+     */
+    query(route: RouteId, request: CatalogRequest): Promise<CatalogPage>;
   };
 
   // --- search -------------------------------------------------------------------

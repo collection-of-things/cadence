@@ -26,6 +26,11 @@ export interface ProviderSessionOptions {
   url: string;
   /** Preload bundle path (defaults to the bundled provider preload). */
   preloadPath?: string;
+  /**
+   * Expression re-evaluated after every page load (in-page navigations wipe
+   * injected state). Must be idempotent — controllers self-guard.
+   */
+  injectScript?: string;
   /** Called for every event posted by the injected controller. */
   onEvent?: (event: { name: string; data: unknown }) => void;
 }
@@ -85,6 +90,17 @@ export class ProviderSession {
         for (const l of this.listeners)
           l({ name: "viewGone", data: { reason: details.reason } });
       });
+
+      // Re-inject the controller after every (in-page) navigation — SPAs
+      // keep JS state, but hard loads (redirects, OAuth round-trips) wipe it.
+      if (this.opts.injectScript) {
+        const script = this.opts.injectScript;
+        win.webContents.on("did-finish-load", () => {
+          void win.webContents
+            .executeJavaScript(script, true)
+            .catch(() => undefined);
+        });
+      }
 
       win.webContents.setWindowOpenHandler(({ url }) => {
         // Provider sign-in popups must open in the same account partition.
@@ -174,5 +190,14 @@ export class ProviderSession {
 
   hide(): void {
     this.win?.hide();
+  }
+
+  /** Wipe the partition's storage — full provider sign-out. */
+  async clearData(): Promise<void> {
+    try {
+      await session.fromPartition(this.partition).clearStorageData();
+    } catch {
+      /* best effort */
+    }
   }
 }

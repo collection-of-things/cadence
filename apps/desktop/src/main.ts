@@ -12,6 +12,7 @@ import {
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { PlatformId } from "@cadence/protocol";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
 import { makePlaceholderAdapter, providerRoutes } from "./adapters/placeholders.js";
@@ -32,6 +33,27 @@ import { registerMediaKeys } from "./media-keys.js";
  * the coordinator, open the main window. All domain/policy logic lives in
  * the modules; this file only wires concrete pieces together.
  */
+
+// --- environment (must run before app is ready) -------------------------------
+// CADENCE_USER_DATA: pin the profile dir (e2e reuses a signed-in profile).
+if (process.env.CADENCE_USER_DATA) {
+  app.setPath("userData", process.env.CADENCE_USER_DATA);
+}
+// CADENCE_E2E_CDP_PORT: expose Chrome DevTools Protocol for headless driving.
+if (process.env.CADENCE_E2E_CDP_PORT) {
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.CADENCE_E2E_CDP_PORT);
+}
+// --no-zygote: zygote-based child spawn fails on kernels without user
+// namespaces; direct spawn is a bit slower but always works. Linux only.
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("no-zygote");
+}
+// CADENCE_DISABLE_SANDBOX=1: boxes without kernel user-namespace support
+// cannot start the Chromium sandbox at all.
+if (process.env.CADENCE_DISABLE_SANDBOX === "1" || process.env.ELECTRON_DISABLE_SANDBOX === "1") {
+  app.commandLine.appendSwitch("no-sandbox");
+}
+app.setName("cadence");
 
 // apps/desktop -> repo root (CADENCE_AUDIO_BIN overrides the binary path in
 // packaged builds where this layout no longer applies).
@@ -166,9 +188,6 @@ async function main(): Promise<void> {
   const registered = new Set(["local"]);
   for (const adapter of createProviderAdapters({
     graph: audioClient,
-    apple: {
-      getDeveloperToken: async () => process.env.CADENCE_APPLE_DEVELOPER_TOKEN ?? null,
-    },
     spotify: {
       getCredentials: async () => {
         const username = process.env.CADENCE_SPOTIFY_USERNAME;
@@ -260,6 +279,23 @@ async function main(): Promise<void> {
     },
     routeSignOut: async (route) => {
       await registry.get(route)?.signOut?.();
+    },
+    platform: {
+      // One streaming platform at a time; "local" means none is active.
+      // Persisted in the same settings document as playback/library state.
+      active: async (): Promise<PlatformId> => {
+        const section = store.loadSection("platform");
+        const active =
+          typeof section === "object" && section !== null
+            ? (section as { active?: unknown }).active
+            : undefined;
+        return active === "apple" || active === "spotify" || active === "youtube"
+          ? active
+          : "local";
+      },
+      setActive: async (platform) => {
+        store.saveSection("platform", { active: platform });
+      },
     },
   });
   const unregisterKeys = registerMediaKeys(coordinator);

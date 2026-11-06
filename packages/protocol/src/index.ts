@@ -6,6 +6,8 @@
  * vocabulary. Keep additive changes backward compatible.
  */
 
+import type { CatalogPage, CatalogRequest } from "./catalog.js";
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -249,6 +251,11 @@ export interface RouteAdapter {
    * describing the real cause.
    */
   search?(text: string): Promise<TrackRef[]>;
+  /**
+   * Full catalog surface (browse/home/library/detail/lyrics). Adapters that
+   * serve only search omit this; callers treat absence as unavailable.
+   */
+  catalog?(req: CatalogRequest): Promise<CatalogPage>;
   /** Trigger the route's sign-in flow (reveal view / open pairing). */
   signIn?(): Promise<void>;
   signOut?(): Promise<void>;
@@ -312,3 +319,4 @@ export interface ScanProgress {
 
 export * from "./audio-ipc.js";
 export * from "./cadence-api.js";
+export * from "./catalog.js";

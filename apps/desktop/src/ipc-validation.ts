@@ -1,6 +1,7 @@
 import type {
   ArtistRef,
   ArtworkRef,
+  CatalogRequest,
   LibraryQuery,
   PlaybackCommand,
   ProviderId,
@@ -72,6 +73,82 @@ export function parseProviderSearch(
   }
   if (u.text.length > 500) return fail("provider search text exceeds 500 chars");
   return ok({ route: route.value, text: u.text.trim() });
+}
+
+const PROVIDER_PLATFORMS: ReadonlySet<string> = new Set(["local", "spotify", "apple", "youtube"]);
+const CATALOG_REQUEST_KINDS: ReadonlySet<string> = new Set([
+  "search",
+  "home",
+  "browse",
+  "radio",
+  "album",
+  "playlist",
+  "artist",
+  "library",
+  "libraryDetail",
+  "lyrics",
+  "addToLibrary",
+]);
+const ENTRY_KINDS: ReadonlySet<string> = new Set(["song", "album", "playlist", "artist", "station"]);
+const LIB_COLLECTIONS: ReadonlySet<string> = new Set(["songs", "albums", "artists", "playlists"]);
+
+/** Parse a platform id for platform.get/set. */
+export function parsePlatformId(u: unknown): Result<ProviderId, InvalidIpcPayload> {
+  if (typeof u === "string" && PROVIDER_PLATFORMS.has(u)) return ok(u as ProviderId);
+  return fail(`expected a platform id, got ${JSON.stringify(u)}`);
+}
+
+/** Parse {route, request} for catalog.query. */
+export function parseCatalogQuery(
+  u: unknown,
+): Result<{ route: RouteId; request: CatalogRequest }, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("catalog query expects {route, request}");
+  const route = parseRouteId(u.route);
+  if (!isOk(route)) return err(route.error);
+  const req = u.request;
+  if (!isObj(req) || typeof req.kind !== "string" || !CATALOG_REQUEST_KINDS.has(req.kind)) {
+    return fail(`catalog request must have a known kind, got ${JSON.stringify(isObj(req) ? req.kind : req)}`);
+  }
+  switch (req.kind) {
+    case "search": {
+      if (typeof req.text !== "string" || !req.text.trim()) {
+        return fail("catalog search requires non-empty text");
+      }
+      if (req.text.length > 500) return fail("catalog search text exceeds 500 chars");
+      if (req.types !== undefined && (!Array.isArray(req.types) || !req.types.every((t) => typeof t === "string" && ENTRY_KINDS.has(t)))) {
+        return fail("catalog search types must be entry kinds");
+      }
+      break;
+    }
+    case "album":
+    case "playlist":
+    case "artist": {
+      if (typeof req.id !== "string" || !req.id) return fail(`catalog ${req.kind} requires id`);
+      break;
+    }
+    case "library": {
+      if (typeof req.collection !== "string" || !LIB_COLLECTIONS.has(req.collection)) {
+        return fail("catalog library requires collection in songs|albums|artists|playlists");
+      }
+      break;
+    }
+    case "libraryDetail": {
+      if (req.collection !== "albums" && req.collection !== "playlists") {
+        return fail("libraryDetail collection must be albums|playlists");
+      }
+      if (typeof req.id !== "string" || !req.id) return fail("libraryDetail requires id");
+      break;
+    }
+    case "lyrics": {
+      if (typeof req.songId !== "string" || !req.songId) return fail("lyrics requires songId");
+      break;
+    }
+    case "addToLibrary": {
+      if (!isObj(req.ids)) return fail("addToLibrary requires ids object");
+      break;
+    }
+  }
+  return ok({ route: route.value, request: req as unknown as CatalogRequest });
 }
 
 /** Parse a track id for library.track. */
