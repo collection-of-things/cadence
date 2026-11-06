@@ -829,11 +829,8 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         .store(feed.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
     feed.processed_once.store(true, Ordering::Relaxed);
     // Paused: silence WITHOUT draining — the pre-pause tail stays queued
-    // so resume picks up exactly where playback stopped. Any still-held
-    // in-flight count is stale now: the queue is emitting silence, and
-    // holding it would replay a dead pull on a later rebuild.
+    // so resume picks up exactly where playback stopped.
     if feed.paused.load(Ordering::Acquire) {
-        feed.inflight.store(0, Ordering::Release);
         let Some(mut buffer) = stream.dequeue_buffer() else {
             return;
         };
@@ -860,6 +857,10 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
+        // A completed silence cycle proves the prior real buffer was
+        // consumed — only now is the held pull stale. Clearing before
+        // this point could drop still-queued unheard frames.
+        feed.inflight.store(0, Ordering::Release);
         return;
     }
     let Some(mut buffer) = stream.dequeue_buffer() else {
