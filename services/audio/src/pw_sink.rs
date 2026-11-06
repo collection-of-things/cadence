@@ -96,6 +96,11 @@ pub struct PipeWireCaps {
     device_name: String,
     /// shared with each stream's state listener — device-loss reporting.
     error: Arc<Mutex<Option<String>>>,
+    /// enumerate_sinks spins two thread loops + two core syncs (~ms to
+    /// seconds); the monitor's device-error path calls list() each
+    /// recovery cycle — cache briefly so that path can't stall the
+    /// monitor on repeated error handling.
+    list_cache: Mutex<Option<(std::time::Instant, Vec<DeviceDesc>)>>,
 }
 
 impl PipeWireCaps {
@@ -108,6 +113,7 @@ impl PipeWireCaps {
                     target: Some(node_id),
                     device_name: found,
                     error: Arc::new(Mutex::new(None)),
+                    list_cache: Mutex::new(None),
                 }))
             }
             None => {
@@ -125,6 +131,7 @@ impl PipeWireCaps {
                     target: None,
                     device_name: resolved,
                     error: Arc::new(Mutex::new(None)),
+                    list_cache: Mutex::new(None),
                 }))
             }
         }
@@ -370,8 +377,17 @@ impl DeviceCaps for PipeWireCaps {
     }
 
     fn list(&self) -> Vec<DeviceDesc> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(2);
+        {
+            let c = self.list_cache.lock().unwrap();
+            if let Some((t, v)) = c.as_ref() {
+                if t.elapsed() < TTL {
+                    return v.clone();
+                }
+            }
+        }
         let (sinks, default_name) = enumerate_sinks().unwrap_or_default();
-        sinks
+        let v: Vec<DeviceDesc> = sinks
             .into_iter()
             .map(|(_serial, name)| DeviceDesc {
                 is_default: default_name.as_deref() == Some(name.as_str()),
@@ -379,7 +395,10 @@ impl DeviceCaps for PipeWireCaps {
                 default_sample_rate_hz: 48000,
                 channels: 2,
             })
-            .collect()
+            .collect();
+        *self.list_cache.lock().unwrap() =
+            Some((std::time::Instant::now(), v.clone()));
+        v
     }
 
     fn device_error(&self) -> Option<String> {
@@ -421,6 +440,9 @@ struct Feed<T> {
     /// is_dead() watchdog uses it to detect a stream that reaches
     /// Paused but never runs.
     last_process_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Negotiated latency quantum in frames — the fill ceiling when the
+    /// graph doesn't state a request (mpv caps the same way).
+    latency_frames: usize,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
     /// "never scheduled" arm keys on this.
@@ -570,6 +592,7 @@ impl PipeWireCaps {
                     channels: neg.channels as usize,
                     paused: paused.clone(),
                     last_process_ms: Arc::clone(&last_process_ms),
+                    latency_frames: latency as usize,
                     processed_once: Arc::clone(&processed_once),
                     t0,
                 })
@@ -737,7 +760,11 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
             let frames = if requested > 0 {
                 requested.min(max_frames)
             } else {
-                max_frames
+                // Unstated request → cap at the negotiated quantum,
+                // not the whole mmap region: filling the region would
+                // flush the staging ring into one buffer and starve
+                // the following callbacks (mpv clamps the same way).
+                feed.latency_frames.min(max_frames)
             };
             // PW buffers are aligned to cpu.max-align — safe to cast.
             let out = unsafe {
