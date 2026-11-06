@@ -736,13 +736,12 @@ def main():
                 # accepts connections on it. (unix socket, no socat dep)
                 for _ in range(20):
                     try:
-                        s = socket.socket(socket.AF_UNIX)
-                        s.settimeout(0.3)
-                        s.connect(mpv_sock)
-                        s.sendall(
-                            b'{"command": ["set_property", "pause", false]}\n'
-                        )
-                        s.close()
+                        with socket.socket(socket.AF_UNIX) as s:
+                            s.settimeout(0.3)
+                            s.connect(mpv_sock)
+                            s.sendall(
+                                b'{"command": ["set_property", "pause", false]}\n'
+                            )
                         break
                     except OSError:
                         time.sleep(0.25)

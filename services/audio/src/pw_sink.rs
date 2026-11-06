@@ -853,7 +853,7 @@ impl Sink for PipeWireSink {
         // reseed) under !processed_once — the grace must measure from
         // there, not from open-start t0: a ~2s decisive wait would
         // leave the never-arm <0.5s to see its first callback.
-        let stale = (never || state == 3) && now - last > 2500;
+        let stale = (never || state == 3) && now.saturating_sub(last) > 2500;
         if stale {
             if let Ok(mut cell) = self.error.lock() {
                 *cell = Some("stream never scheduled (no process callbacks)".into());

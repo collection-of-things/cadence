@@ -708,6 +708,10 @@ pub struct Engine {
     /// Serializes stream rebuilds (set_device / fidelity / format mismatch)
     /// so two of them can never interleave a sink swap.
     stream_mu: Mutex<()>,
+    /// Monotonic install generation — bumps on every sink install so the
+    /// monitor's dead-report latch keys on identity, not a heap address
+    /// the allocator can hand out again.
+    sink_gen: std::sync::atomic::AtomicU64,
     caps: Mutex<Arc<dyn DeviceCaps>>,
     monitor_stop: Arc<AtomicBool>,
     producer: Mutex<Option<ProducerHandle>>,
@@ -748,6 +752,7 @@ impl Engine {
             }),
             sink: Mutex::new(Some(sink)),
             stream_mu: Mutex::new(()),
+            sink_gen: std::sync::atomic::AtomicU64::new(1),
             caps: Mutex::new(caps),
             monitor_stop: Arc::new(AtomicBool::new(false)),
             producer: Mutex::new(None),
@@ -1428,7 +1433,13 @@ impl Engine {
             core.negotiated = neg.clone();
             core.rebuilding = false;
         }
-        *self.sink.lock().unwrap() = Some(new_sink);
+        {
+            let mut g = self.sink.lock().unwrap();
+            *g = Some(new_sink);
+            // Bump under the same guard — the monitor reads (sink, gen)
+            // atomically under it, so a rebuild can never tear the pair.
+            self.sink_gen.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -2853,14 +2864,18 @@ impl Engine {
                     .lock()
                     .unwrap()
                     .device_error();
-                // Keyed by sink identity: a rebuild installs a new
-                // Box → a fresh dead report is allowed once.
+                // Keyed by sink generation (not the Box address — the
+                // allocator can reuse it after a rebuild) — one report
+                // per installed sink. Placeholders don't report at all.
                 let (sink_dead, sink_key) = {
                     let g = self.sink.lock().unwrap();
                     match g.as_ref() {
                         Some(s) => {
-                            let key = &**s as *const dyn Sink as *const u8 as usize;
-                            (s.is_dead(), key)
+                            let key = self.sink_gen.load(Ordering::Relaxed) as usize;
+                            (
+                                s.is_dead() && !s.is_placeholder(),
+                                key,
+                            )
                         }
                         None => (false, 0),
                     }

@@ -226,6 +226,12 @@ pub trait DeviceCaps: Send + Sync {
 
 pub trait Sink: Send {
     fn stop(&mut self);
+    /// Boot placeholder (no device yet) — the monitor skips the dead
+    /// poll for these: reporting "device lost" at startup before any
+    /// playback is the wrong event.
+    fn is_placeholder(&self) -> bool {
+        false
+    }
     /// A dead sink never renders — loads over it must retry the open, not
     /// succeed silently into nothing.
     fn is_dead(&self) -> bool {
@@ -680,6 +686,9 @@ impl DeviceCaps for UnavailableCaps {
 pub struct DeadSink;
 impl Sink for DeadSink {
     fn stop(&mut self) {}
+    fn is_placeholder(&self) -> bool {
+        true
+    }
     fn is_dead(&self) -> bool {
         true
     }
