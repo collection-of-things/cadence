@@ -194,13 +194,14 @@ fn serve(cli: Cli) -> Result<i32> {
     // Open the output stream up front. If it fails (no usable device), the
     // engine stays alive: loads error honestly via event.error and a later
     // audio.setDevice can recover.
-    let sink_obj: Box<dyn sink::Sink> = match caps.open_stream(&initial_neg, Arc::clone(&core)) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("audio: output stream unavailable ({e:#})");
-            Box::new(sink::DeadSink)
-        }
-    };
+    let sink_obj: Box<dyn sink::Sink> =
+        match sink::open_sink(&cfg, caps.clone(), &initial_neg, &core) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("audio: output stream unavailable ({e:#})");
+                Box::new(sink::DeadSink)
+            }
+        };
 
     let emit = rpc::stdout_emitter();
     let engine = Engine::new(

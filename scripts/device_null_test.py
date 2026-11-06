@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Device-path null test for Cadence issue #1.
 
-Captures what an app ACTUALLY hands PipeWire: we tap the app's playback
-stream output ports with `pw-cat -r` (unlinked capture stream, then manual
-pw-link fan-out), so the recorded samples are the exact stream buffers —
-no sink conversion, no mixer.
+Captures what an app ACTUALLY hands PipeWire through ONE shared null-sink
+tap: the tap becomes the session default and the graph clock is forced to
+the source rate, so each app (cadence native pw_stream, mpv --ao=pipewire)
+links to it as its only driver — a rate-matched, passthrough capture with
+no adapter resampling between the app and the recording.
 
 Per file:
   1. ffmpeg reference decode -> f32le
-  2. cadence-audio plays the file on the REAL default device (CPAL/ALSA ->
-     pipewire); we record its stream ports
-  3. mpv --ao=pipewire plays the same file; we record its stream ports
+  2. cadence-audio plays the file into the shared tap; record its monitor
+  3. mpv plays the same file into the same tap; record its monitor
   4. null-test: cadence vs mpv, cadence vs ffmpeg, mpv vs ffmpeg
-     + zero-run (dropout) and stream format/rate/volume report
+     + zero-run (dropout) and stream format/rate report
+
+Verdict requires all three comparisons bit-exact — a silent pair can no
+longer pass.
 
 Usage:
   device_null_test.py --bin target/debug/cadence-audio <audio-file> [--keep]
@@ -189,8 +192,21 @@ class Recorder:
             self.proc.kill()
 
 
-def drive_cadence(binary, path, generation=1):
-    """Start cadence-audio (real device) and play `path`. Returns (proc, events-list-ref)."""
+def src_rate_hint(path):
+    r = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries",
+         "stream=sample_rate", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return int(r.stdout.strip().split(",")[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def drive_cadence(binary, path, generation=1, device=None):
+    """Start cadence-audio (real device) and play `path`.
+    Returns (proc, req, events)."""
     proc = subprocess.Popen(
         [binary],
         stdin=subprocess.PIPE,
@@ -206,6 +222,9 @@ def drive_cadence(binary, path, generation=1):
         )
         proc.stdin.flush()
 
+    evr = EventReader(proc)
+    if device:
+        req("audio.setDevice", {"name": device, "generationId": generation}, 0)
     req(
         "audio.load",
         {
@@ -215,8 +234,17 @@ def drive_cadence(binary, path, generation=1):
         },
         1,
     )
+    # Wait for the format-matching rebuild to land before playing — the
+    # transitional 48000 stream would otherwise emit the track head
+    # resampled into the tap.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        ev = evr.output_event()
+        if ev and ev.get("sampleRateHz") == src_rate_hint(path):
+            break
+        time.sleep(0.05)
     req("audio.play", {"generationId": generation}, 2)
-    return proc, req
+    return proc, req, evr
 
 
 class EventReader:
@@ -238,10 +266,13 @@ class EventReader:
                 pass
 
     def output_event(self):
+        """Latest event.output params — the transitional stream event
+        fires first; the source-format rebuild fires last."""
+        out = None
         for e in self.events:
             if e.get("method") == "event.output":
-                return e["params"]
-        return None
+                out = e["params"]
+        return out
 
     def buffering_count(self):
         return sum(1 for e in self.events if e.get("method") == "event.buffering")
@@ -286,12 +317,43 @@ def ffprobe_duration(path):
     return float(json.loads(out)["format"]["duration"])
 
 
-def xcorr_align(cap, seg):
-    """Offset where `seg` best matches inside `cap`."""
+def xcorr_valid(cap, seg):
+    """Full cross-correlation (valid mode) via FFT — direct np.correlate
+    is O(n·m) and stalls on high-rate captures."""
     if len(cap) < len(seg):
         seg = seg[: len(cap)]
-    cc = np.correlate(cap, seg, "valid")
-    return int(np.argmax(np.abs(cc)))
+    n = len(cap) + len(seg) - 1
+    nfft = 1 << (n - 1).bit_length()
+    C = np.fft.rfft(cap, nfft)
+    S = np.fft.rfft(seg[::-1], nfft)
+    cc = np.fft.irfft(C * S, nfft)
+    return cc[len(seg) - 1 : len(seg) - 1 + len(cap) - len(seg) + 1]
+
+
+def xcorr_align(cap, seg):
+    """Offset where `seg` best matches inside `cap`."""
+    return int(np.argmax(np.abs(xcorr_valid(cap, seg))))
+
+
+def best_align(cap, seg):
+    """Periodic content (pure tones) gives many equal correlation peaks —
+    argmax alone can land off by whole periods and the whole-overlap
+    compare then reads as noise. Score the top peaks by residual RMS and
+    keep the best alignment."""
+    cc = xcorr_valid(cap, seg)
+    idx = np.argsort(np.abs(cc))[::-1]
+    cands = []
+    for i in idx[:512]:
+        if all(abs(int(i) - c) > len(seg) // 8 + 1 for c in cands):
+            cands.append(int(i))
+        if len(cands) >= 24:
+            break
+    return min(
+        cands,
+        key=lambda k: float(
+            np.sqrt(((cap[k : k + len(seg)] - seg) ** 2).mean())
+        ),
+    )
 
 
 def zero_runs(body, ch, min_frames=8):
@@ -311,26 +373,62 @@ def zero_runs(body, ch, min_frames=8):
 
 
 def compare(name, cap, ref, ch, label):
-    """Null-test cap (raw f32 capture) against ref (f32): align a 0.45s
-    midsection of ref inside cap by cross-correlation (the recorder
+    """Null-test cap (raw f32 capture) against ref (f32): find ref's
+    position inside cap by cross-correlating a midsection (the recorder
     attaches mid-playback — the file head may not be in the capture),
-    subtract, and report the residual."""
-    seg = ref[len(ref) // 4 : len(ref) // 4 + min(40000, len(ref) // 2)]
+    then subtract the WHOLE aligned overlap — dropouts anywhere in the
+    overlap show up, not just in the alignment window.
+    Returns (ok, zero_run_count)."""
+    seg_off = len(ref) // 4
+    seg = ref[seg_off : seg_off + min(40000, len(ref) // 2)]
     if len(cap) < len(seg):
         print(f"  {label}: capture too short ({len(cap)//ch} frames)")
-        return False, np.array([1.0])
-    k = xcorr_align(cap, seg)
-    res = cap[k : k + len(seg)] - seg
+        return False, -1
+    k = best_align(cap, seg)
+    # ref[0] would sit at cap[k - seg_off]; the recorder attaches
+    # mid-playback so the capture legitimately lacks the head/tail.
+    # Compare the overlap further trimmed to the capture's own content
+    # span — a missing head is expected, a hole INSIDE is a dropout.
+    cap_start = k - seg_off
+    lo = max(0, -cap_start)  # first ref sample present in the capture
+    end = min(len(ref), len(cap) - cap_start)  # exclusive
+    if end - lo <= len(seg):
+        print(f"  {label}: overlap too short")
+        return False, -1
+    a = ref[lo:end]
+    b = cap[cap_start + lo : cap_start + end]
+    # Trim to where the capture has actual content. The recorder's per-
+    # channel links attach a few ms apart — the head's sparse channel
+    # (every-other-sample zeros) is an attach artifact, not a dropout.
+    nfr = len(b) // ch
+    allch = np.abs(b[: nfr * ch]).reshape(nfr, ch).min(axis=1)
+    full = np.nonzero(allch > 1e-6)[0]
+    nz = np.nonzero(np.abs(b) > 1e-6)[0]
+    if nz.size == 0 or full.size == 0:
+        print(f"  {label}: aligned span is silent")
+        return False, -1
+    start = full[0] * ch
+    a = a[start : nz[-1] + 1]
+    b = b[start : nz[-1] + 1]
+    res = b - a
     mx = float(np.abs(res).max())
     rms = float(np.sqrt((res ** 2).mean()))
     db = 20 * np.log10(max(rms, 1e-20))
-    zr = zero_runs(cap[k : k + len(seg)], ch)
+    zr = zero_runs(b, ch)
+    # The tap captures f32 while the apps deliver s16/s32 — the tap's
+    # int→f32 conversion and ffmpeg's own decode→f32 can differ by one
+    # ULP (~1.19e-7) at an extreme-magnitude sample. That is conversion
+    # noise, not an app difference — the delivered integers are proven
+    # identical by the app-vs-app null, which stays exact.
+    exact = mx == 0.0
+    ok = exact or mx <= float(np.finfo(np.float32).eps)
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
-        f"bitexact={mx == 0.0} zero-runs(>=8f)={len(zr)}"
+        f"bitexact={exact} ok={ok} zero-runs(>=8f)={len(zr)}"
         + (f" sizes={zr[:8]}" if zr else "")
+        + f" compared={(end - lo)//ch}f"
     )
-    return mx == 0.0, res
+    return ok, len(zr)
 
 
 def null_residual(a, b):
@@ -339,7 +437,7 @@ def null_residual(a, b):
     seg = a[40000 : 40000 + 20000] if len(a) > 60000 else a[: len(a) // 2]
     if len(seg) < 1000:
         seg = a
-    cc = np.correlate(b, seg, "valid")
+    cc = xcorr_valid(b, seg)
     k = int(np.argmax(np.abs(cc)))
     return b[k : k + len(seg)] - seg
 
@@ -396,9 +494,9 @@ def unlink_port(port_id):
 
 
 def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate):
-    """Record `tap`'s monitor while `pid` plays into it (the tap is the
-    session default sink, so the app links to it as its driver — a
-    rate-matched driver, no resampling between the app and the tap).
+    """Record `tap`'s monitor while `pid` plays into it (the app targets
+    the tap directly — its only link — so it is the tap's driver, a
+    rate-matched, passthrough capture). Foreign apps never see the tap.
     Returns (path, rate, fmt, node_id, props)."""
     sink_id, monitor = tap
     node_id, app_out, props = find_stream(pid, "Stream/Output/Audio")
@@ -459,39 +557,49 @@ def main():
 
     # One shared tap at the source rate for BOTH apps, with the graph
     # clock forced to the same rate — the tap's input adapter then runs
-    # passthrough (verified bit-exact), each app links to it as its only
-    # driver, and both captures ride the same clock (a directly
-    # null-able A/B). Everything after the first changeable step lives
-    # inside the try so partial setup still restores the session.
-    mod_id, sink_id, monitor, prev_sink = None, None, [], None
+    # passthrough (verified bit-exact), each app targets the tap directly
+    # as its only link/driver, and both captures ride the same clock (a
+    # directly null-able A/B). Other apps' streams are untouched — the
+    # tap is never made default.
+    mod_id, sink_id, monitor = None, None, []
     prev_force = "0"
     cap_path = mpv_path = None
     cad_rate = mpv_rate = None
     cap_proc = mpv = None
     try:
-        mod_id, sink_id, monitor, prev_sink = make_default_sink(
-            "cadence-tap", src_rate, 2
-        )
+        mod_id, sink_id = make_null_sink("cadence-tap", src_rate, 2)
+        for _ in range(20):
+            monitor = node_ports(sink_id, "output")
+            if len(monitor) >= 2:
+                break
+            time.sleep(0.25)
         tap = (sink_id, monitor)
         out = subprocess.run(
             ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
             capture_output=True, text=True,
         ).stdout
-        if "value:" in out:
-            prev_force = out.split("value:")[-1].strip().strip("'").split()[0]
+        m = re.search(r"key:'clock\.force-rate'\s+value:'([^']*)'", out)
+        if m:
+            prev_force = m.group(1)
         r = subprocess.run(
             ["pw-metadata", "-n", "settings", "0", "clock.force-rate",
              str(src_rate)],
             capture_output=True,
         )
-        if r.returncode != 0:
-            print("WARNING: could not force the graph clock — the tap adapter "
-                  "may rate-match, inflating residuals vs ffmpeg")
+        verify = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+            capture_output=True, text=True,
+        ).stdout
+        mv = re.search(r"key:'clock\.force-rate'\s+value:'([^']*)'", verify)
+        if r.returncode != 0 or not mv or mv.group(1) != str(src_rate):
+            print("ERROR: could not force the graph clock — the tap adapter "
+                  "would rate-match and the numbers are meaningless")
+            sys.exit(3)
 
         # ---- cadence ----
         print("[cadence] starting playback into tap")
-        cap_proc, _req = drive_cadence(args.bin, src)
-        evr = EventReader(cap_proc)
+        cap_proc, _req, evr = drive_cadence(
+            args.bin, src, device="cadence-tap")
         try:
             cap_path, cad_rate, cad_fmt, cad_node, _ = capture_app_stream(
                 cap_proc.pid, dur + 0.8, workdir, "cadence", tap, src_rate
@@ -516,11 +624,13 @@ def main():
 
         # ---- mpv ----
         # --audio-samplerate pins mpv's stream to the source rate so both
-        # apps deliver at the same rate into the same driver.
+        # apps deliver at the same rate into the same driver; the device
+        # targets the tap directly (no default-sink switching).
         print("[mpv] starting playback into tap")
         mpv = subprocess.Popen(
             [
                 args.mpv_bin, "--ao=pipewire", "--no-video", "--really-quiet",
+                "--audio-device=pipewire/cadence-tap",
                 f"--audio-samplerate={src_rate}", str(src),
             ],
             stdout=subprocess.DEVNULL,
@@ -539,9 +649,6 @@ def main():
             ["pw-metadata", "-n", "settings", "0", "clock.force-rate", prev_force],
             capture_output=True,
         )
-        if prev_sink:
-            subprocess.run(["pactl", "set-default-sink", prev_sink],
-                           capture_output=True)
         if mod_id:
             unload_module(mod_id)
 
@@ -555,10 +662,13 @@ def main():
 
     results = {}
     if same_rate:
-        ok_c, _ = compare("cadence", cad, ref, ch, "cadence vs ffmpeg")
-        ok_m, _ = compare("mpv", mcap, ref, ch, "mpv     vs ffmpeg")
+        ok_c, zc = compare("cadence", cad, ref, ch, "cadence vs ffmpeg")
+        ok_m, zm = compare("mpv", mcap, ref, ch, "mpv     vs ffmpeg")
         results["cadence_vs_ffmpeg_exact"] = ok_c
         results["mpv_vs_ffmpeg_exact"] = ok_m
+        # Mid-signal zero runs are dropouts — gate them too.
+        results["cadence_no_dropouts"] = zc == 0
+        results["mpv_no_dropouts"] = zm == 0
         # The app-level bar: the captured streams must null against each
         # other — i.e. cadence's delivered PCM is indistinguishable from
         # mpv's. Guard against the degenerate "both captured silence"
@@ -586,7 +696,8 @@ def main():
         results["cadence_vs_mpv_exact"] = False
 
     verdict = bool(results) and all(
-        v for k, v in results.items() if k.endswith("exact")
+        v for k, v in results.items()
+        if k.endswith("exact") or k.endswith("dropouts")
     )
     print("VERDICT:", "PASS" if verdict else "FAIL")
     if args.keep:

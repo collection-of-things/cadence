@@ -11,7 +11,7 @@ use crate::pw_sink::PipeWireCaps;
 use crate::ringbuf::{self, Consumer};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Sample type carried to a device — f32/s32/s16, little-endian on wire.
@@ -35,16 +35,21 @@ fn drain<T: PcmSample>(cons: &Consumer<T>, out: &mut [T]) {
     out[n..].fill(T::default());
 }
 
-/// Drain after checking the flush epoch: a control change (pause/seek/
-/// clear) invalidates staged PCM — drop it instead of playing it out.
-/// `last` is per-callback state; both reads/writes are atomic-free and
-/// RT-safe.
+/// Drain after checking the pause flag and flush epoch: paused means
+/// output silence WITHOUT draining (the pre-pause tail survives for a
+/// seamless resume); a bumped epoch (seek/clear/load) means staged PCM
+/// is stale — drop it instead of playing it out.
 fn drain_epoch<T: PcmSample>(
     cons: &Consumer<T>,
     epoch: &std::sync::atomic::AtomicU64,
+    paused: &AtomicBool,
     last: &mut u64,
     out: &mut [T],
 ) {
+    if paused.load(Ordering::Relaxed) {
+        out.fill(T::default());
+        return;
+    }
     let e = epoch.load(Ordering::Acquire);
     if e != *last {
         *last = e;
@@ -99,13 +104,15 @@ pub fn spawn_feed<T: PcmSample>(
         .name("pcm-feed".into())
         .spawn(move || {
             let mut scratch = vec![T::default(); chunk];
-            let mut my_epoch = epoch.load(Ordering::Acquire);
             while !stop2.load(Ordering::Relaxed) {
                 if prod.free_space() < scratch.len() {
                     std::thread::sleep(std::time::Duration::from_millis(2));
                     continue;
                 }
-                {
+                // Epoch and pull under one lock: control changes bump the
+                // epoch while holding `core`, so a scratch's tag is always
+                // the epoch its samples were produced under.
+                let tagged = {
                     // Poisoned `core` means the engine already crashed —
                     // pull through the poison like the old callback did
                     // rather than die silently into a zero ring.
@@ -113,13 +120,24 @@ pub fn spawn_feed<T: PcmSample>(
                         Ok(c) => c,
                         Err(p) => p.into_inner(),
                     };
-                    pull(&mut c, &mut scratch);
-                }
-                // The scratch was pulled pre-flush — a bump between pull
-                // and publish must not let it reach the device.
-                let e = epoch.load(Ordering::Acquire);
-                if e != my_epoch {
-                    my_epoch = e;
+                    if c.paused {
+                        // Skip writes while paused so the ring keeps the
+                        // pre-pause tail — resume continues seamlessly.
+                        None
+                    } else {
+                        let tag = epoch.load(Ordering::Acquire);
+                        pull(&mut c, &mut scratch);
+                        Some(tag)
+                    }
+                };
+                let Some(tag) = tagged else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                // A bump between the locked pull and publish makes the
+                // scratch stale — drop it. Post-bump data (tag current)
+                // still publishes, so no fresh audio is lost.
+                if epoch.load(Ordering::Acquire) != tag {
                     continue;
                 }
                 prod.write(&scratch);
@@ -481,17 +499,26 @@ impl DeviceCaps for CpalCaps {
         let ch = neg.channels as usize;
         // Baseline at open: only flush data staged *before* a real control
         // bump — not the legitimate fill that raced the stream startup.
-        let epoch_base = core.lock().unwrap().clear_epoch.load(Ordering::Acquire);
-        let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
+        let (epoch, epoch_base, paused) = {
+            let c = core.lock().unwrap();
+            (
+                Arc::clone(&c.clear_epoch),
+                c.clear_epoch.load(Ordering::Acquire),
+                Arc::clone(&c.paused_flag),
+            )
+        };
         let (stream, feed) = match neg.kind {
             PcmKind::F32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_f32, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
+                let pa = Arc::clone(&paused);
                 let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<f32, _, _>(
                         &config,
-                        move |data: &mut [f32], _| drain_epoch(&cons, &ep, &mut last, data),
+                        move |data: &mut [f32], _| {
+                            drain_epoch(&cons, &ep, &pa, &mut last, data)
+                        },
                         err_cb,
                         None,
                     )?,
@@ -501,11 +528,14 @@ impl DeviceCaps for CpalCaps {
             PcmKind::S32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s32, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
+                let pa = Arc::clone(&paused);
                 let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i32, _, _>(
                         &config,
-                        move |data: &mut [i32], _| drain_epoch(&cons, &ep, &mut last, data),
+                        move |data: &mut [i32], _| {
+                            drain_epoch(&cons, &ep, &pa, &mut last, data)
+                        },
                         err_cb,
                         None,
                     )?,
@@ -515,11 +545,14 @@ impl DeviceCaps for CpalCaps {
             PcmKind::S16 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s16, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
+                let pa = Arc::clone(&paused);
                 let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i16, _, _>(
                         &config,
-                        move |data: &mut [i16], _| drain_epoch(&cons, &ep, &mut last, data),
+                        move |data: &mut [i16], _| {
+                            drain_epoch(&cons, &ep, &pa, &mut last, data)
+                        },
                         err_cb,
                         None,
                     )?,
@@ -637,6 +670,12 @@ pub fn open_sink(
             eprintln!("audio: pipewire stream failed ({e:#}); trying cpal/alsa");
             let mut c = CpalCaps::new(None)?;
             if let (Some(cell), Some(c)) = (caps.error_cell(), Arc::get_mut(&mut c)) {
+                // The cell still holds the PW failure that triggered this
+                // fallback — inheriting it would look like a fresh CPAL
+                // error to the monitor and loop the rebuild forever.
+                if let Ok(mut g) = cell.lock() {
+                    *g = None;
+                }
                 c.set_error_cell(cell);
             }
             c.open_stream(neg, Arc::clone(core))
@@ -700,5 +739,39 @@ mod tests {
         // Ring is empty afterwards — a second drain zero-fills.
         drain(&cons, &mut out);
         assert_eq!(out, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn drain_epoch_flushes_stale_and_silences_when_paused() {
+        let epoch = AtomicU64::new(0);
+        let paused = AtomicBool::new(false);
+        let (prod, cons) = ringbuf::channel::<i16>(16);
+        let mut last = 0u64;
+        let mut out = [9i16; 8];
+
+        // Baseline epoch → normal drain.
+        prod.write(&[1, 2, 3, 4]);
+        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        assert_eq!(&out[..4], &[1, 2, 3, 4]);
+
+        // Paused → silence WITHOUT draining: the tail stays queued.
+        paused.store(true, Ordering::Relaxed);
+        prod.write(&[5, 6]);
+        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        assert_eq!(out, [0i16; 8]);
+        paused.store(false, Ordering::Relaxed);
+        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        assert_eq!(&out[..2], &[5, 6]);
+
+        // Epoch bump → staged samples are stale and dropped.
+        prod.write(&[7, 8]);
+        epoch.store(1, Ordering::Release);
+        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        assert_eq!(out, [0i16; 8]);
+
+        // Fresh post-bump data drains normally afterwards.
+        prod.write(&[10, 11]);
+        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        assert_eq!(&out[..2], &[10, 11]);
     }
 }

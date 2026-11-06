@@ -140,83 +140,161 @@ fn with_core<R>(f: impl FnOnce(&pw::core::CoreRc) -> Result<R>) -> Result<R> {
     r
 }
 
-/// Enumerate Audio/Sink nodes -> (object.serial, node.name).
-/// The listener, registry and core must stay alive while the loop
-/// dispatches the initial global burst — dropping them inside the lock
-/// (as the naive version did) yields an empty list every time. A
-/// core.sync round-trip bounds the wait deterministically; the flag and
-/// list are shared through atomics/mutex because the done callback fires
-/// on the loop thread while this thread waits.
-fn enumerate_sinks() -> Result<Vec<(u32, String)>> {
+/// Enumerate Audio/Sink nodes -> (object.serial, node.name) plus the
+/// session's default sink name (from the `default` metadata object's
+/// `default.audio.sink` property). Objects stay alive through the whole
+/// dispatch window; a core.sync round-trip bounds the wait, and the
+/// flag/list share state through atomics/mutex because the callbacks
+/// fire on the loop thread while this thread waits.
+fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
     let tl = unsafe {
         // Safety: see with_core — same loop discipline.
         pw::thread_loop::ThreadLoopRc::new(Some("cadence-pw-ctl"), None)
     }?;
     tl.start();
     let found = Arc::new(Mutex::new(Vec::<(u32, String)>::new()));
+    let default_name = Arc::new(Mutex::new(None::<String>));
     let synced = Arc::new(std::sync::atomic::AtomicI64::new(-1));
-    let r: Result<()> = {
-        // Objects live for the whole block: registry events need the
-        // listener alive while the loop thread dispatches.
+    // Objects stay in `hold` until they've been dropped under the loop
+    // lock — dispatch can race an unlocked drop otherwise.
+    let mut hold: Option<(
+        pw::context::ContextRc,
+        pw::core::CoreRc,
+        pw::registry::RegistryRc,
+        Box<dyn std::any::Any>,
+        Box<dyn std::any::Any>,
+        Option<pw::metadata::Metadata>,
+        Option<Box<dyn std::any::Any>>,
+    )> = None;
+    let r: Result<i64> = {
         let _guard = tl.lock();
-        let ctx = pw::context::ContextRc::new(&tl, None)?;
-        let core = ctx.connect_rc(None)?;
-        let sflag = Arc::clone(&synced);
-        let _core_listener = core
-            .add_listener_local()
-            .done(move |_id, seq| sflag.store(seq.seq() as i64, Ordering::Release))
-            .register();
-        let reg = core.get_registry_rc()?;
-        let f = Arc::clone(&found);
-        let _listener = reg
-            .add_listener_local()
-            .global(move |obj| {
-                if obj.type_ != pw::types::ObjectType::Node {
-                    return;
-                }
-                let Some(props) = &obj.props else { return };
-                let props = props.as_ref();
-                let class = props.get("media.class").unwrap_or("");
-                if class != "Audio/Sink" {
-                    return;
-                }
-                let name = props.get("node.name").unwrap_or("").to_string();
-                let serial = props
-                    .get("object.serial")
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(obj.id);
-                if let Ok(mut v) = f.lock() {
-                    v.push((serial, name));
-                }
-            })
-            .register();
+        (|| {
+            let ctx = pw::context::ContextRc::new(&tl, None)?;
+            let core = ctx.connect_rc(None)?;
+            let sflag = Arc::clone(&synced);
+            let core_listener = core
+                .add_listener_local()
+                .done(move |_id, seq| sflag.store(seq.seq() as i64, Ordering::Release))
+                .register();
+            let reg = core.get_registry_rc()?;
+            let f = Arc::clone(&found);
+            let dn = Arc::clone(&default_name);
+            let reg2 = reg.clone();
+            let meta_slot: std::rc::Rc<
+                std::cell::RefCell<
+                    Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
+                >,
+            > = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let ms = std::rc::Rc::clone(&meta_slot);
+            let reg_listener = reg
+                .add_listener_local()
+                .global(move |obj| {
+                    if obj.type_ == pw::types::ObjectType::Metadata {
+                        // The `default` metadata object holds the session's
+                        // default.audio.sink — bind it and read the
+                        // property (dispatched before our sync's done).
+                        let is_default_meta = obj
+                            .props
+                            .as_deref()
+                            .and_then(|p| p.get("metadata.name"))
+                            == Some("default");
+                        if !is_default_meta {
+                            return;
+                        }
+                        let Ok(md) = reg2
+                            .bind::<pw::metadata::Metadata, _>(obj)
+                        else {
+                            return;
+                        };
+                        let dnc = Arc::clone(&dn);
+                        let lis = md
+                            .add_listener_local()
+                            .property(move |_subj, key, _ty, value| {
+                                if key == Some("default.audio.sink") {
+                                    if let Some(name) = value
+                                        .and_then(|v| {
+                                            serde_json::from_str::<serde_json::Value>(v).ok()
+                                        })
+                                        .and_then(|v| {
+                                            v.get("name")
+                                                .and_then(|n| n.as_str())
+                                                .map(|s| s.to_string())
+                                        })
+                                    {
+                                        if let Ok(mut cell) = dnc.lock() {
+                                            *cell = Some(name);
+                                        }
+                                    }
+                                }
+                                0
+                            })
+                            .register();
+                        *ms.borrow_mut() = Some((md, lis));
+                        return;
+                    }
+                    if obj.type_ != pw::types::ObjectType::Node {
+                        return;
+                    }
+                    let Some(props) = &obj.props else { return };
+                    let props = props.as_ref();
+                    let class = props.get("media.class").unwrap_or("");
+                    if class != "Audio/Sink" {
+                        return;
+                    }
+                    let name = props.get("node.name").unwrap_or("").to_string();
+                    // obj.id is the connect target within this session.
+                    if let Ok(mut v) = f.lock() {
+                        v.push((obj.id, name));
+                    }
+                })
+                .register();
             let want = core.sync(0)?.seq() as i64;
-        drop(_guard);
-        // Wait for the done event carrying *this* sync's seq — the
-        // registry burst is guaranteed to be dispatched before it.
-        let mut ok = false;
-        for _ in 0..100 {
-            if synced.load(Ordering::Acquire) == want {
-                ok = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let _guard2 = tl.lock();
-        if ok {
-            Ok(())
-        } else {
-            Err(anyhow!("pipewire registry sync timed out"))
+            let (md, mlis) = meta_slot.take().map(|(m, l)| (Some(m), Some(Box::new(l) as _)))
+                .unwrap_or((None, None));
+            hold = Some((
+                ctx,
+                core,
+                reg,
+                Box::new(core_listener) as _,
+                Box::new(reg_listener) as _,
+                md,
+                mlis,
+            ));
+            Ok(want)
+        })()
+    };
+    let want = match r {
+        Ok(w) => w,
+        Err(e) => {
+            tl.stop();
+            return Err(e);
         }
     };
+    // Wait without the lock for the done event carrying *this* sync's
+    // seq — the registry burst is guaranteed to be dispatched before it.
+    let mut ok = false;
+    for _ in 0..100 {
+        if synced.load(Ordering::Acquire) == want {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    {
+        let _guard = tl.lock();
+        drop(hold.take());
+    }
     tl.stop();
-    r?;
+    if !ok {
+        return Err(anyhow!("pipewire registry sync timed out"));
+    }
     let out = std::mem::take(&mut *found.lock().unwrap());
-    Ok(out)
+    let dn = default_name.lock().unwrap().clone();
+    Ok((out, dn))
 }
 
 fn sink_serial_for(name: &str) -> Result<(u32, String)> {
-    for (serial, node_name) in enumerate_sinks()? {
+    for (serial, node_name) in enumerate_sinks()?.0 {
         if node_name == name {
             return Ok((serial, node_name));
         }
@@ -251,12 +329,12 @@ impl DeviceCaps for PipeWireCaps {
     }
 
     fn list(&self) -> Vec<DeviceDesc> {
-        enumerate_sinks()
-            .unwrap_or_default()
+        let (sinks, default_name) = enumerate_sinks().unwrap_or_default();
+        sinks
             .into_iter()
-            .map(|(serial, name)| DeviceDesc {
+            .map(|(_serial, name)| DeviceDesc {
+                is_default: default_name.as_deref() == Some(name.as_str()),
                 name,
-                is_default: self.target.map(|t| t == serial).unwrap_or(false),
                 default_sample_rate_hz: 48000,
                 channels: 2,
             })
@@ -290,19 +368,24 @@ impl DeviceCaps for PipeWireCaps {
 struct Feed<T> {
     cons: crate::ringbuf::Consumer<T>,
     channels: usize,
-    /// bumped by the engine on pause/seek/clear — staged PCM is stale.
+    /// bumped by the engine on seek/clear/load — staged PCM is stale.
     epoch: Arc<std::sync::atomic::AtomicU64>,
     last_epoch: u64,
+    /// atomic mirror of OutputCore::paused — silence without draining,
+    /// so the pre-pause tail survives for a seamless resume.
+    paused: Arc<AtomicBool>,
 }
 
 /// State-callback state: error reporting + dead flag + last state,
 /// atomics/mutex only so writes from the loop thread are safe next to
 /// the RT `process`. `state`: 0 Unconnected, 1 Connecting, 2 Paused,
-/// 3 Streaming, 4 Error.
+/// 3 Streaming, 4 Error. `suppress` is set on intentional teardown —
+/// disconnect() fires Unconnected which must NOT poison the error cell.
 struct StreamErr {
     error: Arc<Mutex<Option<String>>>,
     dead: Arc<AtomicBool>,
     state: Arc<std::sync::atomic::AtomicU8>,
+    suppress: Arc<AtomicBool>,
 }
 
 impl PipeWireCaps {
@@ -319,11 +402,22 @@ impl PipeWireCaps {
         }
         // ~60ms staging ring: decouples the RT callback from the core mutex
         // without adding audible latency to the graph.
-        let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
-        let epoch_base = core.lock().unwrap().clear_epoch.load(Ordering::Acquire);
-        let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
+        // Ring ≈ 2x the latency we advertise, min ~186ms at any rate —
+        // comfortably covers callback + scheduler jitter.
+        let latency = 1024u32;
+        let capacity = (neg.rate as usize * neg.channels as usize / 16)
+            .max(latency as usize * 2 * neg.channels.max(1) as usize);
+        let (epoch, epoch_base, paused) = {
+            let c = core.lock().unwrap();
+            (
+                Arc::clone(&c.clear_epoch),
+                c.clear_epoch.load(Ordering::Acquire),
+                Arc::clone(&c.paused_flag),
+            )
+        };
         let dead = Arc::new(AtomicBool::new(false));
         let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let suppress = Arc::new(AtomicBool::new(false));
         // Spawn before the thread loop; FeedGuard::drop stops+joins on
         // every subsequent failure path.
         let (cons, feed) = spawn_feed(
@@ -360,20 +454,23 @@ impl PipeWireCaps {
                 *pw::keys::NODE_ALWAYS_PROCESS => "true",
                 *pw::keys::NODE_WANT_DRIVER => "true",
                 *pw::keys::STREAM_IS_LIVE => "true",
+                // Advertise the quantum we sized the staging ring for;
+                // mpv does the same — without it a high-latency graph
+                // quantum could starve a ring sized to the default.
+                *pw::keys::NODE_LATENCY => format!("{}/{}", latency, neg.rate),
             };
-            if let Some(serial) = self.target {
-                // pw_stream_connect expects a node *id*; a serial goes in
-                // target.object with PW_ID_ANY as the connect target.
-                props.insert(*pw::keys::TARGET_OBJECT, serial.to_string());
-            }
             let stream = pw::stream::StreamRc::new(pw_core.clone(), "Cadence", props)?;
             let state_listener = stream
                 .add_local_listener_with_user_data(StreamErr {
                     error: Arc::clone(&self.error),
                     dead: Arc::clone(&dead),
                     state: Arc::clone(&state),
+                    suppress: Arc::clone(&suppress),
                 })
-                .state_changed(|_s, ud, _old, new| {
+                .state_changed(|_s, ud, old, new| {
+                    if ud.suppress.load(Ordering::Relaxed) {
+                        return;
+                    }
                     ud.state.store(
                         match new {
                             pw::stream::StreamState::Unconnected => 0,
@@ -384,11 +481,24 @@ impl PipeWireCaps {
                         },
                         Ordering::Release,
                     );
+                    // A stream that falls out of a live state back to
+                    // Unconnected lost its remote (daemon restart, node
+                    // removed) — as unrecoverable as an explicit error.
+                    let lost = matches!(new, pw::stream::StreamState::Unconnected)
+                        && matches!(
+                            old,
+                            pw::stream::StreamState::Paused | pw::stream::StreamState::Streaming
+                        );
                     if let pw::stream::StreamState::Error(e) = new {
-                        ud.dead.store(true, Ordering::Relaxed);
                         if let Ok(mut cell) = ud.error.lock() {
                             *cell = Some(e);
                         }
+                        ud.dead.store(true, Ordering::Relaxed);
+                    } else if lost {
+                        if let Ok(mut cell) = ud.error.lock() {
+                            *cell = Some("stream lost remote node".into());
+                        }
+                        ud.dead.store(true, Ordering::Relaxed);
                     }
                 })
                 .register()?;
@@ -398,6 +508,7 @@ impl PipeWireCaps {
                     channels: neg.channels as usize,
                     epoch,
                     last_epoch: epoch_base,
+                    paused,
                 })
                 .process(|stream, feed| fill::<T>(stream, feed))
                 .register()?;
@@ -424,10 +535,12 @@ impl PipeWireCaps {
             .into_inner();
             let mut params = [spa::pod::Pod::from_bytes(&pod_bytes)
                 .ok_or_else(|| anyhow!("format pod parse"))?];
+            // A specific sink targets by node id — direct, no reliance
+            // on the session manager honoring target.object (its
+            // autoconnect would otherwise pick the default).
             stream.connect(
                 spa::utils::Direction::Output,
-                // PW_ID_ANY: the target (if any) rides in target.object.
-                None,
+                self.target,
                 pw::stream::StreamFlags::AUTOCONNECT
                     | pw::stream::StreamFlags::MAP_BUFFERS
                     | pw::stream::StreamFlags::RT_PROCESS,
@@ -461,27 +574,33 @@ impl PipeWireCaps {
             ok
         };
         if !decisive || dead.load(Ordering::Relaxed) {
+            // The real error (if any) is already in the cell — don't let
+            // the teardown's own Unconnected clobber it.
+            suppress.store(true, Ordering::Relaxed);
             {
                 let _guard = tl.lock();
                 let _ = stream.disconnect();
+                // Listeners unlink from the stream's hook list — drop them
+                // first, still under the loop lock.
+                drop(state_listener);
+                drop(process_listener);
+                drop(stream);
+                drop(pw_core);
+                drop(ctx);
             }
-            drop(state_listener);
-            drop(process_listener);
-            drop(stream);
-            drop(pw_core);
-            drop(ctx);
             tl.stop();
             return Err(anyhow!("pipewire stream failed negotiation"));
         }
         Ok(Box::new(PipeWireSink {
-            stream,
             _state_listener: Box::new(state_listener),
             _process_listener: Box::new(process_listener),
+            stream,
             _core: pw_core,
             _ctx: ctx,
             tl,
             feed,
             dead,
+            suppress,
         }))
     }
 }
@@ -490,8 +609,39 @@ impl PipeWireCaps {
 /// the ring is SPSC wait-free; an underrun zero-pads the remainder so the
 /// stream keeps its timeline (same contract as the CPAL callback).
 fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
-    // A control operation (pause/seek/format rebuild) made the staged
-    // PCM stale — drop it so nothing old plays past the control point.
+    // Paused: silence WITHOUT draining — the pre-pause tail stays queued
+    // so resume picks up exactly where playback stopped.
+    if feed.paused.load(Ordering::Relaxed) {
+        let Some(mut buffer) = stream.dequeue_buffer() else {
+            return;
+        };
+        let requested = buffer.requested() as usize;
+        let datas = buffer.datas_mut();
+        if datas.is_empty() {
+            return;
+        }
+        let stride = T::BYTES * feed.channels;
+        let size = datas[0]
+            .data()
+            .map(|s| {
+                let max_frames = s.len() / stride;
+                let frames = if requested > 0 {
+                    requested.min(max_frames)
+                } else {
+                    max_frames
+                };
+                s[..frames * stride].fill(0);
+                frames * stride
+            })
+            .unwrap_or(0);
+        let chunk = datas[0].chunk_mut();
+        *chunk.offset_mut() = 0;
+        *chunk.stride_mut() = stride as _;
+        *chunk.size_mut() = size as _;
+        return;
+    }
+    // A control operation (seek/clear/load) made the staged PCM stale —
+    // drop it so nothing old plays past the control point.
     let e = feed.epoch.load(Ordering::Acquire);
     if e != feed.last_epoch {
         feed.last_epoch = e;
@@ -537,17 +687,26 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
     *chunk.size_mut() = size as _;
 }
 
+// Field order matters: struct fields drop top-to-bottom, and the
+// listeners must unlink from the stream's hook list BEFORE the stream
+// is destroyed — pw_stream_destroy frees the list head, so a listener
+// dropped after the stream writes into freed memory.
 pub struct PipeWireSink {
-    stream: pw::stream::StreamRc,
     /// Boxed listeners — keep the PW callbacks alive (concrete types
-    /// vary with the negotiated sample format).
+    /// vary with the negotiated sample format). Declared first so they
+    /// drop first.
     _state_listener: Box<dyn std::any::Any>,
     _process_listener: Box<dyn std::any::Any>,
+    stream: pw::stream::StreamRc,
     _core: pw::core::CoreRc,
     _ctx: pw::context::ContextRc,
     tl: pw::thread_loop::ThreadLoopRc,
     feed: FeedGuard,
     dead: Arc<AtomicBool>,
+    /// Intentional teardown flag — disconnect() fires Unconnected which
+    /// would otherwise look like a lost remote node and poison the
+    /// shared error cell.
+    suppress: Arc<AtomicBool>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -560,6 +719,7 @@ unsafe impl Send for PipeWireSink {}
 impl Sink for PipeWireSink {
     fn stop(&mut self) {
         self.feed.stop();
+        self.suppress.store(true, Ordering::Relaxed);
         {
             let _guard = self.tl.lock();
             let _ = self.stream.disconnect();

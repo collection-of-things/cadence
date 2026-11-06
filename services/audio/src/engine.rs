@@ -5,8 +5,10 @@
 //!
 //! The output callback only pops samples, applies volume, and taps the
 //! FFT/dump rings. Decode/DSP/resample/alloc all happen on producer threads.
-//! The device callback takes the core lock with try_lock + a silent fallback;
-//! control threads never hold `core` across device opens (rebuild_stream
+//! Device callbacks never take the core lock: a feeder thread pulls into a
+//! lock-free staging ring that the callback drains (paused_flag silences
+//! without draining; clear_epoch drops staged PCM on seek/clear/load).
+//! Control threads never hold `core` across device opens (rebuild_stream
 //! drops/opens sinks outside the lock), so the callback's worst-case wait is
 //! one brief critical section — bounded, documented, non-allocating.
 
@@ -219,9 +221,15 @@ pub struct OutputCore {
     /// reusable f32 scratch for pull_s16 (preallocated, grows once)
     scratch16: Vec<f32>,
     /// Bumped on control changes that invalidate already-pulled PCM
-    /// (pause/seek/clear). Device callbacks poll it and flush their
+    /// (seek/clear/load). Device callbacks poll it and flush their
     /// staging rings so stale samples can't play past the control point.
+    /// Pause does NOT bump: the ring keeps the pre-pause tail so resume
+    /// continues seamlessly — callbacks zero-fill via paused_flag instead.
     pub clear_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// Atomic mirror of `paused` for device callbacks, which can't lock
+    /// the core. Paused callbacks output silence WITHOUT draining the
+    /// staging ring — the pre-pause tail plays on resume.
+    pub paused_flag: Arc<AtomicBool>,
 }
 
 impl OutputCore {
@@ -456,8 +464,13 @@ impl OutputCore {
         }
     }
 
-    /// Swap in a new render track (load / seek rebuild).
+    /// Swap in a new render track (load / seek rebuild / reopen).
+    /// Staged PCM from the previous reader is stale — flush it.
+    /// (Gapless promotions in `advance_track` assign `self.active`
+    /// directly and deliberately skip this: the pull sequence is
+    /// already seamless.)
     fn set_active(&mut self, track: TrackReader) {
+        self.flush_output();
         if let Some(old) = self.active.take() {
             old.pipe.abort();
         }
@@ -771,6 +784,7 @@ impl Engine {
                 dump,
                 scratch16: Vec::new(),
                 clear_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                paused_flag: Arc::new(AtomicBool::new(true)),
             })),
             tap_p,
             tap_c,
@@ -1883,6 +1897,7 @@ impl Engine {
             }
             core.set_active(reader);
             core.paused = p.start_paused;
+            core.paused_flag.store(p.start_paused, Ordering::Relaxed);
             st.current_instance = load_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
@@ -2073,8 +2088,7 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = false;
-            // Drop the silence staged while paused so resume is instant.
-            core.flush_output();
+            core.paused_flag.store(false, Ordering::Relaxed);
             st.state = PlayState::Playing;
         }
         self.emit_state(None);
@@ -2087,8 +2101,7 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = true;
-            // Drop staged PCM so nothing keeps sounding after the pause.
-            core.flush_output();
+            core.paused_flag.store(true, Ordering::Relaxed);
             st.state = PlayState::Paused;
         }
         self.emit_state(None);
@@ -2107,6 +2120,7 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             core.clear_all();
             core.paused = true;
+            core.paused_flag.store(true, Ordering::Relaxed);
             // The stopped event supersedes the un-adopted end.
             core.ended_pending = false;
             st.queue_id = None;
@@ -2598,6 +2612,7 @@ impl Engine {
                                         let paused = st.state == PlayState::Paused;
                                         core.set_active(reader);
                                         core.paused = paused;
+                                        core.paused_flag.store(paused, Ordering::Relaxed);
                                         st.current_instance = reopen_instance;
                                         st.queue_id = Some(pf.queue_id.clone());
                                         st.source = Some(pf.source.clone());
@@ -2866,6 +2881,7 @@ impl Engine {
                         } else {
                             core.clear_all();
                             core.paused = true;
+                            core.paused_flag.store(true, Ordering::Relaxed);
                             st.state = PlayState::Error;
                             true
                         }
@@ -3178,7 +3194,9 @@ impl RemixSample for i32 {
         self as f64 / 2147483648.0
     }
     fn from_f64(v: f64) -> Self {
-        (v * 2147483648.0).clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        (v * 2147483648.0)
+            .round()
+            .clamp(i32::MIN as f64, i32::MAX as f64) as i32
     }
 }
 
