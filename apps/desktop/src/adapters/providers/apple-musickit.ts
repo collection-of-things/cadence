@@ -392,23 +392,34 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     }
     this.signInPending = true;
     const attempt = ++this.signInAttempt;
-    // Ownership ends on observable events only: auth completes, the popup
-    // window closes, or the user signs out — never on a timer's guess.
+    // Ownership ends on observable events — auth completes, every popup
+    // window closes, the user signs out, or a deadline confirms no popup
+    // ever opened. Timers only confirm an event that failed to appear.
     let hideTimer: ReturnType<typeof setTimeout> | null = null;
     const endAttempt = () => {
       this.signInPending = false;
-      if (hideTimer !== null) clearTimeout(hideTimer);
+      if (hideTimer !== null) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
       offClose();
       offOpen();
     };
     // A popup counts as dismissed only when ALL popup windows are gone (the
     // flow can open children/grandchildren). The short grace lets a
-    // successful auth's playerState land before we treat close as a cancel.
+    // successful auth's playerState land before we treat close as a cancel;
+    // a new popup inside the grace cancels the dismissal outright.
     const offClose = this.session.onPopupClosed(() => {
       if (this.session.hasOpenPopups || this.authorized || this.destroyed) return;
+      if (hideTimer !== null) clearTimeout(hideTimer);
       hideTimer = setTimeout(() => {
         hideTimer = null;
-        if (!this.authorized && !this.destroyed && attempt === this.signInAttempt) {
+        if (
+          !this.authorized &&
+          !this.destroyed &&
+          !this.session.hasOpenPopups &&
+          attempt === this.signInAttempt
+        ) {
           endAttempt();
           this.session.hide();
           this.emit({ kind: "capabilitiesChanged" });
@@ -417,9 +428,16 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     });
     const offOpen = this.session.onPopupOpened(() => {
       this.signInSawPopup = true;
+      if (hideTimer !== null) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
     });
     this.signInSawPopup = false;
     this.signInCleanup = () => {
+      // Invalidate outstanding timers and eval results for this attempt,
+      // then release — external teardown must make every check stale.
+      this.signInAttempt++;
       endAttempt();
     };
     // MusicKit's authorize() opens Apple's own IDMSA sign-in popup in the
@@ -460,7 +478,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       // gesture-gated no-op. If no popup materializes shortly, report the
       // failure instead of holding the attempt forever.
       setTimeout(() => {
-        if (!this.signInSawPopup && attempt === this.signInAttempt && !this.authorized && !this.destroyed) {
+        if (
+          !this.signInSawPopup &&
+          this.signInPending &&
+          attempt === this.signInAttempt &&
+          !this.authorized &&
+          !this.destroyed
+        ) {
           endAttempt();
           this.error("couldn't open Apple sign-in — try again", true);
         }
@@ -469,30 +493,27 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       return;
     }
     void authed.then((ok) => {
-      if (ok === true && attempt === this.signInAttempt) {
-        // authorize() resolved — completion lands via playerState next.
-        endAttempt();
-        this.emit({ kind: "capabilitiesChanged" });
+      if (attempt !== this.signInAttempt) return; // stale result — drop it
+      if (ok === true) {
+        // authorize() resolved, but ownership transfers to the observable
+        // signals: the authorized playerState ends the attempt, and popup
+        // close remains the fallback for a resolve that never lands.
         return;
       }
-      // ok === false (rejected): the flow provably ended — release and hide.
-      if (ok === false && attempt === this.signInAttempt) {
-        endAttempt();
-        if (!this.authorized && !this.destroyed) this.session.hide();
-        this.emit({ kind: "capabilitiesChanged" });
+      if (ok === "timeout") {
+        // Owned while a popup is actually open — its 'closed' event ends
+        // the attempt. With no popup the flow is dead; release now or the
+        // Sign-in button stays locked forever.
+        if (!this.session.hasOpenPopups) endAttempt();
+        return;
       }
-      // 'timeout': if the popup really is still open, keep the attempt owned
-      // — its 'closed' event releases it. If no popup exists, the flow is
-      // dead; release now or the Sign-in button stays locked forever. The
-      // attempt check keeps a stale eval from releasing a newer flow.
-      if (
-        ok === "timeout" &&
-        attempt === this.signInAttempt &&
-        !this.session.hasOpenPopups
-      ) {
-        endAttempt();
-        this.emit({ kind: "capabilitiesChanged" });
-      }
+      // ok === false: rejected. A still-open popup means the real flow is
+      // in its window — let its close event end the attempt rather than
+      // hiding the view out from under it.
+      if (this.session.hasOpenPopups) return;
+      endAttempt();
+      if (!this.authorized && !this.destroyed) this.session.hide();
+      this.emit({ kind: "capabilitiesChanged" });
     });
     this.emit({ kind: "capabilitiesChanged" });
   }

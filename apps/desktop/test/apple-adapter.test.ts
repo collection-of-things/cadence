@@ -354,4 +354,57 @@ describe("apple adapter page events", () => {
     expect((adapter as any).signInPending).toBe(false);
     (sess as any).eval = orig;
   });
+
+  it("fallback click that opens no popup reports an error at the deadline", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      if (expr.includes("cadenceCtl.authorize()")) return Promise.reject(new Error("dead"));
+      return Promise.resolve(true); // clickSignIn 'worked' — but no popup appears
+    };
+    await adapter.signIn();
+    expect((adapter as any).signInPending).toBe(true);
+    await new Promise((r) => setTimeout(r, 8_300));
+    expect((adapter as any).signInPending).toBe(false);
+    expect(events.some((e) => e.kind === "error" && /couldn't open/.test(e.message ?? ""))).toBe(true);
+    (sess as any).eval = orig;
+  });
+
+  it("a stale authorize() rejection can't release a newer attempt", async () => {
+    const orig = sess.eval.bind(sess);
+    const resolvers: Array<(v: boolean) => void> = [];
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("cadenceCtl.authorize()")
+        ? new Promise<boolean>((res) => resolvers.push(res))
+        : Promise.resolve(true);
+    };
+    await adapter.signIn(); // attempt 1 — authed pending
+    await adapter.signOut(); // invalidates attempt 1
+    await adapter.signIn(); // attempt 2 — pending again
+    expect((adapter as any).signInPending).toBe(true);
+    resolvers[0]!(false); // attempt 1's eval settles late — must not touch attempt 2
+    await new Promise((r) => setTimeout(r, 20));
+    expect((adapter as any).signInPending).toBe(true);
+    (sess as any).eval = orig;
+  });
+
+  it("a new popup inside the close-grace cancels the dismissal", async () => {
+    const orig = sess.eval.bind(sess);
+    let hides = 0;
+    (sess as any).hide = () => hides++;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("cadenceCtl.authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    sess.openPopup();
+    sess.hasOpenPopups = false;
+    sess.closePopup(); // grace armed
+    sess.openPopup(); // new popup inside the grace window — cancel it
+    await new Promise((r) => setTimeout(r, 2_700));
+    expect(hides).toBe(0);
+    expect((adapter as any).signInPending).toBe(true);
+    (sess as any).eval = orig;
+  });
 });
