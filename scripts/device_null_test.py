@@ -490,10 +490,13 @@ def compare(name, cap, ref, ch, label):
     # shortfall means real audio was lost, not an attach race. A
     # period-aliased alignment can't deflate this: the content span is
     # measured on the raw capture, not the aligned window.
-    # Coverage = the VERIFIED-matching compared span vs the file —
-    # only samples that matched count (the mapping won on residual
-    # first). A truncated or noise-padded capture cannot inflate this.
-    coverage = (nz[-1] + 1 - start) / len(ref)
+    # Coverage = the VERIFIED-matching compared span vs the ref's own
+    # nonzero extent — only samples that matched count (the mapping won
+    # on residual first). A truncated or noise-padded capture cannot
+    # inflate this; a legit quiet margin at the file's edges doesn't
+    # deflate it either.
+    ref_extent = max(1, int(ref_nz0[-1]) + 1 - int(ref_nz0[0])) if len(ref_nz0) else len(ref)
+    coverage = (nz[-1] + 1 - start) / ref_extent
     cov_ok = coverage >= 0.85
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
