@@ -555,7 +555,12 @@ describe("apple adapter page events", () => {
     await new Promise((r) => setTimeout(r, 10));
     for (const r of waiters) r(); // let the paused prepare() resume
     const result = await c;
-    expect(result instanceof Error).toBe(true);
+    expect(result instanceof Error && /signed out/.test(result.message)).toBe(true);
+    // No controller eval may have run — the only page call allowed is
+    // sign-out's own unauthorize().
+    expect(
+      sess.evals.every((e) => e === "window.__cadenceCtl.unauthorize()"),
+    ).toBe(true);
     await out;
     (sess as any).prepare = origPrep;
     (sess as any).eval = origEval;
