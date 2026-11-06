@@ -258,10 +258,11 @@ pub trait Sink: Send {
     fn device_delay_frames(&self) -> u64 {
         0
     }
-    /// The sink's negotiated sample rate, for converting delay frames
-    /// to time. 0 if unknown.
-    fn format_rate_hz(&self) -> u64 {
-        0
+    /// How long a drain-unsupported backend should wait at
+    /// end-of-track for its downstream queue to play out. Position
+    /// never consults this — it's a wait estimate, not a measurement.
+    fn drain_fallback_ms(&self) -> u64 {
+        250
     }
     /// Ask the backend to drain its downstream queue; returns a
     /// completion baseline (see drained_since) or None if unsupported.
@@ -631,7 +632,6 @@ impl DeviceCaps for CpalCaps {
             feed,
             dead,
             staged: staged_fn,
-            rate_hz: neg.rate,
         }))
     }
 }
@@ -641,7 +641,6 @@ struct CpalSink {
     feed: FeedGuard,
     dead: Arc<AtomicBool>,
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
-    rate_hz: u32,
 }
 
 // cpal marks Stream !Send (portability across hosts), but the Cadence engine
@@ -664,15 +663,12 @@ impl Sink for CpalSink {
         (self.staged)()
     }
 
-    fn device_delay_frames(&self) -> u64 {
-        // BufferSize::Default leaves the real depth opaque — report a
-        // conservative ~200ms so the end-of-track fallback waits long
-        // enough for the tail (never less, never unbounded).
-        self.rate_hz as u64 / 5
-    }
-
-    fn format_rate_hz(&self) -> u64 {
-        self.rate_hz as u64
+    fn drain_fallback_ms(&self) -> u64 {
+        // BufferSize::Default leaves the real depth opaque — a
+        // conservative fixed wait, used ONLY for end-of-track drain
+        // fallback (never for position: reporting an estimate there
+        // would mis-state position and repeat audio on respawn).
+        250
     }
 }
 

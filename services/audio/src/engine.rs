@@ -3033,11 +3033,7 @@ impl Engine {
                             .lock()
                             .unwrap()
                             .as_ref()
-                            .map(|s| {
-                                let f = s.device_delay_frames();
-                                let r = s.format_rate_hz().max(1);
-                                f * 1000 / r + 50
-                            })
+                            .map(|s| s.drain_fallback_ms())
                             .unwrap_or(0);
                         // Reaching this arm proves staged==0 — stamp
                         // ring0 the first time; the downstream wait

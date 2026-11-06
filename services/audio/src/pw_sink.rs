@@ -998,10 +998,6 @@ impl Sink for PipeWireSink {
             .unwrap_or(self.device_delay_frames)
     }
 
-    fn format_rate_hz(&self) -> u64 {
-        self.rate_hz
-    }
-
     fn request_drain(&self) -> Option<u64> {
         // Marker FIRST, then flush — both under tl. Every stale event
         // was queued before the marker (the loop can't dispatch while
@@ -1048,28 +1044,19 @@ impl Sink for PipeWireSink {
     fn drained_since(&self, baseline: u64) -> bool {
         // OUR marker must have run (proves every event queued before
         // this request was delivered and folded into `settled`), then
-        // EITHER a strictly newer drained event, OR a post-marker
-        // process-callback stall — `drained` latches `draining`
-        // upstream, stopping process() for good, so the callback
-        // going quiet IS the completion signal (covers PipeWire's
-        // notification coalescing, which can suppress our event when
-        // an old one was still pending).
-        if self.barrier.dispatched.load(Ordering::Acquire) < baseline {
-            return false;
-        }
-        if self.drained_seq.load(Ordering::Acquire)
-            > self.barrier.settled.load(Ordering::Acquire)
-        {
-            return true;
-        }
-        // ~4 quanta of silence from the RT callback = drained.
-        let stall_ms = 2048 * 4000 / self.rate_hz + 40;
-        let last = self.last_process_ms.load(Ordering::Acquire);
-        self.t0
-            .elapsed()
-            .as_millis()
-            .saturating_sub(last as u128)
-            > stall_ms as u128
+        // a strictly newer drained event is a real completion.
+        // NB: a process-callback stall is NOT a completion signal —
+        // `draining` suppresses call_process from the moment the drain
+        // is ISSUED, so the callback goes quiet on every request.
+        self.barrier.dispatched.load(Ordering::Acquire) >= baseline
+            && self.drained_seq.load(Ordering::Acquire)
+                > self.barrier.settled.load(Ordering::Acquire)
+    }
+
+    fn drain_fallback_ms(&self) -> u64 {
+        // Measured graph-side delay → ms + a quantum of slack.
+        let f = self.device_delay_frames();
+        f * 1000 / self.rate_hz + 50
     }
 
     fn resume(&self) {
