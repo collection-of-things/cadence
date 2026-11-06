@@ -444,4 +444,50 @@ describe("apple adapter page events", () => {
     (sess as any).prepare = origPrep;
     (sess as any).eval = origEval;
   });
+
+  it("a stale prepare() failure can't release a newer attempt", async () => {
+    const origPrep = sess.prepare.bind(sess);
+    const origEval = sess.eval.bind(sess);
+    let calls = 0;
+    let rejectFirst: ((e: Error) => void) | null = null;
+    (sess as any).prepare = () => {
+      calls++;
+      return calls === 1
+        ? new Promise<void>((_, rej) => (rejectFirst = rej))
+        : Promise.resolve();
+    };
+    const a = adapter.signIn(); // attempt A — prepare pending
+    await new Promise((r) => setImmediate(r));
+    await adapter.signOut(); // invalidates A
+    const b = adapter.signIn(); // attempt B — prepare resolves fast
+    await new Promise((r) => setTimeout(r, 30));
+    rejectFirst!(new Error("dead")); // A's prepare rejects late
+    await expect(a).rejects.toThrow("dead");
+    expect((adapter as any).signInPending).toBe(true); // B keeps its attempt
+    await b;
+    (sess as any).prepare = origPrep;
+    (sess as any).eval = origEval;
+  });
+
+  it("signIn waits behind an in-flight signOut before touching the session", async () => {
+    const orig = sess.eval.bind(sess);
+    let releaseUnauth: ((v: boolean) => void) | null = null;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr === "window.__cadenceCtl.unauthorize()"
+        ? new Promise<boolean>((res) => (releaseUnauth = res))
+        : Promise.resolve(true);
+    };
+    const out = adapter.signOut(); // hangs in unauthorize()
+    await new Promise((r) => setTimeout(r, 10));
+    const p = adapter.signIn(); // must queue behind sign-out
+    await new Promise((r) => setTimeout(r, 30));
+    // No eval of any kind may run until teardown finishes.
+    expect(sess.evals.filter((e) => e.includes("cadenceCtl.authorize()")).length).toBe(0);
+    releaseUnauth!(true);
+    await out;
+    await p;
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(true);
+    (sess as any).eval = orig;
+  });
 });

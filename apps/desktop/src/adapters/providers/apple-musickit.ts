@@ -376,6 +376,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async signIn(): Promise<void> {
+    // A sign-out mid-teardown owns the session — its reset()/clearData()
+    // would destroy the view and partition under a flow started beside it.
+    await this.signOutInFlight?.catch(() => {});
     this.signedOut = false;
     this.installBackoffUntil = 0; // explicit user action clears backoff
     // A second Sign-in click while a flow is live doesn't stack another
@@ -441,7 +444,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     try {
       await this.prepare();
     } catch (e) {
-      endAttempt();
+      // Only this attempt's own failure may release it — a prepare that
+      // outlived its attempt must not clear a newer flow's pending flag.
+      if (attempt === this.signInAttempt) endAttempt();
       throw e;
     }
     // prepare() is the first async boundary — sign-out or a newer flow may
@@ -571,7 +576,19 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   /** Ends the outstanding sign-in attempt (popup listener + pending flag). */
   private signInCleanup: (() => void) | null = null;
 
+  /** In-flight sign-out — signIn waits behind it instead of overlapping. */
+  private signOutInFlight: Promise<void> | null = null;
+
   async signOut(): Promise<void> {
+    if (this.signOutInFlight) return this.signOutInFlight;
+    const run = this.doSignOut().finally(() => {
+      if (this.signOutInFlight === run) this.signOutInFlight = null;
+    });
+    this.signOutInFlight = run;
+    return run;
+  }
+
+  private async doSignOut(): Promise<void> {
     this.signedOut = true; // suppress lazy warm-up before/after clearing
     this.signInCleanup?.();
     this.signInCleanup = null;
