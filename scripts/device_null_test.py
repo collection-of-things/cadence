@@ -456,11 +456,19 @@ def compare(name, cap, ref, ch, label):
     exact = mx == 0.0
     nz_res = int(np.count_nonzero(res))
     ok = exact or (mx <= float(np.finfo(np.float32).eps) and nz_res <= 32)
-    # Coverage gate: the post-trim compared span must cover most of the
-    # source — a mostly-silent capture containing one matching slice
-    # must not pass on that slice alone.
-    coverage = len(a) / len(ref)
-    cov_ok = coverage >= 0.6
+    # Coverage gate: how much of the SOURCE does the capture actually
+    # contain? Map the capture's own nonzero span into ref coordinates
+    # via cap_start — the recorder links before playback, so a
+    # shortfall means real audio was lost, not an attach race. A
+    # period-aliased alignment can't deflate this: the content span is
+    # measured on the raw capture, not the aligned window.
+    cap_nz = np.flatnonzero(np.abs(cap) > 1e-6)
+    if len(cap_nz):
+        # Both are interleaved sample counts — channels cancel out.
+        coverage = (int(cap_nz[-1]) - int(cap_nz[0]) + 1) / len(ref)
+    else:
+        coverage = 0.0
+    cov_ok = coverage >= 0.85
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
         f"bitexact={exact} ok={ok} zero-runs(>=8f)={len(zr)}"
@@ -488,8 +496,11 @@ def null_residual(a, b):
     # mirrored noise) can score a wrong/inverted lag a few ppm above
     # the true one; the content-start anchor is immune to periodicity.
     k0 = int(np.argmax(np.abs(cc)))
-    a_nz0 = np.flatnonzero(np.abs(a) > 1e-6)
-    b_nz0 = np.flatnonzero(np.abs(b) > 1e-6)
+    # Content-start must ride above converter noise floors — an
+    # absolute epsilon picks up pre-content floor noise and shifts the
+    # anchor arbitrarily. 1% of each capture's own peak is robust.
+    a_nz0 = np.flatnonzero(np.abs(a) > max(1e-6, 0.01 * float(np.abs(a).max())))
+    b_nz0 = np.flatnonzero(np.abs(b) > max(1e-6, 0.01 * float(np.abs(b).max())))
     anchors = [k0]
     if len(a_nz0) and len(b_nz0):
         anchors.append(int(b_nz0[0]) - int(a_nz0[0]) + seg_off)

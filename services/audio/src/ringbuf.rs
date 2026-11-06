@@ -63,6 +63,11 @@ struct Shared {
     done: AtomicBool,
     /// Consumer side dropped/aborted; producer should stop writing.
     abort: AtomicBool,
+    /// Test hook fired between the consumer's copy and its fence
+    /// re-check — lets a test land a clear()+write() inside the race
+    /// window deterministically.
+    #[cfg(test)]
+    post_copy_hook: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 pub struct Producer<T> {
@@ -94,6 +99,13 @@ impl<T> Clone for Consumer<T> {
 }
 
 pub fn channel<T: RingWord>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    channel_hooked(capacity, None)
+}
+
+fn channel_hooked<T: RingWord>(
+    capacity: usize,
+    #[cfg_attr(not(test), allow(unused_variables))] hook: Option<Box<dyn Fn() + Send + Sync>>,
+) -> (Producer<T>, Consumer<T>) {
     let s = Arc::new(Shared {
         buf: (0..capacity).map(|_| AtomicU32::new(0)).collect(),
         cap: capacity,
@@ -102,6 +114,8 @@ pub fn channel<T: RingWord>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         fence: AtomicUsize::new(0),
         done: AtomicBool::new(false),
         abort: AtomicBool::new(false),
+        #[cfg(test)]
+        post_copy_hook: hook,
     });
     (
         Producer {
@@ -209,7 +223,13 @@ impl<T: RingWord> Consumer<T> {
         self.s.head.store(start + n, Ordering::Release);
         // A clear() landing mid-copy means what we just read was already
         // stale (possibly torn by a wrapping producer): report the head
-        // advance but give the caller nothing usable.
+        // advance but give the caller nothing usable. The explicit
+        // Acquire fence keeps the buf reads ordered before this check.
+        std::sync::atomic::fence(Ordering::Acquire);
+        #[cfg(test)]
+        if let Some(h) = &self.s.post_copy_hook {
+            h();
+        }
         if self.s.fence.load(Ordering::Acquire) > start {
             return 0;
         }
@@ -245,6 +265,11 @@ impl<T: RingWord> Consumer<T> {
         }
         self.s.head.store(start + n, Ordering::Release);
         // See read(): a mid-copy clear makes this slice stale.
+        std::sync::atomic::fence(Ordering::Acquire);
+        #[cfg(test)]
+        if let Some(h) = &self.s.post_copy_hook {
+            h();
+        }
         if self.s.fence.load(Ordering::Acquire) > start {
             return 0;
         }
@@ -383,6 +408,80 @@ mod tests {
         let mut out = [0i16; 8];
         let n = c.read(&mut out);
         assert_eq!(&out[..n], &[9, 10]);
+    }
+
+    /// Build a channel whose Consumer fires `hook` between its copy
+    /// and the post-copy fence re-check — the deterministic equivalent
+    /// of a clear() preempting the read mid-copy.
+    fn hooked_channel<F>(cap: usize, hook: F) -> (Producer<i16>, Consumer<i16>)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        channel_hooked(cap, Some(Box::new(hook)))
+    }
+
+    #[test]
+    fn mid_copy_clear_discards_slice() {
+        // clear() lands inside the consumer's copy→re-check window:
+        // the read must return 0 and the next read only post-clear data.
+        let cell = Arc::new(std::sync::Mutex::new(None::<Producer<i16>>));
+        let once = Arc::new(AtomicBool::new(false));
+        let cell2 = Arc::clone(&cell);
+        let once2 = Arc::clone(&once);
+        let (p, c) = hooked_channel(8, move || {
+            if once2.swap(true, Ordering::Relaxed) {
+                return; // fire once — later reads must pass through
+            }
+            let g = cell2.lock().unwrap();
+            if let Some(p) = g.as_ref() {
+                p.clear();
+            }
+        });
+        *cell.lock().unwrap() = Some(p.clone());
+        p.write(&[1, 2, 3, 4]);
+        let mut out = [0i16; 4];
+        assert_eq!(c.read(&mut out), 0, "mid-copy clear must discard");
+        p.write(&[9, 10]);
+        let n = c.read(&mut out);
+        assert_eq!(&out[..n], &[9, 10]);
+    }
+
+    #[test]
+    fn mid_copy_clear_write_discards_slice() {
+        // clear() + a wrapping write inside the window: the producer
+        // reuses cleared slots while the consumer is copying them —
+        // the slice must still be discarded, never served torn.
+        let cell = Arc::new(std::sync::Mutex::new(None::<Producer<i16>>));
+        let once = Arc::new(AtomicBool::new(false));
+        let cell2 = Arc::clone(&cell);
+        let once2 = Arc::clone(&once);
+        let (p, c) = hooked_channel(8, move || {
+            if once2.swap(true, Ordering::Relaxed) {
+                return;
+            }
+            let g = cell2.lock().unwrap();
+            if let Some(p) = g.as_ref() {
+                p.clear();
+                p.write(&[9, 10]);
+            }
+        });
+        *cell.lock().unwrap() = Some(p.clone());
+        p.write(&[1, 2, 3, 4, 5, 6, 7]);
+        let mut out = [0i16; 4];
+        assert_eq!(c.read(&mut out), 0, "torn slice must be discarded");
+        let n = c.read(&mut out);
+        assert_eq!(&out[..n], &[9, 10]);
+    }
+
+    #[test]
+    fn late_hook_leaves_clean_reads_alone() {
+        // Sanity: the hook firing with NO clear inside doesn't disturb
+        // an ordinary read.
+        let (p, c) = hooked_channel(8, || {});
+        p.write(&[1, 2, 3]);
+        let mut out = [0i16; 4];
+        assert_eq!(c.read(&mut out), 3);
+        assert_eq!(&out[..3], &[1, 2, 3]);
     }
 
     #[test]
