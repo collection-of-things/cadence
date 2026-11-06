@@ -25,6 +25,7 @@ class FakeSession {
     return false;
   }
   hide(): void {}
+  reveal(): void {}
   emit(name: string, data: unknown): void {
     this.onEvent?.({ name, data });
   }
@@ -211,5 +212,34 @@ describe("apple adapter page events", () => {
     (sess as any).eval = origEval;
     await pre.catch(() => {});
     expect(sess.evals.some((e) => e.includes("skipTo") || e.includes("__cadenceCtl.play("))).toBe(false);
+  });
+
+  it("signIn calls MusicKit authorize() and hides when already authorized", async () => {
+    (adapter as any).authorized = true;
+    await adapter.signIn();
+    expect(sess.evals.some((e) => e.includes("authorize()"))).toBe(false);
+    (adapter as any).authorized = false;
+    await adapter.signIn();
+    expect(sess.evals.some((e) => e.includes("authorize()"))).toBe(true);
+  });
+
+  it("signIn falls back to the DOM click when authorize() rejects", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("authorize()") ? Promise.reject(new Error("nope")) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    expect(sess.evals.some((e) => e.includes("clickSignIn()"))).toBe(true);
+    (sess as any).eval = orig;
+  });
+
+  it("capabilities() reports unauthenticated when not installed, ready after authorization", async () => {
+    const caps = await adapter.capabilities();
+    expect(caps.state).toBe("unauthenticated");
+    (adapter as any).installed = true;
+    (adapter as any).authorized = true;
+    const caps2 = await adapter.capabilities();
+    expect(caps2.state).toBe("ready");
   });
 });

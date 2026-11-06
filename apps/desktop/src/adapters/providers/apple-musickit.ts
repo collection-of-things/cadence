@@ -378,10 +378,36 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.signedOut = false;
     this.installBackoffUntil = 0; // explicit user action clears backoff
     await this.prepare();
-    // The user signs into music.apple.com on Apple's own page — our window,
-    // their site, their credentials. MusicKit auth follows the site session.
+    if (this.authorized) {
+      this.session.hide();
+      return;
+    }
+    // MusicKit's authorize() opens Apple's own IDMSA sign-in popup in the
+    // provider partition — the DOM click on the site's button is gesture-
+    // gated and silently no-ops from injected code. Keep it as a fallback.
+    // Don't await the popup — it can stay open minutes while the user types;
+    // auth completion arrives through playerState → capabilitiesChanged.
     this.session.reveal();
-    await this.session.eval(`window.__cadenceCtl.clickSignIn()`).catch(() => {});
+    const authed = this.session
+      .eval<boolean>(`window.__cadenceCtl.authorize().then(() => true).catch(() => false)`, 120_000)
+      .catch(() => false);
+    const early = await Promise.race([
+      authed,
+      new Promise<boolean>((r) => setTimeout(() => r(true), 5_000)),
+    ]);
+    if (early === false) {
+      // authorize() rejected immediately (no controller, dead page) — try
+      // the page's own button before giving up.
+      await this.session.eval(`window.__cadenceCtl.clickSignIn()`).catch(() => {});
+    }
+    void authed.then((ok) => {
+      if (ok === false && !this.authorized && !this.destroyed) {
+        // Popup dismissed — tuck the window away, stay unauthenticated.
+        this.session.hide();
+        this.emit({ kind: "capabilitiesChanged" });
+      }
+    });
+    this.emit({ kind: "capabilitiesChanged" });
   }
 
   async signOut(): Promise<void> {

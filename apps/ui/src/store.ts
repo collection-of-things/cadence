@@ -41,7 +41,10 @@ export interface StoreApiSurface {
   getQueue(): Promise<QueueState>;
   getCapabilities(): Promise<RouteCapabilities[]>;
   library: { onScanProgress(cb: (p: ScanProgress) => void): () => void };
-  routes?: { signIn(route: RouteId): Promise<unknown> };
+  routes?: {
+    signIn(route: RouteId): Promise<unknown>;
+    signOut(route: RouteId): Promise<unknown>;
+  };
   platform?: {
     active(): Promise<PlatformId>;
     setActive(platform: PlatformId): Promise<unknown>;
@@ -158,6 +161,7 @@ export interface UiSession {
   moveQueueItem(fromIndex: number, toIndex: number): void;
   playQueueId(queueId: string): void;
   signInRoute(route: RouteId): void;
+  signOutRoute(route: RouteId): void;
   setPlatform(platform: PlatformId): void;
   setFidelityMode(enabled: boolean): void;
   setEq(bands: EqBand[]): void;
@@ -353,6 +357,13 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       if (!api.routes) return;
       void api.routes.signIn(route).catch((e: unknown) => {
         const m = e instanceof Error ? e.message : 'Sign-in failed';
+        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
+      });
+    },
+    signOutRoute(route) {
+      if (!api.routes) return;
+      void api.routes.signOut(route).catch((e: unknown) => {
+        const m = e instanceof Error ? e.message : 'Sign-out failed';
         pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
       });
     },
