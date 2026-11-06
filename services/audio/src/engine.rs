@@ -205,6 +205,10 @@ pub struct OutputCore {
     /// None because playback ended" from "active is None because a
     /// rebuild cleared it".
     ended_pending: bool,
+    /// a stream rebuild is between clear_all and the negotiated commit —
+    /// readers spawned or installed in this window would attach to a
+    /// format that is about to change.
+    rebuilding: bool,
     fft_tap: Producer<f32>,
     /// optional f32le dump tap of everything rendered (null-sink diagnostics)
     dump: Option<Dump>,
@@ -741,6 +745,7 @@ impl Engine {
                 stalled: false,
                 boundary_seq: 0,
                 ended_pending: false,
+                rebuilding: false,
                 fft_tap: tap_p.clone(),
                 dump,
                 scratch16: Vec::new(),
@@ -1155,6 +1160,15 @@ impl Engine {
             }
         }
 
+        // Another rebuild may have committed a different format while we
+        // planned — this reader is only valid for plan.neg.
+        {
+            let core = self.core.lock().unwrap();
+            if core.rebuilding || core.negotiated != neg {
+                bail!("stream format changed during spawn — retry");
+            }
+        }
+
         let capacity = (neg.rate as f32 * self.cfg.buffer_secs) as usize * neg.channels as usize;
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -1326,6 +1340,10 @@ impl Engine {
                     bail!("track boundary landed mid-spawn — stale pipeline");
                 }
             }
+            // From here until the negotiated commit, installs based on the
+            // OLD format are forbidden — the flag makes them bail instead
+            // of attaching a reader to a stream about to change.
+            core.rebuilding = true;
             core.clear_all();
         }
         let old = self.sink.lock().unwrap().take();
@@ -1336,10 +1354,17 @@ impl Engine {
         // Open BEFORE committing negotiated: on failure the core keeps the
         // old negotiation so the next load still attempts a rebuild instead
         // of rendering into a dead sink.
-        let new_sink = crate::sink::open_sink(&self.cfg, caps, neg, &self.core)?;
+        let new_sink = match crate::sink::open_sink(&self.cfg, caps, neg, &self.core) {
+            Ok(s) => s,
+            Err(e) => {
+                self.core.lock().unwrap().rebuilding = false;
+                return Err(e);
+            }
+        };
         {
             let mut core = self.core.lock().unwrap();
             core.negotiated = neg.clone();
+            core.rebuilding = false;
         }
         *self.sink.lock().unwrap() = Some(new_sink);
         Ok(())
@@ -1365,6 +1390,21 @@ impl Engine {
                 caps
             }
         };
+        // Don't commit the new caps while a boundary is un-adopted —
+        // the guarded rebuild would bail anyway and leave mixed state.
+        let (pos, expected) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core.ended_pending
+                || core.active.as_ref().map(|r| r.instance) != Some(st.current_instance)
+            {
+                bail!("track boundary in flight — retry device change");
+            }
+            (
+                core.position_ms(),
+                Some((core.boundary_seq, st.generation)),
+            )
+        };
         *self.caps.lock().unwrap() = new_caps;
         // New device: the cached native-open failure belongs to the old one.
         self.state.lock().unwrap().native_failed = None;
@@ -1377,17 +1417,6 @@ impl Engine {
                 kind: caps.default_kind(),
                 device_name: caps.name(),
             }
-        };
-        // Capture position AND boundary state before the rebuild — a
-        // promotion landing before clear_all must not lose the promoted
-        // reader.
-        let (pos, expected) = {
-            let core = self.core.lock().unwrap();
-            let st = self.state.lock().unwrap();
-            (
-                core.position_ms(),
-                Some((core.boundary_seq, st.generation)),
-            )
         };
         self.rebuild_stream(&neg, expected)?;
         self.respawn_pipelines(pos);
@@ -1471,7 +1500,10 @@ impl Engine {
                         || st.current_instance != cur_inst
                         // a boundary (promotion or end) landed mid-spawn
                         || core.boundary_seq != seq
-                        || core.ended_pending;
+                        || core.ended_pending
+                        // a stream rebuild is mid-flight — attaching now
+                        // would pin this reader to the outgoing format
+                        || core.rebuilding;
                     if stale {
                         drop(st);
                         drop(core);
@@ -1554,6 +1586,7 @@ impl Engine {
                         let mut st = self.state.lock().unwrap();
                         let stale = core.boundary_seq != seq
                             || core.ended_pending
+                            || core.rebuilding
                             || st.prefetch
                                 .as_ref()
                                 .map(|p| p.queue_id.as_str())
@@ -1772,6 +1805,7 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             let stale = core.boundary_seq != seq
                 || core.ended_pending
+                || core.rebuilding
                 || st.generation != generation
                 || core
                     .active
@@ -1903,6 +1937,7 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             let stale = core.boundary_seq != seq
                 || core.ended_pending
+                || core.rebuilding
                 || st.generation != generation
                 || st.current_instance != cur_inst;
             if stale {
@@ -2097,6 +2132,7 @@ impl Engine {
         let mut mono_buf = Vec::with_capacity(8192);
         let mut tap_buf = vec![0f32; 8192];
         let mut monitor_stalled = false;
+        let mut deferred_device_error: Option<String> = None;
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2234,7 +2270,9 @@ impl Engine {
                                     let reopen_instance = reader.instance;
                                     let mut core = self.core.lock().unwrap();
                                     let mut st = self.state.lock().unwrap();
-                                    let stale = st.generation != gen || st.queue_id.is_some();
+                                    let stale = st.generation != gen
+                                        || st.queue_id.is_some()
+                                        || core.rebuilding;
                                     if stale {
                                         eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
                                         drop(st);
@@ -2269,12 +2307,27 @@ impl Engine {
                                     continue;
                                 }
                                 Err(e) => {
-                                    self.emit_error(Some(&pf.queue_id), &format!("{e:#}"), true);
+                                    // A concurrent load may own the slot
+                                    // now — only report against ours.
+                                    let ours = {
+                                        let st = self.state.lock().unwrap();
+                                        st.generation == gen && st.queue_id.is_none()
+                                    };
+                                    if ours {
+                                        self.emit_error(Some(&pf.queue_id), &format!("{e:#}"), true);
+                                    }
                                 }
                             }
                         }
-                        self.set_state(PlayState::Stopped);
-                        self.emit_state(None);
+                        // Only stop when nothing newer took over mid-handling.
+                        let ours = {
+                            let st = self.state.lock().unwrap();
+                            st.generation == gen && st.queue_id.is_none()
+                        };
+                        if ours {
+                            self.set_state(PlayState::Stopped);
+                            self.emit_state(None);
+                        }
                     }
                 }
             }
@@ -2358,37 +2411,69 @@ impl Engine {
                 }
             }
 
-            // device loss -> honest error + stop
-            if let Some(msg) = self.caps.lock().unwrap().device_error() {
-                // Try the default output once — an unplugged headphone
-                // shouldn't end the session when speakers are available.
-                let was_default = {
-                    let caps = self.caps.lock().unwrap();
-                    caps.list().iter().any(|d| d.is_default && d.name == caps.name())
+            // device loss -> honest error + stop. The error is consumed by
+            // device_error(), so a pending boundary defers handling to the
+            // next tick rather than losing it.
+            let device_error = deferred_device_error
+                .take()
+                .or_else(|| self.caps.lock().unwrap().device_error());
+            if let Some(msg) = device_error {
+                let pending_boundary = {
+                    let core = self.core.lock().unwrap();
+                    let st = self.state.lock().unwrap();
+                    core.ended_pending
+                        || core.active.as_ref().map(|r| r.instance)
+                            != Some(st.current_instance)
                 };
-                if !self.cfg.null_sink && !was_default {
-                    match self.set_device(None) {
-                        Ok(_) => {
-                            self.emit_error(
-                                None,
-                                &format!("output device lost ({msg}); fell back to default"),
-                                true,
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!("device fallback failed: {e:#}");
+                if pending_boundary {
+                    // A guarded rebuild would bail during adoption — defer
+                    // to the next tick after the drain settles it.
+                    deferred_device_error = Some(msg);
+                } else {
+                    // Try the default output once — an unplugged headphone
+                    // shouldn't end the session when speakers are available.
+                    let was_default = {
+                        let caps = self.caps.lock().unwrap();
+                        caps.list().iter().any(|d| d.is_default && d.name == caps.name())
+                    };
+                    if !self.cfg.null_sink && !was_default {
+                        match self.set_device(None) {
+                            Ok(_) => {
+                                self.emit_error(
+                                    None,
+                                    &format!("output device lost ({msg}); fell back to default"),
+                                    true,
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                // A boundary landing mid-switch bails the
+                                // guarded rebuild — defer instead of
+                                // destroying the promoted reader below.
+                                let pending = {
+                                    let core = self.core.lock().unwrap();
+                                    let st = self.state.lock().unwrap();
+                                    core.ended_pending
+                                        || core.active.as_ref().map(|r| r.instance)
+                                            != Some(st.current_instance)
+                                };
+                                if pending {
+                                    deferred_device_error = Some(msg);
+                                    continue;
+                                }
+                                eprintln!("device fallback failed: {e:#}");
+                            }
                         }
                     }
+                    self.emit_error(None, &format!("output device lost: {msg}"), false);
+                    {
+                        let mut core = self.core.lock().unwrap();
+                        core.clear_all();
+                        core.paused = true;
+                    }
+                    self.set_state(PlayState::Error);
+                    self.emit_state(Some("device lost"));
                 }
-                self.emit_error(None, &format!("output device lost: {msg}"), false);
-                {
-                    let mut core = self.core.lock().unwrap();
-                    core.clear_all();
-                    core.paused = true;
-                }
-                self.set_state(PlayState::Error);
-                self.emit_state(Some("device lost"));
             }
 
             // position ~10Hz while playing
