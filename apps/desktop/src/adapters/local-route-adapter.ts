@@ -194,6 +194,11 @@ export class LocalRouteAdapter
       source,
       startPaused: true,
       positionMs,
+      // The tag travels with the track like on a normal load — the engine
+      // applies it only when ReplayGain is enabled.
+      ...(item.track.replayGainDb !== undefined
+        ? { replayGainDb: item.track.replayGainDb }
+        : {}),
     });
   }
 

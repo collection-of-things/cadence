@@ -1070,7 +1070,15 @@ impl Engine {
         let capacity = (neg.rate as f32 * self.cfg.buffer_secs) as usize * neg.channels as usize;
 
         let ready = Arc::new(AtomicBool::new(false));
-        let eq = self.state.lock().unwrap().eq_bands.clone();
+        // Fidelity bypass means NO DSP on ANY negotiated kind — only the
+        // s32 bypass runs a DSP-free producer, so the f32 bypass path must
+        // be starved of EQ/RG inputs to stay bit-transparent.
+        let eq = if bypass {
+            Vec::new()
+        } else {
+            self.state.lock().unwrap().eq_bands.clone()
+        };
+        let rg_db = if bypass { None } else { rg_db };
         let decoder = Arc::clone(&self.decoder);
         let src2 = src.clone();
         let neg2 = neg.clone();
@@ -1330,6 +1338,18 @@ impl Engine {
                     }
                     Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
                 }
+            } else {
+                // Armed for the boundary reopen, not as a live pipeline:
+                // refresh the state — the old one carries a dead producer's
+                // ready flag, so prefetchReady would never emit.
+                let mut st = self.state.lock().unwrap();
+                st.prefetch = Some(PrefetchState {
+                    queue_id: qid,
+                    source: src,
+                    replay_gain_db: rg,
+                    ready: Arc::new(AtomicBool::new(true)),
+                });
+                st.reported_prefetch_ready = false;
             }
         }
     }
@@ -1437,6 +1457,11 @@ impl Engine {
         rg_db: Option<f64>,
     ) -> Result<Value> {
         self.check_gen(generation)?;
+        // Replace any armed prefetch BEFORE planning: an incompatible new
+        // successor must never inherit a stale `next` reader — the
+        // boundary would promote the old track while the state names the
+        // new one.
+        self.abort_prefetch();
         let src = SourceSpec::File { path: PathBuf::from(path) };
         // If the successor negotiates a different stream format (strict
         // fidelity + a native format the stream can't take), it cannot

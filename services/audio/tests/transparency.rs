@@ -187,6 +187,21 @@ fn render_is_bit_exact_when_device_accepts_source() {
         std::thread::sleep(Duration::from_millis(100));
 
         let (reference, _) = decode_all(&path, Some(2)).unwrap();
+        // The 24-bit fixtures must contain real sub-16-bit content —
+        // otherwise bit-exactness can't prove depth was preserved.
+        if src_rate > 44100 {
+            let deep = reference
+                .iter()
+                .filter(|s| {
+                    let scaled = *s * 32768.0;
+                    (scaled - scaled.round()).abs() > 1e-4
+                })
+                .count();
+            assert!(
+                deep > 1000,
+                "{file}: only {deep} samples use sub-16-bit content — fixture too shallow to prove depth"
+            );
+        }
         let dump_pcm = read_dump(&dump);
         assert_contains_bit_exact(&dump_pcm, &reference, file);
     }

@@ -22,8 +22,8 @@ ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=330:duration=2:sample_rate=96000" \
   -c:a flac -sample_fmt s32 "$OUT/tone-330-24bit96k.flac"
 
-# STEREO files for the transparency null-tests (issue #1): sweep + pink noise,
-# 16-bit/44.1kHz, 24-bit/96kHz, 24-bit/192kHz — different content per channel.
+# STEREO files for the transparency null-tests (issue #1): different content
+# per channel, 16-bit/44.1kHz, 24-bit/96kHz, 24-bit/192kHz.
 stereo_sweep() { # file rate extra...
   local f="$1" rate="$2"; shift 2
   ffmpeg -hide_banner -loglevel error -y \
@@ -33,8 +33,21 @@ stereo_sweep() { # file rate extra...
     -c:a flac "$@" "$f"
 }
 stereo_sweep "$OUT/stereo-44k1-16.flac" 44100 -sample_fmt s16
-stereo_sweep "$OUT/stereo-96k-24.flac" 96000 -sample_fmt s32
-stereo_sweep "$OUT/stereo-192k-24.flac" 192000 -sample_fmt s32
+
+# The 24-bit files must contain real sub-16-bit content (the null test can
+# only prove depth preservation when low bits are nonzero) — aevalsrc emits
+# f32, so irrational-amplitude tones fill all 24 bits. A quiet second tone
+# at a non-harmonic frequency keeps no sample on a 16-bit boundary.
+stereo_24() { # file rate
+  local f="$1" rate="$2"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "aevalsrc=0.3*sin(440*2*PI*t)+0.013*sin(7919*2*PI*t):s=${rate}:d=2" \
+    -f lavfi -i "aevalsrc=0.3*sin(880*2*PI*t)+0.013*sin(8317*2*PI*t):s=${rate}:d=2" \
+    -filter_complex "[0:a][1:a]amerge=inputs=2[a]" -map "[a]" \
+    -c:a flac -sample_fmt s32 "$f"
+}
+stereo_24 "$OUT/stereo-96k-24.flac" 96000
+stereo_24 "$OUT/stereo-192k-24.flac" 192000
 
 # Gapless pair: one continuous 6s sweep split at exactly 3s.
 ffmpeg -hide_banner -loglevel error -y \
