@@ -33,6 +33,12 @@ stereo_sweep() { # file rate extra...
     -c:a flac "$@" "$f"
 }
 stereo_sweep "$OUT/stereo-44k1-16.flac" 44100 -sample_fmt s16
+# A distinct 44.1k stereo track for the transition drain test
+ffmpeg -y -v error \
+    -f lavfi -i "anoisesrc=color=pink:duration=1.9:sample_rate=44100:amplitude=0.6" \
+    -f lavfi -i "sine=frequency=517:duration=1.9:sample_rate=44100" \
+    -filter_complex "[0:a][1:a]amerge=inputs=2[a]" -map "[a]" \
+    -c:a flac -sample_fmt s16 "$OUT/trans-b-44k1.flac"
 
 # The 24-bit files must contain real sub-16-bit content (the null test can
 # only prove depth preservation when low bits are nonzero) — aevalsrc emits
