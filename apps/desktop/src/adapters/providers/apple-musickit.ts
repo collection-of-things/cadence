@@ -376,11 +376,6 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async signIn(): Promise<void> {
-    // A sign-out mid-teardown owns the session — its reset()/clearData()
-    // would destroy the view and partition under a flow started beside it.
-    await this.signOutInFlight?.catch(() => {});
-    this.signedOut = false;
-    this.installBackoffUntil = 0; // explicit user action clears backoff
     // A second Sign-in click while a flow is live doesn't stack another
     // authorize() or popup — it raises the existing one (the popup itself
     // when there is one).
@@ -388,9 +383,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       if (!this.session.focusPopup()) this.session.reveal();
       return;
     }
-    // Ownership is claimed BEFORE the first await — signOut/dispose can
-    // only invalidate an attempt it can see. A sign-out landing mid-
-    // prepare() would otherwise let this resume into a wiped session.
+    // Ownership is claimed BEFORE the first await — the claim must be
+    // atomic with checking teardown. A sign-out starting in any gap can
+    // only invalidate an attempt it can see.
     this.signInPending = true;
     const attempt = ++this.signInAttempt;
     // Ownership ends on observable events — auth completes, every popup
@@ -441,6 +436,14 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.signInAttempt++;
       endAttempt();
     };
+    // A sign-out mid-teardown owns the session — wait it out. One that
+    // started after our claim already invalidated us via the cleanup.
+    await this.signOutInFlight?.catch(() => {});
+    if (attempt !== this.signInAttempt || !this.signInPending || this.destroyed) {
+      return;
+    }
+    this.signedOut = false;
+    this.installBackoffUntil = 0; // explicit user action clears backoff
     try {
       await this.prepare();
     } catch (e) {

@@ -490,4 +490,18 @@ describe("apple adapter page events", () => {
     expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(true);
     (sess as any).eval = orig;
   });
+
+  it("a signOut started in signIn's first yield still invalidates the attempt", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return Promise.resolve(true);
+    };
+    const p = adapter.signIn(); // claims attempt, yields on signOutInFlight
+    await adapter.signOut(); // runs inside that yield — must invalidate it
+    await p;
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(false);
+    expect((adapter as any).signInPending).toBe(false);
+    (sess as any).eval = orig;
+  });
 });
