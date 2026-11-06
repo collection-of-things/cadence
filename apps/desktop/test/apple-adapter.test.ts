@@ -26,6 +26,17 @@ class FakeSession {
   }
   hide(): void {}
   reveal(): void {}
+  popupCloseHandlers: Array<() => void> = [];
+  onPopupClosed(cb: () => void): () => void {
+    this.popupCloseHandlers.push(cb);
+    return () => {
+      this.popupCloseHandlers = this.popupCloseHandlers.filter((h) => h !== cb);
+    };
+  }
+  /** Test hook: pretend the sign-in popup window just closed. */
+  closePopup(): void {
+    for (const h of [...this.popupCloseHandlers]) h();
+  }
   emit(name: string, data: unknown): void {
     this.onEvent?.({ name, data });
   }
@@ -266,6 +277,35 @@ describe("apple adapter page events", () => {
     await adapter.signIn();
     await new Promise((r) => setTimeout(r, 20));
     expect(hideCount).toBe(0);
+    (sess as any).eval = orig;
+  });
+
+  it("a second signIn click while a flow is live reveals instead of stacking", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      // authorize() stays pending — the popup is open, user typing.
+      return expr.includes("authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    const authCalls = sess.evals.filter((e) => e.includes("authorize()")).length;
+    await adapter.signIn(); // second click — must not stack another authorize()
+    expect(sess.evals.filter((e) => e.includes("authorize()")).length).toBe(authCalls);
+    (sess as any).eval = orig;
+  });
+
+  it("popup close without auth ends the attempt and hides the window", async () => {
+    const orig = sess.eval.bind(sess);
+    let hides = 0;
+    (sess as any).hide = () => hides++;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    sess.closePopup();
+    expect(hides).toBe(1);
+    expect((adapter as any).signInPending).toBe(false);
     (sess as any).eval = orig;
   });
 });

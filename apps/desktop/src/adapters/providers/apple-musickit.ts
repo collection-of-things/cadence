@@ -383,11 +383,31 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.session.hide();
       return;
     }
-    // A second Sign-in click while the popup is open coalesces — don't
-    // stack authorize() calls or popup windows.
-    if (this.signInPending) return;
+    // A second Sign-in click while a flow is live doesn't stack another
+    // authorize() or popup — it just brings the existing one forward.
+    if (this.signInPending) {
+      this.session.reveal();
+      return;
+    }
     this.signInPending = true;
     const attempt = ++this.signInAttempt;
+    // Ownership ends on observable events only: auth completes, the popup
+    // window closes, or the user signs out — never on a timer's guess.
+    const endAttempt = () => {
+      this.signInPending = false;
+      offPopup();
+    };
+    const offPopup = this.session.onPopupClosed(() => {
+      if (!this.authorized && !this.destroyed) {
+        // The IDMSA window closed without authorizing — dismiss the flow.
+        endAttempt();
+        this.session.hide();
+        this.emit({ kind: "capabilitiesChanged" });
+      }
+    });
+    this.signInCleanup = () => {
+      endAttempt();
+    };
     // MusicKit's authorize() opens Apple's own IDMSA sign-in popup in the
     // provider partition — the DOM click on the site's button is gesture-
     // gated and silently no-ops from injected code. Keep it as a fallback.
@@ -417,28 +437,31 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       const clicked = await this.session
         .eval<boolean>(`window.__cadenceCtl.clickSignIn()`)
         .catch(() => false);
-      this.signInPending = false;
       if (!clicked) {
+        endAttempt();
         this.session.hide();
         throw new Error("couldn't open Apple sign-in — try again");
       }
+      // The fallback's own flow may be live — keep the attempt owned until
+      // the popup-close or an authorized playerState ends it observably.
       this.emit({ kind: "capabilitiesChanged" });
       return;
     }
     void authed.then((ok) => {
-      this.signInPending = false;
-      // A stale attempt must not hide the window a newer sign-in is using;
-      // 'timeout' leaves the popup open — don't hide on a guess.
-      if (
-        ok === false &&
-        attempt === this.signInAttempt &&
-        !this.authorized &&
-        !this.destroyed
-      ) {
-        // Popup dismissed — tuck the window away, stay unauthenticated.
-        this.session.hide();
+      if (ok === true) {
+        // authorize() resolved — completion lands via playerState next.
+        endAttempt();
+        this.emit({ kind: "capabilitiesChanged" });
+        return;
       }
-      this.emit({ kind: "capabilitiesChanged" });
+      // ok === false (rejected) or 'timeout': the popup's own lifecycle
+      // decides — the popup-closed listener ends the attempt when the
+      // window actually closes; a timeout alone doesn't.
+      if (ok === false && attempt === this.signInAttempt) {
+        endAttempt();
+        if (!this.authorized && !this.destroyed) this.session.hide();
+        this.emit({ kind: "capabilitiesChanged" });
+      }
     });
     this.emit({ kind: "capabilitiesChanged" });
   }
@@ -447,9 +470,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private signInPending = false;
   /** Monotonic id for the latest sign-in attempt — stale results drop. */
   private signInAttempt = 0;
+  /** Ends the outstanding sign-in attempt (popup listener + pending flag). */
+  private signInCleanup: (() => void) | null = null;
 
   async signOut(): Promise<void> {
     this.signedOut = true; // suppress lazy warm-up before/after clearing
+    this.signInCleanup?.();
+    this.signInCleanup = null;
     // Skip unauthorize when the view was never loaded — signing out cold
     // must not boot the window.
     if (this.installed) {
@@ -489,6 +516,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
 
   async dispose(): Promise<void> {
     this.destroyed = true;
+    this.signInCleanup?.();
+    this.signInCleanup = null;
     await this.session.dispose();
   }
 
@@ -524,7 +553,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (typeof s.state !== "string") return; // forged/empty event — ignore
     if (s.isAuthorized !== this.authorized) {
       this.authorized = s.isAuthorized;
-      if (this.authorized) this.session.hide(); // sign-in complete — tuck it away
+      if (this.authorized) {
+        this.signInCleanup?.(); // a live sign-in attempt just completed
+        this.session.hide(); // sign-in complete — tuck it away
+      }
       this.emit({ kind: "capabilitiesChanged" });
     }
     // The engine ended the current track — the controller's `ended` flag is

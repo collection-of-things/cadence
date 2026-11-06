@@ -171,7 +171,12 @@ export class ProviderSession {
         );
         wc.on("did-create-window", (grand) => guardPopup(grand.webContents));
       };
-      win.webContents.on("did-create-window", (child) => guardPopup(child.webContents));
+      win.webContents.on("did-create-window", (child) => {
+        guardPopup(child.webContents);
+        child.on("closed", () => {
+          for (const l of this.popupClosedListeners) l();
+        });
+      });
 
       // Assign before loadURL: reveal() and eval() see the window even while
       // the page is still loading (or the load fails). A reset() during the
@@ -230,6 +235,14 @@ export class ProviderSession {
   onEvent(cb: (e: { name: string; data: unknown }) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
+  }
+
+  private popupClosedListeners = new Set<() => void>();
+
+  /** Popup windows this session's view spawned (sign-in flows) closing. */
+  onPopupClosed(cb: () => void): () => void {
+    this.popupClosedListeners.add(cb);
+    return () => this.popupClosedListeners.delete(cb);
   }
 
   /**
