@@ -74,7 +74,9 @@ export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
         disabled={(playing && !canPause) || !hasTrack}
         onClick={() => session.togglePlay()}
       >
-        {playing ? <PauseIcon size={big ? 26 : 24} /> : <PlayIcon size={big ? 26 : 24} />}
+        <span className="icon-swap" key={playing ? 'pause' : 'play'}>
+          {playing ? <PauseIcon size={big ? 26 : 24} /> : <PlayIcon size={big ? 26 : 24} />}
+        </span>
       </button>
       <button className="ctl-btn" aria-label="Next track" title="Next" disabled={!canSkip || !hasTrack} onClick={() => session.next()}>
         <NextIcon size={big ? 24 : 22} />

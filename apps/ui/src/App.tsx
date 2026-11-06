@@ -35,6 +35,13 @@ export function sameLocation(a: Location, b: Location): boolean {
   return true;
 }
 
+/** Identity of a location for page-change animation (re-mounts the page). */
+function pageKey(location: Location): string {
+  if (location.page === 'album') return `album:${location.album.id}`;
+  if (location.page === 'library') return `library:${location.tab}`;
+  return location.page;
+}
+
 export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
@@ -202,6 +209,7 @@ export function App() {
           onToggleRail={() => setRailOpen((open) => !open)}
         />
         <main className="stage-main">
+          <div className="page" key={pageKey(location)}>
           {location.page === 'home' && <HomeView onSelectAlbum={openAlbum} />}
           {location.page === 'library' && (
             <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
@@ -209,6 +217,7 @@ export function App() {
           {location.page === 'favorites' && <FavoritesView />}
           {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}
           {location.page === 'sources' && <SourcesView />}
+          </div>
         </main>
         {!expanded && <PlayerBar onOpenNowPlaying={openNowPlaying} />}
       </div>

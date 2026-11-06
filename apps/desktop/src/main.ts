@@ -65,7 +65,14 @@ function createWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 480,
     title: "Cadence",
-    backgroundColor: "#0c0d10",
+    backgroundColor: "#0b0b0c",
+    // Frameless chrome: the renderer's top bar is the title bar. Windows and
+    // Linux draw native window controls over its right edge (the UI reads
+    // env(titlebar-area-*) to keep clear); macOS keeps inset traffic lights.
+    titleBarStyle: "hidden",
+    ...(process.platform === "darwin"
+      ? { trafficLightPosition: { x: 18, y: 20 } }
+      : { titleBarOverlay: { color: "#00000000", symbolColor: "#ffffff", height: 56 } }),
     webPreferences: {
       preload: join(distDir, "preload.cjs"),
       contextIsolation: true,

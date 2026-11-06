@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
 import { api, session } from '../session';
@@ -27,8 +27,8 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
 
   return (
     <div className="album-grid">
-      {albums.map((a) => (
-        <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+      {albums.map((a, i) => (
+        <button key={a.id} className="album-card" style={{ '--i': i } as CSSProperties} onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
           {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
           <span className="album-title">{a.title}</span>
           <span className="album-artist">

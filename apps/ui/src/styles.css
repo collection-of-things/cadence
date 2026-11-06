@@ -65,7 +65,9 @@
   --pb-clear: 120px;
   --sidebar-w: 256px;
   --rail-w: 280px;
-  --topbar-h: 64px;
+  --topbar-h: 56px;
+  /* width the OS window controls take at the top right (0 outside Electron) */
+  --wco-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
 
 * {

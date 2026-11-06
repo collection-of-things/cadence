@@ -22,9 +22,9 @@ export function PlayerBar({ onOpenNowPlaying }: { onOpenNowPlaying(): void }) {
     <footer className={`playerbar ${track ? '' : 'is-idle'}`} aria-label="Player">
       <div className="pb-left">
         <button className="pb-art" aria-label="Open now playing" title="Now playing" disabled={!track} onClick={onOpenNowPlaying}>
-          {track?.artwork ? <img src={track.artwork.url} alt="" draggable={false} /> : <NoteIcon size={22} />}
+          {track?.artwork ? <img key={track.id} src={track.artwork.url} alt="" draggable={false} /> : <NoteIcon size={22} />}
         </button>
-        <div className="pb-meta">
+        <div className="pb-meta" key={track?.id ?? 'none'}>
           <span className="pb-title" title={track?.title}>{track?.title ?? 'Nothing playing'}</span>
           <span className="pb-sub" title={sub}>{sub}</span>
         </div>

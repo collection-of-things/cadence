@@ -298,3 +298,14 @@
 .sidebar.is-collapsed .side-search-btn { display: grid; }
 .sidebar.is-collapsed .side-search-field { display: none; }
 @media (max-width: 900px) { .sidebar .side-search-btn { display: grid; } }
+
+/* ---------------- frameless window chrome ---------------- */
+/* The top bar, the sidebar's top strip, the rail top and the immersive view's
+   top strip are the window's drag handle; everything interactive opts out. */
+.topbar { pointer-events: auto; -webkit-app-region: drag; }
+.app:not(.has-rail) .topbar { padding-right: calc(12px + var(--wco-right)); }
+.topbar button, .topbar input, .topbar .topbar-tabs { -webkit-app-region: no-drag; }
+.side-search { -webkit-app-region: drag; }
+.side-search input, .side-search button { -webkit-app-region: no-drag; }
+[data-platform='mac'] .side-search { padding-top: 46px; }
+.window-drag { position: absolute; z-index: 1; inset: 0 0 auto 0; height: var(--topbar-h); -webkit-app-region: drag; }

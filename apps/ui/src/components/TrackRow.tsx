@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
 import { toggleFavorite, useCollection } from '../collection';
@@ -96,6 +96,7 @@ export function TrackRow({ track, index, variant, albumArtist, onPlay }: TrackRo
       aria-label={`Play ${track.title} by ${artists}`}
       aria-current={isCurrent || undefined}
       title={unavailable ? track.availabilityDetail ?? 'Unavailable' : undefined}
+      style={{ '--i': index } as CSSProperties}
       onClick={onPlay}
       onKeyDown={(e) => {
         if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {

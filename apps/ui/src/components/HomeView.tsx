@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
 import { api, session } from '../session';
 import { albumKey, useCollection } from '../collection';
@@ -69,9 +69,9 @@ function Cover({ album, eager }: { album: LibraryAlbum; eager?: boolean }) {
 }
 
 /** Tall poster card with the caption laid over a dark fade. */
-function PosterCard({ album, label, onOpen }: { album: LibraryAlbum; label: string | undefined; onOpen(): void }) {
+function PosterCard({ album, label, index, onOpen }: { album: LibraryAlbum; label: string | undefined; index: number; onOpen(): void }) {
   return (
-    <div className="poster-card">
+    <div className="poster-card" style={{ '--i': index } as CSSProperties}>
       <button className="poster-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
         <span className="poster-art"><Cover album={album} eager /></span>
         <span className="poster-caption">
@@ -88,9 +88,9 @@ function PosterCard({ album, label, onOpen }: { album: LibraryAlbum; label: stri
 }
 
 /** Square card with title and artist below the artwork. */
-function SquareCard({ album, onOpen }: { album: LibraryAlbum; onOpen(): void }) {
+function SquareCard({ album, index, onOpen }: { album: LibraryAlbum; index: number; onOpen(): void }) {
   return (
-    <div className="square-card">
+    <div className="square-card" style={{ '--i': index } as CSSProperties}>
       <button className="square-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
         <span className="square-art"><Cover album={album} /></span>
         <span className="square-title">{album.title}</span>
@@ -186,13 +186,13 @@ export function HomeView({ onSelectAlbum }: HomeViewProps) {
       ) : (
         <>
           <Shelf label="Your albums" head={<h2>Your albums</h2>}>
-            {albums.map((album) => (
-              <PosterCard key={album.id} album={album} label={posterLabel(album)} onOpen={() => onSelectAlbum(album)} />
+            {albums.map((album, i) => (
+              <PosterCard key={album.id} album={album} index={i} label={posterLabel(album)} onOpen={() => onSelectAlbum(album)} />
             ))}
           </Shelf>
           {played.length > 0 && (
             <Shelf label="Recently played" head={<h2>Recently played</h2>}>
-              {played.map((album) => <SquareCard key={album.id} album={album} onOpen={() => onSelectAlbum(album)} />)}
+              {played.map((album, i) => <SquareCard key={album.id} album={album} index={i} onOpen={() => onSelectAlbum(album)} />)}
             </Shelf>
           )}
           {seed && similar.length > 0 && (
@@ -208,7 +208,7 @@ export function HomeView({ onSelectAlbum }: HomeViewProps) {
                 </button>
               }
             >
-              {similar.map((album) => <SquareCard key={album.id} album={album} onOpen={() => onSelectAlbum(album)} />)}
+              {similar.map((album, i) => <SquareCard key={album.id} album={album} index={i} onOpen={() => onSelectAlbum(album)} />)}
             </Shelf>
           )}
         </>

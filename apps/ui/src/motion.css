@@ -1,0 +1,81 @@
+/* ============ Motion ============
+   One place for transitions and keyframes. Short (120–380ms), ease-out,
+   transform/opacity only on the hot paths. The reduced-motion rule in
+   styles.css collapses every duration here. */
+
+:root {
+  --t-fast: 140ms;
+  --t-med: 220ms;
+  --t-slow: 380ms;
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---- page changes: the new page rises in ---- */
+.page { position: absolute; inset: 0; animation: page-in var(--t-slow) var(--ease-out) both; }
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px); }
+}
+.album-wash { animation: wash-in 600ms var(--ease-out) both; }
+@keyframes wash-in { from { opacity: 0; } }
+.album-hero .album-art { animation: art-in 480ms var(--ease-out) both; }
+@keyframes art-in { from { opacity: 0; transform: scale(0.96); } }
+
+/* shelves and grids: cards cascade in */
+.shelf-rail > *, .album-grid > *, .track-list > .track-row {
+  animation: card-in var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* ---- selection: fills glide instead of snapping ---- */
+.side-row, .page-tab, .track-row, .q-row, .chrome-btn, .ctl-btn, .round-btn, .ghost-btn, .row-more, .menu [role='menuitem'] {
+  transition: background-color var(--t-med) var(--ease), color var(--t-med) var(--ease), transform var(--t-fast) var(--ease), opacity var(--t-med);
+}
+.side-row:active, .page-tab:active, .chrome-btn:active:not(:disabled) { transform: scale(0.96); }
+.track-row:active { transform: scale(0.995); }
+.side-row.is-active .side-row-icon { animation: pop var(--t-slow) var(--ease-spring); }
+.page-tab { animation: tab-in var(--t-med) var(--ease-out) both; }
+@keyframes tab-in { from { opacity: 0; transform: scale(0.9); } }
+
+/* ---- actions ---- */
+@keyframes pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.28); }
+  100% { transform: scale(1); }
+}
+.pb-fav.is-on svg, .round-btn.is-on svg, .tr-fav svg { animation: pop var(--t-slow) var(--ease-spring); }
+
+/* play ↔ pause glyph swap */
+.icon-swap { display: grid; animation: icon-swap var(--t-med) var(--ease-spring); }
+@keyframes icon-swap { from { opacity: 0; transform: scale(0.6) rotate(-12deg); } }
+
+/* popover menu grows from its button */
+.menu { transform-origin: top right; animation: menu-in var(--t-fast) var(--ease-out); }
+@keyframes menu-in { from { opacity: 0; transform: scale(0.94) translateY(-4px); } }
+
+/* track change: player art and text cross-fade in */
+.pb-art img, .pb-meta { animation: fade-in var(--t-slow) var(--ease-out); }
+@keyframes fade-in { from { opacity: 0; } }
+.pb-meta { animation-name: meta-in; }
+@keyframes meta-in { from { opacity: 0; transform: translateX(-6px); } }
+
+/* ---- lyrics ---- */
+.lyrics-rail { animation: rail-in var(--t-slow) var(--ease-out) both; }
+@keyframes rail-in { from { opacity: 0; transform: translateX(24px); } }
+.lyrics-scroll p { transition-duration: 480ms; }
+.lyrics-rail .lyrics-scroll p { transform-origin: left center; }
+.lyrics-rail .lyrics-scroll p.active { transform: scale(1.04); }
+.lyrics-scroll { scroll-behavior: smooth; }
+
+/* ---- immersive player ---- */
+.npf { animation: npf-in var(--t-slow) var(--ease-out); }
+@keyframes npf-in { from { opacity: 0; } }
+.npf-art img { animation: npf-art-in 700ms var(--ease-out); }
+@keyframes npf-art-in { from { opacity: 0; transform: scale(1.06); } }
+.npf-dock { animation: dock-in 460ms var(--ease-out) both; animation-delay: 80ms; }
+@keyframes dock-in { from { opacity: 0; transform: translate(-50%, 16px); } }
+.npf-corner { animation: fade-in var(--t-slow) var(--ease-out) both; animation-delay: 120ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lyrics-scroll { scroll-behavior: auto; }
+}

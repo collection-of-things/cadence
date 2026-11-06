@@ -8,8 +8,9 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "dev": "pnpm --filter @cadence/desktop dev",
-    "verify": "bash scripts/verify.sh"
+    "dev": "node scripts/build-audio.mjs && pnpm --filter @cadence/ui build && pnpm --filter @cadence/desktop dev",
+    "verify": "bash scripts/verify.sh",
+    "build:audio": "node scripts/build-audio.mjs"
   },
   "packageManager": "pnpm@9.15.0"
 }
