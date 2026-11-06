@@ -23,7 +23,7 @@ const ROUTES: ReadonlySet<string> = new Set([
   "youtube-music",
 ]);
 
-function isTrack(u: unknown): boolean {
+export function isTrack(u: unknown): boolean {
   if (typeof u !== "object" || u === null) return false;
   const t = u as Record<string, unknown>;
   if (typeof t.id !== "string" || t.id.length === 0) return false;

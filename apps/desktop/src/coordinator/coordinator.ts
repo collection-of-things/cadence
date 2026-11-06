@@ -15,7 +15,7 @@ import type {
 } from "@cadence/protocol";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { isFidelityCapable, isRestartRestorable } from "../adapters/types.js";
-import { parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
+import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
 
@@ -541,7 +541,12 @@ export class Coordinator {
           : this.queue.items.findIndex((it) => it.queueId === leaseQid);
       const restoreIdx = leaseIdx >= 0 ? leaseIdx : previousIndex;
       this.queue = { ...this.queue, currentIndex: restoreIdx };
-      if (leaseIdx < 0 || leaseIdx === previousIndex) {
+      if (leaseIdx >= 0 && leaseIdx !== previousIndex) {
+        // The lease moved to a promoted item — restore ITS track duration,
+        // not the failed item's and not the remembered previous track's.
+        this.durationMs = this.queue.items[leaseIdx]?.track.durationMs ?? this.durationMs;
+        this.positionMs = 0;
+      } else {
         this.durationMs = previousDuration;
         this.positionMs = previousPosition;
       }
@@ -1122,10 +1127,10 @@ function parseProviderQueue(u: unknown, stamp: (it: QueueItem) => QueueItem): Qu
   for (const raw of u) {
     if (typeof raw !== "object" || raw === null) continue;
     const item = raw as Record<string, unknown>;
-    const track = item.track;
-    if (typeof track !== "object" || track === null) continue;
-    // SAFETY: provider queues are best-effort; we checked the envelope
-    // (object with a track object) and the coordinator re-stamps queueIds.
+    // Full TrackRef validation — refreshPrefetch and the adapters
+    // dereference track.route/track.source; a partial track is a crash
+    // later, not a queue item.
+    if (!isTrack(item.track)) continue;
     items.push(stamp(item as unknown as QueueItem));
   }
   return items;

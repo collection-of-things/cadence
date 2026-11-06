@@ -370,18 +370,22 @@ EngineEnded ==
                  /\ active' = "none"
                  /\ advanceDue' = FALSE
                  /\ UNCHANGED <<armedGen, armedQid, startQueue>>
-            ELSE /\ advanceDue' = TRUE
-                 /\ IF pendingPrefetch.qid /= 0
+            ELSE /\ IF pendingPrefetch.qid /= 0
                       THEN /\ armedGen' = lease.g
                            /\ armedQid' = lease.qid
+                           /\ advanceDue' = TRUE   \* armed window owes it
                            /\ UNCHANGED startQueue
                       ELSE /\ UNCHANGED <<armedGen, armedQid>>
                            /\ IF Len(startQueue) < 3
-                                THEN startQueue' = Append(startQueue,
+                                THEN /\ startQueue' = Append(startQueue,
                                         [idx |-> 0, advance |-> TRUE,
                                          gen |-> lease.g,
                                          endedQid |-> lease.qid])
-                                ELSE UNCHANGED startQueue
+                                     /\ advanceDue' = TRUE
+                                ELSE /\ UNCHANGED startQueue
+                                     \* bounded queue dropped the link —
+                                     \* no obligation outstanding
+                                     /\ advanceDue' = FALSE
                  /\ UNCHANGED <<status, lease, active>>
     /\ UNCHANGED <<generation, currentIndex, pendingPrefetch, inFlight, si,
                    userStarts, stoppedBad, staleStomp, movedAdvance>>
@@ -431,8 +435,15 @@ EnginePromoted(q) ==
                                      {[qid |-> Succ[q], gen |-> lease.g,
                                        route |-> lease.route]}
                    ELSE UNCHANGED inFlight
-         ELSE /\ lease' = [lease EXCEPT !.qid = q]  \* keep lease on playing track
-              /\ UNCHANGED <<currentIndex, status, inFlight>>
+         ELSE IF pendingPrefetch.qid /= 0
+               THEN \* code fallback: unknown id + installed prefetch ⇒
+                    \* promote the prefetched item
+                    /\ currentIndex' = pendingPrefetch.qid
+                    /\ lease' = [lease EXCEPT !.qid = pendingPrefetch.qid]
+                    /\ status' = "playing"
+                    /\ UNCHANGED inFlight
+               ELSE /\ lease' = [lease EXCEPT !.qid = q]  \* warn path
+                    /\ UNCHANGED <<currentIndex, status, inFlight>>
     /\ UNCHANGED <<generation, active, si, startQueue, userStarts,
                    handledEnded, stoppedBad, staleStomp, movedAdvance>>
 
