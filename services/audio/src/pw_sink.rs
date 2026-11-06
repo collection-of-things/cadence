@@ -61,6 +61,7 @@ mod pos {
     pub const LFE: u32 = 6;
     pub const SL: u32 = 7;
     pub const SR: u32 = 8;
+    pub const RC: u32 = 11;
     pub const RL: u32 = 12;
     pub const RR: u32 = 13;
 }
@@ -76,7 +77,7 @@ fn layout_for(channels: u32) -> Option<[u32; 64]> {
         4 => &[FL, FR, RL, RR],
         5 => &[FL, FR, FC, RL, RR],
         6 => &[FL, FR, FC, LFE, SL, SR],
-        7 => &[FL, FR, FC, LFE, RL, RR, FC],
+        7 => &[FL, FR, FC, LFE, RL, RR, RC],
         8 => &[FL, FR, FC, LFE, RL, RR, SL, SR],
         _ => return None,
     };
@@ -143,29 +144,30 @@ fn with_core<R>(f: impl FnOnce(&pw::core::CoreRc) -> Result<R>) -> Result<R> {
 /// The listener, registry and core must stay alive while the loop
 /// dispatches the initial global burst — dropping them inside the lock
 /// (as the naive version did) yields an empty list every time. A
-/// core.sync round-trip bounds the wait deterministically instead of a
-/// fixed sleep.
+/// core.sync round-trip bounds the wait deterministically; the flag and
+/// list are shared through atomics/mutex because the done callback fires
+/// on the loop thread while this thread waits.
 fn enumerate_sinks() -> Result<Vec<(u32, String)>> {
     let tl = unsafe {
         // Safety: see with_core — same loop discipline.
         pw::thread_loop::ThreadLoopRc::new(Some("cadence-pw-ctl"), None)
     }?;
     tl.start();
-    let found = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(u32, String)>::new()));
-    let synced = std::rc::Rc::new(std::cell::Cell::new(false));
-    {
+    let found = Arc::new(Mutex::new(Vec::<(u32, String)>::new()));
+    let synced = Arc::new(std::sync::atomic::AtomicI64::new(-1));
+    let r: Result<()> = {
         // Objects live for the whole block: registry events need the
         // listener alive while the loop thread dispatches.
         let _guard = tl.lock();
         let ctx = pw::context::ContextRc::new(&tl, None)?;
         let core = ctx.connect_rc(None)?;
-        let sflag = std::rc::Rc::clone(&synced);
+        let sflag = Arc::clone(&synced);
         let _core_listener = core
             .add_listener_local()
-            .done(move |_id, _seq| sflag.set(true))
+            .done(move |_id, seq| sflag.store(seq.seq() as i64, Ordering::Release))
             .register();
         let reg = core.get_registry_rc()?;
-        let f = std::rc::Rc::clone(&found);
+        let f = Arc::clone(&found);
         let _listener = reg
             .add_listener_local()
             .global(move |obj| {
@@ -183,23 +185,34 @@ fn enumerate_sinks() -> Result<Vec<(u32, String)>> {
                     .get("object.serial")
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(obj.id);
-                f.borrow_mut().push((serial, name));
+                if let Ok(mut v) = f.lock() {
+                    v.push((serial, name));
+                }
             })
             .register();
-        let _seq = core.sync(0)?;
+            let want = core.sync(0)?.seq() as i64;
         drop(_guard);
-        // Wait for the done event the sync round-trip triggers — the
-        // registry burst is guaranteed to arrive first.
+        // Wait for the done event carrying *this* sync's seq — the
+        // registry burst is guaranteed to be dispatched before it.
+        let mut ok = false;
         for _ in 0..100 {
-            if synced.get() {
+            if synced.load(Ordering::Acquire) == want {
+                ok = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let _guard2 = tl.lock();
-    }
+        if ok {
+            Ok(())
+        } else {
+            Err(anyhow!("pipewire registry sync timed out"))
+        }
+    };
     tl.stop();
-    Ok(found.take())
+    r?;
+    let out = std::mem::take(&mut *found.lock().unwrap());
+    Ok(out)
 }
 
 fn sink_serial_for(name: &str) -> Result<(u32, String)> {
@@ -254,6 +267,10 @@ impl DeviceCaps for PipeWireCaps {
         self.error.lock().unwrap().take()
     }
 
+    fn error_cell(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(Arc::clone(&self.error))
+    }
+
     fn is_pipewire(&self) -> bool {
         true
     }
@@ -278,11 +295,14 @@ struct Feed<T> {
     last_epoch: u64,
 }
 
-/// State-callback state: error reporting + dead flag, atomics/mutex only
-/// so writes from the loop thread are safe next to the RT `process`.
+/// State-callback state: error reporting + dead flag + last state,
+/// atomics/mutex only so writes from the loop thread are safe next to
+/// the RT `process`. `state`: 0 Unconnected, 1 Connecting, 2 Paused,
+/// 3 Streaming, 4 Error.
 struct StreamErr {
     error: Arc<Mutex<Option<String>>>,
     dead: Arc<AtomicBool>,
+    state: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl PipeWireCaps {
@@ -300,8 +320,10 @@ impl PipeWireCaps {
         // ~60ms staging ring: decouples the RT callback from the core mutex
         // without adding audible latency to the graph.
         let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
+        let epoch_base = core.lock().unwrap().clear_epoch.load(Ordering::Acquire);
         let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
         let dead = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         // Spawn before the thread loop; FeedGuard::drop stops+joins on
         // every subsequent failure path.
         let (cons, feed) = spawn_feed(
@@ -349,8 +371,19 @@ impl PipeWireCaps {
                 .add_local_listener_with_user_data(StreamErr {
                     error: Arc::clone(&self.error),
                     dead: Arc::clone(&dead),
+                    state: Arc::clone(&state),
                 })
                 .state_changed(|_s, ud, _old, new| {
+                    ud.state.store(
+                        match new {
+                            pw::stream::StreamState::Unconnected => 0,
+                            pw::stream::StreamState::Connecting => 1,
+                            pw::stream::StreamState::Paused => 2,
+                            pw::stream::StreamState::Streaming => 3,
+                            pw::stream::StreamState::Error(_) => 4,
+                        },
+                        Ordering::Release,
+                    );
                     if let pw::stream::StreamState::Error(e) = new {
                         ud.dead.store(true, Ordering::Relaxed);
                         if let Ok(mut cell) = ud.error.lock() {
@@ -364,7 +397,7 @@ impl PipeWireCaps {
                     cons,
                     channels: neg.channels as usize,
                     epoch,
-                    last_epoch: 0,
+                    last_epoch: epoch_base,
                 })
                 .process(|stream, feed| fill::<T>(stream, feed))
                 .register()?;
@@ -409,6 +442,37 @@ impl PipeWireCaps {
                 return Err(e);
             }
         };
+        // connect() returns before negotiation finishes — failures land
+        // asynchronously in state_changed. Wait for a decisive state so a
+        // bad stream errors out here (and open_sink can fall back to CPAL)
+        // instead of looking healthy until the monitor notices. Paused is
+        // decisive: the driver may keep a ready stream paused until data
+        // flows.
+        let decisive = {
+            let mut ok = false;
+            for _ in 0..200 {
+                let s = state.load(Ordering::Acquire);
+                if s >= 2 || dead.load(Ordering::Relaxed) {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            ok
+        };
+        if !decisive || dead.load(Ordering::Relaxed) {
+            {
+                let _guard = tl.lock();
+                let _ = stream.disconnect();
+            }
+            drop(state_listener);
+            drop(process_listener);
+            drop(stream);
+            drop(pw_core);
+            drop(ctx);
+            tl.stop();
+            return Err(anyhow!("pipewire stream failed negotiation"));
+        }
         Ok(Box::new(PipeWireSink {
             stream,
             _state_listener: Box::new(state_listener),

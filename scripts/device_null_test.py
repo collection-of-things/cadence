@@ -405,19 +405,23 @@ def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate):
     rate, fmt = stream_format(node_id, props)
     rec_path = os.path.join(workdir, f"cap-{tag}.f32le")
     rec = Recorder(rec_path, rate or expect_rate, 2)
-    rec_in = rec.input_ports()
-    for attempt in range(8):
-        try:
-            rec.tap(monitor, rec_in)
-            break
-        except subprocess.CalledProcessError:
-            if attempt == 7:
-                raise
-            monitor = node_ports(sink_id, "output")
-            time.sleep(0.5)
-    time.sleep(duration_s)
-    rec.stop()
-    return rec_path, rate, fmt, node_id, props
+    try:
+        rec_in = rec.input_ports()
+        for attempt in range(8):
+            try:
+                rec.tap(monitor, rec_in)
+                break
+            except subprocess.CalledProcessError:
+                if attempt == 7:
+                    raise
+                monitor = node_ports(sink_id, "output")
+                time.sleep(0.5)
+        time.sleep(duration_s)
+        return rec_path, rate, fmt, node_id, props
+    finally:
+        # No leaked pw-cat even when tap/port discovery fails mid-run.
+        if rec.proc.poll() is None:
+            rec.stop()
 
 
 def make_default_sink(name, rate, channels):
@@ -457,30 +461,37 @@ def main():
     # clock forced to the same rate — the tap's input adapter then runs
     # passthrough (verified bit-exact), each app links to it as its only
     # driver, and both captures ride the same clock (a directly
-    # null-able A/B).
-    mod_id, sink_id, monitor, prev_sink = make_default_sink(
-        "cadence-tap", src_rate, 2
-    )
-    tap = (sink_id, monitor)
-    prev_force = subprocess.run(
-        ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
-        capture_output=True, text=True,
-    ).stdout
-    prev_force = prev_force.split("value:")[-1].strip().strip("'").split()[0] \
-        if "value:" in prev_force else "0"
-    r = subprocess.run(
-        ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(src_rate)],
-        capture_output=True,
-    )
-    if r.returncode != 0:
-        print("WARNING: could not force the graph clock — the tap adapter "
-              "may rate-match, inflating residuals vs ffmpeg")
-
-    # ---- cadence ----
-    print("[cadence] starting playback into tap")
-    cap_proc, _req = drive_cadence(args.bin, src)
-    evr = EventReader(cap_proc)
+    # null-able A/B). Everything after the first changeable step lives
+    # inside the try so partial setup still restores the session.
+    mod_id, sink_id, monitor, prev_sink = None, None, [], None
+    prev_force = "0"
+    cap_path = mpv_path = None
+    cad_rate = mpv_rate = None
+    cap_proc = mpv = None
     try:
+        mod_id, sink_id, monitor, prev_sink = make_default_sink(
+            "cadence-tap", src_rate, 2
+        )
+        tap = (sink_id, monitor)
+        out = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+            capture_output=True, text=True,
+        ).stdout
+        if "value:" in out:
+            prev_force = out.split("value:")[-1].strip().strip("'").split()[0]
+        r = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate",
+             str(src_rate)],
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            print("WARNING: could not force the graph clock — the tap adapter "
+                  "may rate-match, inflating residuals vs ffmpeg")
+
+        # ---- cadence ----
+        print("[cadence] starting playback into tap")
+        cap_proc, _req = drive_cadence(args.bin, src)
+        evr = EventReader(cap_proc)
         try:
             cap_path, cad_rate, cad_fmt, cad_node, _ = capture_app_stream(
                 cap_proc.pid, dur + 0.8, workdir, "cadence", tap, src_rate
@@ -521,13 +532,18 @@ def main():
         mpv.wait(timeout=10)
         print(f"[mpv] node={mpv_node} stream={mpv_fmt}@{mpv_rate}")
     finally:
+        for p in (cap_proc, mpv):
+            if p is not None and p.poll() is None:
+                p.kill()
         subprocess.run(
             ["pw-metadata", "-n", "settings", "0", "clock.force-rate", prev_force],
             capture_output=True,
         )
-        subprocess.run(["pactl", "set-default-sink", prev_sink],
-                       capture_output=True)
-        unload_module(mod_id)
+        if prev_sink:
+            subprocess.run(["pactl", "set-default-sink", prev_sink],
+                           capture_output=True)
+        if mod_id:
+            unload_module(mod_id)
 
     # ---- compare ----
     ch = 2

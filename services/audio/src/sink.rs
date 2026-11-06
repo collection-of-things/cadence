@@ -94,10 +94,12 @@ pub fn spawn_feed<T: PcmSample>(
     // would split a frame across pulls and skew position accounting for
     // channel counts that don't divide the chunk size.
     let chunk = (2048 / channels.max(1)).max(1) * channels.max(1);
+    let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
     let join = std::thread::Builder::new()
         .name("pcm-feed".into())
         .spawn(move || {
             let mut scratch = vec![T::default(); chunk];
+            let mut my_epoch = epoch.load(Ordering::Acquire);
             while !stop2.load(Ordering::Relaxed) {
                 if prod.free_space() < scratch.len() {
                     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -112,6 +114,13 @@ pub fn spawn_feed<T: PcmSample>(
                         Err(p) => p.into_inner(),
                     };
                     pull(&mut c, &mut scratch);
+                }
+                // The scratch was pulled pre-flush — a bump between pull
+                // and publish must not let it reach the device.
+                let e = epoch.load(Ordering::Acquire);
+                if e != my_epoch {
+                    my_epoch = e;
+                    continue;
                 }
                 prod.write(&scratch);
             }
@@ -170,6 +179,13 @@ pub trait DeviceCaps: Send + Sync {
     fn is_pipewire(&self) -> bool {
         false
     }
+    /// The shared error cell a fallback caps should adopt so its stream
+    /// errors still reach `device_error` on the caps the engine holds.
+    fn error_cell(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        None
+    }
+    /// Adopt another caps' error cell (used by the open_sink fallback).
+    fn set_error_cell(&mut self, _cell: Arc<Mutex<Option<String>>>) {}
 }
 
 pub trait Sink: Send {
@@ -435,6 +451,14 @@ impl DeviceCaps for CpalCaps {
         self.error.lock().unwrap().take()
     }
 
+    fn error_cell(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(Arc::clone(&self.error))
+    }
+
+    fn set_error_cell(&mut self, cell: Arc<Mutex<Option<String>>>) {
+        self.error = cell;
+    }
+
     fn open_stream(&self, neg: &Negotiated, core: Arc<Mutex<OutputCore>>) -> Result<Box<dyn Sink>> {
         use cpal::traits::DeviceTrait;
         let config = cpal::StreamConfig {
@@ -455,12 +479,15 @@ impl DeviceCaps for CpalCaps {
         // contended pull no longer surfaces as an audible silence gap.
         let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
         let ch = neg.channels as usize;
+        // Baseline at open: only flush data staged *before* a real control
+        // bump — not the legitimate fill that raced the stream startup.
+        let epoch_base = core.lock().unwrap().clear_epoch.load(Ordering::Acquire);
         let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
         let (stream, feed) = match neg.kind {
             PcmKind::F32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_f32, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
-                let mut last = u64::MAX;
+                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<f32, _, _>(
                         &config,
@@ -474,7 +501,7 @@ impl DeviceCaps for CpalCaps {
             PcmKind::S32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s32, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
-                let mut last = u64::MAX;
+                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i32, _, _>(
                         &config,
@@ -488,7 +515,7 @@ impl DeviceCaps for CpalCaps {
             PcmKind::S16 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s16, capacity, ch)?;
                 let ep = Arc::clone(&epoch);
-                let mut last = u64::MAX;
+                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i16, _, _>(
                         &config,
@@ -604,11 +631,15 @@ pub fn open_sink(
         Err(e) if caps.is_pipewire() => {
             // A live PipeWire session can still refuse a stream (remote
             // gone, format rejected) — drop to CPAL rather than failing
-            // playback entirely.
+            // playback entirely. The fallback caps adopts the PipeWire
+            // caps' error cell so stream errors still reach the monitor's
+            // device_error poll (the engine keeps the original caps).
             eprintln!("audio: pipewire stream failed ({e:#}); trying cpal/alsa");
-            let name = Some(caps.name()).filter(|n| n != "pipewire");
-            CpalCaps::new(name.as_deref())
-                .and_then(|c| c.open_stream(neg, Arc::clone(core)))
+            let mut c = CpalCaps::new(None)?;
+            if let (Some(cell), Some(c)) = (caps.error_cell(), Arc::get_mut(&mut c)) {
+                c.set_error_cell(cell);
+            }
+            c.open_stream(neg, Arc::clone(core))
         }
         other => other,
     }
