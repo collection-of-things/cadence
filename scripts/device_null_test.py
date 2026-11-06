@@ -362,8 +362,12 @@ def best_align(cap, seg):
             break
     # Content-start anchor: where seg's content would sit if the capture
     # started recording before playback. Add ±small refinements around it.
-    nz0 = np.flatnonzero(np.abs(cap) > 1e-6)
-    ref_nz0 = np.flatnonzero(np.abs(seg) > 1e-6)
+    nz0 = np.flatnonzero(
+        np.abs(cap) > max(1e-6, 0.01 * float(np.abs(cap).max()))
+    )
+    ref_nz0 = np.flatnonzero(
+        np.abs(seg) > max(1e-6, 0.01 * float(np.abs(seg).max()))
+    )
     if len(nz0) and len(ref_nz0):
         anchor = int(nz0[0]) - int(ref_nz0[0])
         for d_ in range(-2048, 2049, 512):

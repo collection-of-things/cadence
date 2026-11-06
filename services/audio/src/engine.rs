@@ -2881,14 +2881,23 @@ impl Engine {
                     }
                 };
                 let sink_dead = if sink_dead && sink_dead_reported != Some(sink_key) {
-                    sink_dead_reported = Some(sink_key);
                     true
                 } else {
                     false
                 };
-                caps_err
-                    .or_else(|| sink_dead.then(|| "output stream died".to_string()))
-                    .map(|msg| (msg, gen))
+                // Prefer the caps' real message over the generic dead
+                // one — and when it fires, consume the dead report too
+                // so the same failure isn't replayed next tick.
+                if caps_err.is_some() {
+                    sink_dead_reported = Some(sink_key);
+                    caps_err
+                        .map(|msg| (msg, gen))
+                } else {
+                    sink_dead.then(|| {
+                        sink_dead_reported = Some(sink_key);
+                        ("output stream died".to_string(), gen)
+                    })
+                }
             });
             if let Some((msg, err_gen)) = device_error {
                 let verdict = {

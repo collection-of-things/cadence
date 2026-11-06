@@ -847,6 +847,10 @@ impl Sink for PipeWireSink {
         //  - stopped mid-playback: graph still reports Streaming but
         //    callbacks stopped >2.5s ago. A merely suspended stream sits
         //    at Paused with processed_once set — PipeWire resumes it.
+        //    Tradeoff: a *permanently* suspended stream (processed once,
+        //    parked at Paused forever, no Unconnected event) is silently
+        //    tolerated — the false-positive class is worse than a dead
+        //    silence the user can resolve by re-selecting the device.
         let state = self.state.load(Ordering::Acquire);
         let never = !self.processed_once.load(Ordering::Relaxed);
         // `last` is the negotiation-end anchor (or a pause-transition
