@@ -2734,7 +2734,7 @@ impl Engine {
             u64,
             std::time::Instant,
             u64,
-            Option<(u64, u64)>,
+            Option<(u64, u64, std::time::Instant)>,
             Option<std::time::Instant>,
         )> = std::collections::VecDeque::new();
 
@@ -2888,7 +2888,7 @@ impl Engine {
                         && st.current_instance == inst
                 };
                 if !owned {
-                    let Some((_base, gen)) = issued else {
+                    let Some((_base, gen, _)) = issued else {
                         // Never touched the sink — drop outright.
                         self.handle_track_end(qid, inst);
                         continue;
@@ -2950,8 +2950,12 @@ impl Engine {
                                     && st.state != PlayState::Paused;
                                 if owned {
                                     s.request_drain().map(|b| {
-                                        (b, self.sink_gen
-                                            .load(Ordering::Acquire))
+                                        (
+                                            b,
+                                            self.sink_gen
+                                                .load(Ordering::Acquire),
+                                            std::time::Instant::now(),
+                                        )
                                     })
                                 } else {
                                     None
@@ -2986,38 +2990,13 @@ impl Engine {
                             }
                         }
                         Some(s) if issued
-                            .map(|(b, g)| {
+                            .map(|(b, g, _)| {
                                 g == self.sink_gen.load(Ordering::Acquire)
                                     && s.drained_since(b)
                             })
                             .unwrap_or(false) =>
                         {
                             Gate::Drained
-                        }
-                        Some(s2)
-                            if issued.is_some()
-                                && since.elapsed()
-                                    > std::time::Duration::from_millis(
-                                        100,
-                                    ) =>
-                        {
-                            // A completion can be coalesced away if our
-                            // drain finished on the data loop while a
-                            // predecessor's notification was still
-                            // undispatched. Once OUR marker ran,
-                            // pending_drain==0 — a re-issued drain's
-                            // completion cannot be suppressed.
-                            if let Some((b, gen)) = issued {
-                                if self.sink_gen.load(Ordering::Acquire)
-                                    == gen
-                                    && s2.drain_marker_ran(b)
-                                {
-                                    if let Some(b2) = s2.request_drain() {
-                                        drain_base = Some((b2, gen));
-                                    }
-                                }
-                            }
-                            Gate::DrainIssued
                         }
                         Some(_) => Gate::Playing,
                     }
@@ -3114,12 +3093,62 @@ impl Engine {
                             }
                             self.handle_track_end(qid, inst);
                         } else {
+                            // A completion CAN be coalesced away: our
+                            // drain can finish on the data loop while a
+                            // predecessor's notification is still
+                            // undispatched. Once OUR marker ran,
+                            // pending_drain==0 — a re-issued drain's
+                            // completion cannot be suppressed.
+                            // Ownership, generation AND pause are
+                            // re-validated under `state` through the
+                            // retry; rate-limited to one per 100ms
+                            // (each retry resets upstream drain state).
+                            if let Some((b, gen, last_issue)) = issued {
+                                if last_issue.elapsed()
+                                    > std::time::Duration::from_millis(
+                                        100,
+                                    )
+                                {
+                                    let g =
+                                        self.sink.lock().unwrap();
+                                    if let Some(s) = g.as_ref() {
+                                        let ok = {
+                                            let st = self
+                                                .state
+                                                .lock()
+                                                .unwrap();
+                                            st.queue_id.as_deref()
+                                                == Some(qid.as_str())
+                                                && st.current_instance
+                                                    == inst
+                                                && st.state
+                                                    != PlayState::Paused
+                                        };
+                                        if ok
+                                            && self.sink_gen
+                                                .load(Ordering::Acquire)
+                                                == gen
+                                            && s.drain_marker_ran(b)
+                                        {
+                                            if let Some(b2) =
+                                                s.request_drain()
+                                            {
+                                                drain_base = Some((
+                                                    b2,
+                                                    gen,
+                                                    std::time::Instant::now(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             pending_ends.push_front((
                                 qid,
                                 inst,
                                 since,
                                 deadline_ms,
-                                issued,
+                                drain_base,
                                 ring0,
                             ));
                             break;
