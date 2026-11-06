@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { PlayerBar } from '../components/PlayerBar';
 import appShellSource from '../App.tsx?raw';
 import nowPlayingSource from '../components/NowPlaying.tsx?raw';
+import nowPlayingFullSource from '../components/NowPlayingFull.tsx?raw';
+import queuePanelSource from '../components/QueuePanel.tsx?raw';
 
 /**
  * Regression for the transport-name collision: controls whose accessible
@@ -47,6 +49,21 @@ describe('transport accessible names', () => {
     const expand = nowPlayingSource.match(/className="np-expand"[\s\S]{0,400}?aria-label="([^"]*)"/);
     expect(expand).not.toBeNull();
     expect(expand![1]).not.toMatch(/play/i);
+  });
+
+  it('full screen dialog: the close button is not play-named', () => {
+    // While expanded the page behind is inert, so the first play-named
+    // control in the whole document lives inside the dialog — a stray
+    // "playing" in the close button's name would shadow the transport.
+    const close = nowPlayingFullSource.match(/className="full-close"[\s\S]{0,300}?aria-label="([^"]*)"/);
+    expect(close).not.toBeNull();
+    expect(close![1]).not.toMatch(/play/i);
+  });
+
+  it('queue panel: the panel landmark is not play-named', () => {
+    const aside = queuePanelSource.match(/<aside[\s\S]{0,300}?aria-label="([^"]*)"/);
+    expect(aside).not.toBeNull();
+    expect(aside![1]).not.toMatch(/play/i);
   });
 
   it('app shell: the player bar precedes page content in DOM order', () => {

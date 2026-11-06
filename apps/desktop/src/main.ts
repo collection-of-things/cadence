@@ -289,6 +289,8 @@ async function main(): Promise<void> {
       { type: "separator" },
       {
         label: "Quit",
+        // requestQuit() is belt-and-braces: before-quit already arms the
+        // guard, but arming here covers any quit path that bypasses it.
         click: () => {
           requestQuit();
           app.quit();

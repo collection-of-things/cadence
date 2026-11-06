@@ -81,7 +81,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
       <PixiBackground palette={palette} />
       <div className="full-wash" />
       <header className="full-header">
-        <button ref={closeRef} className="full-close" onClick={onClose} aria-label="Close full screen now playing"><DownIcon size={24} /></button>
+        <button ref={closeRef} className="full-close" onClick={onClose} aria-label="Close full screen"><DownIcon size={24} /></button>
         <span>NOW PLAYING</span><span className="full-brand">CADENCE</span>
       </header>
       <main className="full-content">

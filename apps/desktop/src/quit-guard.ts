@@ -7,6 +7,11 @@
  * OS session end. `before-quit` fires for every quit path, so it arms the
  * guard together with the explicit tray item; the window `close` handler
  * only hides while the guard is unarmed.
+ *
+ * The latch is one-way: once armed, closes always proceed. That is right
+ * for quit — it is irrevocable once before-quit has fired. A future
+ * before-quit listener that preventDefaults would make the next user close
+ * perform a real close instead of a hide; no such listener exists today.
  */
 export interface CloseToTrayDeps {
   /** Subscribe a callback to the app's before-quit event. */

@@ -113,7 +113,7 @@ export function QueuePanel() {
   }, [open]);
 
   return createPortal(
-    <aside className={`queue ${open ? 'open' : ''} ${npExpanded ? 'over-now' : ''}`} aria-hidden={!open} aria-label="Play queue">
+    <aside className={`queue ${open ? 'open' : ''} ${npExpanded ? 'over-now' : ''}`} aria-hidden={!open} aria-label="Queue">
       <div className="q-head">
         <h2>Up Next</h2>
         <span className="q-owner">{queue.owner === 'provider' ? 'provider queue' : `${order.length} tracks`}</span>
