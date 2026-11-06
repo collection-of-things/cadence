@@ -1576,6 +1576,16 @@ impl Engine {
                 (pos, st.replay_gain_db)
             };
             match self.spawn_pipeline(&qid, src.clone(), pos, rg, true, Some((seq, gen))) {
+                Err(e) if attempt < 7 && {
+                    // A boundary or in-flight rebuild failing the spawn
+                    // is transient — retry like the stale-install path.
+                    let core = self.core.lock().unwrap();
+                    core.rebuilding || core.boundary_seq != seq
+                } => {
+                    eprintln!("respawn: transient spawn failure: {e:#}");
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    continue;
+                }
                 Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
                     // Check + install inside one `core` critical section —
@@ -1795,6 +1805,10 @@ impl Engine {
             st.queue_id = Some(p.queue_id.clone());
             st.source = Some(p.source.clone());
             st.replay_gain_db = p.replay_gain_db;
+            // The old reader's events must drop as stale — a same-track
+            // reload would otherwise let its own Ended pass the monitor's
+            // instance check and consume this load's queue_id.
+            st.current_instance = 0;
             // A new generation obsoletes any un-adopted end — its event
             // will be dropped as stale, so the flag would otherwise wedge.
             core.ended_pending = false;
@@ -2097,8 +2111,10 @@ impl Engine {
             // Torn snapshot: a boundary the monitor hasn't adopted yet —
             // the track this seek targets is already gone.
             let torn = core.ended_pending
-                || core.active.as_ref().map(|r| r.instance)
-                    != Some(st.current_instance);
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
             if torn {
                 bail!("track boundary in flight — retry seek");
             }

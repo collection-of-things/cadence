@@ -16,7 +16,8 @@ import type { FidelityCapable, ReplayGainCapable, RestartRestorable } from "./ty
 function isBoundaryRetry(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return msg.includes("boundary") || msg.includes("rebuild in flight")
-    || msg.includes("mid-spawn") || msg.includes("during prefetch");
+    || msg.includes("mid-spawn") || msg.includes("during prefetch")
+    || msg.includes("during spawn") || msg.includes("mid-rebuild");
 }
 
 /** The item's source could not be expressed to the audio engine. */
