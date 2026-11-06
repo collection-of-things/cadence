@@ -1022,9 +1022,18 @@ impl Engine {
         seek_ms: u64,
         rg_db: Option<f64>,
         rebuild_ok: bool,
+        expected_seq: Option<u64>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let plan = self.plan_track(&src, seek_ms)?;
-        self.spawn_with_native_fallback(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+        self.spawn_with_native_fallback(
+            queue_id,
+            src,
+            seek_ms,
+            rg_db,
+            rebuild_ok,
+            plan,
+            expected_seq,
+        )
     }
 
     /// Try a planned spawn. On a failed NATIVE stream open (sink left
@@ -1039,11 +1048,19 @@ impl Engine {
         rg_db: Option<f64>,
         rebuild_ok: bool,
         plan: TrackPlan,
+        expected_seq: Option<u64>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let native = plan.native;
         let attempted = plan.neg.clone();
-        let res =
-            self.spawn_pipeline_planned(queue_id, src.clone(), seek_ms, rg_db, rebuild_ok, plan);
+        let res = self.spawn_pipeline_planned(
+            queue_id,
+            src.clone(),
+            seek_ms,
+            rg_db,
+            rebuild_ok,
+            plan,
+            expected_seq,
+        );
         match res {
             // Only act when the stream itself failed to open (sink is
             // absent) — pipeline-construction errors propagate honestly.
@@ -1062,7 +1079,15 @@ impl Engine {
                     "native stream negotiation failed ({e:#}); retrying at device default"
                 );
                 let plan = self.plan_track_opts(&src, seek_ms, false)?;
-                self.spawn_pipeline_planned(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+                self.spawn_pipeline_planned(
+                    queue_id,
+                    src,
+                    seek_ms,
+                    rg_db,
+                    rebuild_ok,
+                    plan,
+                    expected_seq,
+                )
             }
             other => other,
         }
@@ -1078,6 +1103,7 @@ impl Engine {
         rg_db: Option<f64>,
         rebuild_ok: bool,
         plan: TrackPlan,
+        expected_seq: Option<u64>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let duration_ms = plan.duration_ms;
         let neg = plan.neg;
@@ -1117,7 +1143,7 @@ impl Engine {
                         cur_kind
                     );
                 }
-                self.rebuild_stream(&neg)?;
+                self.rebuild_stream(&neg, expected_seq)?;
                 // The open just proved this format works — drop any
                 // remembered native-open failure for it (transient
                 // contention shouldn't downgrade the format forever).
@@ -1267,7 +1293,7 @@ impl Engine {
     /// so the RT callback never finds the mutex held across a device open.
     /// Pipelines are NOT preserved across a rate/format change — callers
     /// respawn them (see respawn_pipelines).
-    fn rebuild_stream(&self, neg: &Negotiated) -> Result<()> {
+    fn rebuild_stream(&self, neg: &Negotiated, expected_seq: Option<u64>) -> Result<()> {
         let _serial = self.stream_mu.lock().unwrap();
         // Another rebuild may have landed while we waited on the lock — only
         // skip when the format matches AND a healthy sink exists.
@@ -1290,6 +1316,14 @@ impl Engine {
         }
         {
             let mut core = self.core.lock().unwrap();
+            // Callers that captured a boundary_seq must not clear a reader
+            // promoted AFTER the capture — bail before destructive work so
+            // the boundary adoption owns the outcome.
+            if let Some(seq) = expected_seq {
+                if core.boundary_seq != seq || core.ended_pending {
+                    bail!("track boundary landed mid-spawn — stale pipeline");
+                }
+            }
             core.clear_all();
         }
         let caps = Arc::clone(&self.caps.lock().unwrap());
@@ -1329,7 +1363,7 @@ impl Engine {
         // Capture position before the rebuild clears the pipeline —
         // respawn resumes from there, not 0.
         let pos = self.core.lock().unwrap().position_ms();
-        self.rebuild_stream(&neg)?;
+        self.rebuild_stream(&neg, None)?;
         self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -1368,6 +1402,7 @@ impl Engine {
                     st.current_instance,
                 )
             };
+            let Some((qid, src)) = cur else { break };
             // A pull-side boundary is waiting for the monitor to adopt it:
             // either active and state disagree (promotion mid-flight), or
             // playback already ended but state hasn't caught up. Wait for
@@ -1380,7 +1415,6 @@ impl Engine {
                 std::thread::sleep(std::time::Duration::from_millis(25));
                 continue;
             }
-            let Some((qid, src)) = cur else { break };
             // A live pcm-stream can't be respawned mid-flow — the byte source
             // belongs to the original load. Report and leave the stream dead.
             if matches!(src, SourceSpec::PcmStream { .. }) {
@@ -1399,7 +1433,7 @@ impl Engine {
                 let st = self.state.lock().unwrap();
                 (pos, st.replay_gain_db)
             };
-            match self.spawn_pipeline(&qid, src.clone(), pos, rg, true) {
+            match self.spawn_pipeline(&qid, src.clone(), pos, rg, true, Some(seq)) {
                 Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
                     // Check + install inside one `core` critical section —
@@ -1476,7 +1510,7 @@ impl Engine {
         };
         match self.plan_track(&src, 0) {
             Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
-                match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
+                match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan, Some(seq)) {
                     Ok((reader, handle, _dur, _bypass, _info)) => {
                         let ready = reader.ready.clone();
                         // Check + install in ONE critical section — a
@@ -1562,6 +1596,7 @@ impl Engine {
             p.position_ms,
             p.replay_gain_db,
             true,
+            None,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1573,15 +1608,13 @@ impl Engine {
         };
 
         let load_instance = reader.instance;
+        // Reader and state install in ONE critical section — a fast-ending
+        // track can't slip a boundary between them and be discarded.
         {
             let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
             core.set_active(reader);
             core.paused = p.start_paused;
-        }
-        *self.producer.lock().unwrap() = Some(handle);
-
-        {
-            let mut st = self.state.lock().unwrap();
             st.current_instance = load_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
@@ -1591,6 +1624,7 @@ impl Engine {
                 PlayState::Playing
             };
         }
+        *self.producer.lock().unwrap() = Some(handle);
         self.emit_state(None);
         self.emit_output();
         let gen = self.state.lock().unwrap().generation;
@@ -1635,6 +1669,19 @@ impl Engine {
         rg_db: Option<f64>,
     ) -> Result<Value> {
         self.check_gen(generation)?;
+        // A promotion the monitor hasn't adopted yet still needs the armed
+        // slot's metadata — refuse rather than overwrite it. The caller
+        // re-prefetches after the boundary settles.
+        let seq = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core.ended_pending
+                || core.active.as_ref().map(|r| r.instance) != Some(st.current_instance)
+            {
+                bail!("track boundary in flight — retry prefetch");
+            }
+            core.boundary_seq
+        };
         // Replace any armed prefetch BEFORE planning: an incompatible new
         // successor must never inherit a stale `next` reader — the
         // boundary would promote the old track while the state names the
@@ -1648,13 +1695,12 @@ impl Engine {
         // One plan (one ffprobe) serves both the compatibility check and
         // the spawn below.
         let plan = self.plan_track(&src, 0)?;
-        let seq = self.core.lock().unwrap().boundary_seq;
         let compatible = self.core.lock().unwrap().negotiated == plan.neg;
         if compatible {
             // Via the fallback so a failed native open is cached here too
             // (no retry — the boundary reopen handles an open failure).
             let (reader, handle, _dur, _bypass, _info) = self
-                .spawn_with_native_fallback(queue_id, src.clone(), 0, rg_db, false, plan)?;
+                .spawn_with_native_fallback(queue_id, src.clone(), 0, rg_db, false, plan, Some(seq))?;
             let ready = reader.ready.clone();
             // Check + install in one critical section — a boundary landing
             // mid-spawn must not leave this track installed as its own
@@ -1690,7 +1736,13 @@ impl Engine {
             drop(core);
             *self.prefetch_producer.lock().unwrap() = Some(handle);
         } else {
+            // A boundary landing while we planned would consume the armed
+            // slot and never reopen this successor — the caller retries.
+            let core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
+            if core.boundary_seq != seq || core.ended_pending {
+                bail!("track boundary landed during prefetch — retry");
+            }
             st.prefetch = Some(PrefetchState {
                 queue_id: queue_id.to_string(),
                 source: src,
@@ -1755,6 +1807,14 @@ impl Engine {
         let (queue_id, src, rg, cur_inst, seq) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
+            // Torn snapshot: a boundary the monitor hasn't adopted yet —
+            // the track this seek targets is already gone.
+            let torn = core.ended_pending
+                || core.active.as_ref().map(|r| r.instance)
+                    != Some(st.current_instance);
+            if torn {
+                bail!("track boundary in flight — retry seek");
+            }
             match (&st.queue_id, &st.source) {
                 (Some(q), Some(s)) => (
                     q.clone(),
@@ -1767,7 +1827,7 @@ impl Engine {
             }
         };
         let (reader, handle, duration_ms, bypass, _info) =
-            self.spawn_pipeline(&queue_id, src, position_ms, rg, true)?;
+            self.spawn_pipeline(&queue_id, src, position_ms, rg, true, Some(seq))?;
         let seek_instance = reader.instance;
         // Install atomically: a boundary landing mid-spawn made this seek
         // moot — the successor owns the stream now.
@@ -1926,9 +1986,15 @@ impl Engine {
         if let Some(h) = self.prefetch_producer.lock().unwrap().take() {
             drop(h);
         }
+        // Clear the control slot only when core and state agree on the
+        // current track — while a promotion is un-adopted, the monitor
+        // still needs the slot's source/ReplayGain to finish adopting it.
+        let core = self.core.lock().unwrap();
         let mut st = self.state.lock().unwrap();
-        st.prefetch = None;
-        st.reported_prefetch_ready = false;
+        if core.active.as_ref().map(|r| r.instance) == Some(st.current_instance) {
+            st.prefetch = None;
+            st.reported_prefetch_ready = false;
+        }
     }
 
     fn emit_position(&self) {
@@ -2056,7 +2122,10 @@ impl Engine {
                         self.emit_output();
                     }
                     CoreEvent::Ended { queue_id, instance } => {
-                        let gen = {
+                        // Take the armed successor in the SAME critical
+                        // section as the adoption — a write in between
+                        // would be stolen by the boundary.
+                        let (gen, pf) = {
                             let mut st = self.state.lock().unwrap();
                             // Ignore an end for a track no longer current
                             // (a concurrent load already replaced it).
@@ -2067,7 +2136,7 @@ impl Engine {
                             }
                             st.current_instance = 0;
                             st.queue_id = None;
-                            st.generation
+                            (st.generation, st.prefetch.take())
                         };
                         self.emit(
                             "event.trackEnded",
@@ -2080,39 +2149,37 @@ impl Engine {
                         // A prefetched successor that couldn't share the
                         // stream (format reopen required) starts here —
                         // honestly NOT gapless.
-                        let pf = self.state.lock().unwrap().prefetch.take();
                         if let Some(pf) = pf {
-                            match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true) {
+                            match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, None) {
                                 Ok((reader, handle, dur, bypass, _info)) => {
                                     // A concurrent audio.load may have landed
-                                    // while we decoded — don't install a
-                                    // stale pipeline over the fresh track.
-                                    let stale = {
-                                        let st = self.state.lock().unwrap();
-                                        st.generation != gen || st.queue_id.is_some()
-                                    };
+                                    // while we decoded — check + install in
+                                    // ONE critical section so it can't be
+                                    // clobbered mid-gap.
+                                    let reopen_instance = reader.instance;
+                                    let mut core = self.core.lock().unwrap();
+                                    let mut st = self.state.lock().unwrap();
+                                    let stale = st.generation != gen || st.queue_id.is_some();
                                     if stale {
                                         eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
+                                        drop(st);
+                                        drop(core);
+                                        reader.pipe.abort();
                                         let _ = handle;
                                         continue;
                                     }
-                                    let reopen_instance = reader.instance;
-                                    {
-                                        let mut core = self.core.lock().unwrap();
-                                        core.set_active(reader);
-                                        core.paused = false;
-                                    }
+                                    core.set_active(reader);
+                                    core.paused = false;
+                                    st.current_instance = reopen_instance;
+                                    st.queue_id = Some(pf.queue_id.clone());
+                                    st.source = Some(pf.source);
+                                    st.replay_gain_db = pf.replay_gain_db;
+                                    st.duration_ms = dur;
+                                    st.fidelity_bypass = bypass;
+                                    st.state = PlayState::Playing;
+                                    drop(st);
+                                    drop(core);
                                     *self.producer.lock().unwrap() = Some(handle);
-                                    {
-                                        let mut st = self.state.lock().unwrap();
-                                        st.current_instance = reopen_instance;
-                                        st.queue_id = Some(pf.queue_id.clone());
-                                        st.source = Some(pf.source);
-                                        st.replay_gain_db = pf.replay_gain_db;
-                                        st.duration_ms = dur;
-                                        st.fidelity_bypass = bypass;
-                                        st.state = PlayState::Playing;
-                                    }
                                     self.emit_state(None);
                                     self.emit_output();
                                     self.emit(
