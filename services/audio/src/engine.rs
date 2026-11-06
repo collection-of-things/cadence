@@ -2222,9 +2222,9 @@ impl Engine {
                 drop(handle);
                 bail!("track boundary landed during seek — retry");
             }
+            // set_active flushes staged PCM (epoch bump) — no extra
+            // flush needed here.
             core.set_active(reader);
-            // Staged PCM still holds the pre-seek position — drop it.
-            core.flush_output();
             st.current_instance = seek_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;

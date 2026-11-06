@@ -120,7 +120,13 @@ impl<T: Copy + Default> Consumer<T> {
         for i in 0..n {
             out[i] = self.s.buf[(head + i) % self.s.cap];
         }
-        self.s.head.store(head + n, Ordering::Release);
+        // Clamp to the observed tail: a concurrent producer clear() may
+        // have moved head forward while we read; an unclamped store
+        // would regress past it, resurrect stale samples AND inflate
+        // tail-head past cap (free_space underflow → producer overwrite).
+        self.s
+            .head
+            .store((head + n).min(tail), Ordering::Release);
         n
     }
 
@@ -138,13 +144,21 @@ impl<T: Copy + Default> Consumer<T> {
         let mut n = out.len().min(avail) / frame * frame;
         // End of stream: a trailing partial frame must still drain or
         // the track can never finish (is_drained would stick false).
+        // Re-read the tail — `avail` may be stale-mid-write and the true
+        // remainder could already be frame-aligned.
         if n == 0 && self.s.done.load(Ordering::Acquire) {
-            n = out.len().min(avail);
+            let avail2 = self.s.tail.load(Ordering::Acquire) - head;
+            if avail2 < frame {
+                n = out.len().min(avail2);
+            }
         }
         for i in 0..n {
             out[i] = self.s.buf[(head + i) % self.s.cap];
         }
-        self.s.head.store(head + n, Ordering::Release);
+        // Clamp to the observed tail — see read().
+        self.s
+            .head
+            .store((head + n).min(tail), Ordering::Release);
         n
     }
 
@@ -160,15 +174,6 @@ impl<T: Copy + Default> Consumer<T> {
     /// Ask the producer to stop (used when the track is dropped).
     pub fn abort(&self) {
         self.s.abort.store(true, Ordering::Release);
-    }
-
-    /// Discard everything currently queued — e.g. after a pause/seek the
-    /// staged PCM is stale and must not reach the device. Safe next to a
-    /// concurrent write: the producer either lands before the flush (and
-    /// gets dropped) or after (and stays), never torn.
-    pub fn clear(&self) {
-        let tail = self.s.tail.load(Ordering::Acquire);
-        self.s.head.store(tail, Ordering::Release);
     }
 }
 
@@ -232,6 +237,47 @@ mod tests {
         let big = vec![1.0f32; 1000];
         drop(c);
         assert!(!p.write_all(&big));
+    }
+
+    #[test]
+    fn read_aligned_keeps_frame_boundary() {
+        // A partial frame stays queued; the next read resumes aligned.
+        let (p, c) = channel::<i16>(8);
+        p.write(&[1, 2, 3]); // 1.5 frames of stereo
+        let mut out = [0i16; 4];
+        let n = c.read_aligned(&mut out, 2);
+        assert_eq!(n, 2);
+        p.write(&[4, 5, 6, 7, 8]);
+        let mut out2 = [0i16; 8];
+        let n2 = c.read_aligned(&mut out2, 2);
+        assert_eq!(n2, 6);
+        assert_eq!(&out2[..6], &[3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn read_aligned_drains_partial_at_eof() {
+        let (p, c) = channel::<i16>(8);
+        p.write(&[1, 2, 3]);
+        p.finish();
+        let mut out = [0i16; 4];
+        assert_eq!(c.read_aligned(&mut out, 2), 2);
+        // Trailing partial frame must drain or is_drained sticks false.
+        assert_eq!(c.read_aligned(&mut out, 2), 1);
+        assert!(c.is_drained());
+    }
+
+    #[test]
+    fn read_clamps_head_past_clear() {
+        // Simulate the read-in-flight clear: the consumer's head store
+        // must never regress past the producer's clear point.
+        let (p, c) = channel::<i16>(16);
+        p.write(&[1, 2, 3, 4]);
+        let mut out = [0i16; 2];
+        assert_eq!(c.read(&mut out), 2); // consumes 1,2; head=2
+        p.clear(); // head=4
+        p.write(&[9, 10]); // tail=6
+        let n = c.read(&mut out);
+        assert_eq!(&out[..n], &[9, 10]);
     }
 
     #[test]

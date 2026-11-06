@@ -441,14 +441,62 @@ def compare(name, cap, ref, ch, label):
 
 
 def null_residual(a, b):
-    """Cross-correlate a short segment of `a` inside `b`, subtract, return
-    the residual — robust to different leading silence in each capture."""
-    seg = a[40000 : 40000 + 20000] if len(a) > 60000 else a[: len(a) // 2]
+    """Align `a` inside `b` by cross-correlating a midsegment (a periodic
+    signal has many equal peaks — take the residual-minimizing alignment
+    like `compare` does), then subtract across the WHOLE overlap — a
+    short-segment check would pass a capture corrupted elsewhere."""
+    seg_off = 40000 if len(a) > 60000 else 0
+    seg = a[seg_off : seg_off + 20000] if len(a) > 60000 else a[: len(a) // 2]
     if len(seg) < 1000:
         seg = a
+        seg_off = 0
     cc = xcorr_valid(b, seg)
-    k = int(np.argmax(np.abs(cc)))
-    return b[k : k + len(seg)] - seg
+    # A periodic signal has hundreds of near-equal correlation peaks —
+    # top-16 by magnitude misses the true lag. Score every peak within
+    # ~1% of max by residual over the SEGMENT (guaranteed content) —
+    # whole-overlap scoring punishes the true lag for legitimate
+    # leading/trailing attach zeros.
+    thr = float(np.abs(cc).max()) * 0.99
+    cands = np.flatnonzero(np.abs(cc) >= thr)
+    k = 0
+    best = None
+    for cand in cands[:2000]:
+        cand = int(cand)
+        r = b[cand : cand + len(seg)] - seg
+        s = float(np.abs(r).max())
+        if best is None or s < best:
+            best, k = s, cand
+            if best == 0.0:
+                break
+    # k locates seg inside b — a[i] aligns to b[k - seg_off + i].
+    off = k - seg_off
+    a_lo = max(0, -off)
+    b_lo = max(0, off)
+    n = min(len(a) - a_lo, len(b) - b_lo)
+    aa = a[a_lo : a_lo + n]
+    bb = b[b_lo : b_lo + n]
+    # Only compare where BOTH captures actually carry signal on EVERY
+    # channel — attach skew leaves one channel's zeros inside the
+    # other's content span.
+    ch = 2
+    nfr = n - n % ch
+    afr = aa[:nfr].reshape(-1, ch)
+    bfr = bb[:nfr].reshape(-1, ch)
+    def nz_span(x):
+        lo, hi = nfr, -1
+        for c in range(x.shape[1]):
+            nz = np.flatnonzero(x[:, c])
+            if len(nz):
+                lo = min(lo, int(nz[0]))
+                hi = max(hi, int(nz[-1]))
+        return lo, hi
+    a_lo_f, a_hi_f = nz_span(afr)
+    b_lo_f, b_hi_f = nz_span(bfr)
+    lo_f = max(a_lo_f, b_lo_f)
+    hi_f = min(a_hi_f, b_hi_f)
+    if hi_f > lo_f:
+        return bfr[lo_f : hi_f + 1].reshape(-1) - afr[lo_f : hi_f + 1].reshape(-1)
+    return bb - aa
 
 
 def make_null_sink(name, rate, channels):
@@ -693,7 +741,15 @@ def main():
         # other — i.e. cadence's delivered PCM is indistinguishable from
         # mpv's. Guard against the degenerate "both captured silence"
         # false-PASS: both captures must carry real energy.
-        res = null_residual(cad, mcap)
+        # Per-channel: the recorder's channels attach at different times
+        # and the skew differs between captures, so a single interleaved
+        # alignment can never fit both. Align/compare each channel.
+        ch = 2
+        cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
+        mcap_f = mcap[: len(mcap) - len(mcap) % ch].reshape(-1, ch)
+        res = np.concatenate(
+            [null_residual(cad_f[:, c], mcap_f[:, c]) for c in range(ch)]
+        )
         silent = (
             np.abs(cad).max() < 1e-4 or np.abs(mcap).max() < 1e-4
             or not res.size

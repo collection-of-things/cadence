@@ -90,7 +90,8 @@ fn layout_for(channels: u32) -> Option<[u32; 64]> {
 }
 
 pub struct PipeWireCaps {
-    /// object.serial of an explicitly chosen sink node (set_device).
+    /// Node id of an explicitly chosen sink (set_device) — passed to
+    /// connect() so the graph links us to that node directly.
     target: Option<u32>,
     device_name: String,
     /// shared with each stream's state listener — device-loss reporting.
@@ -166,13 +167,16 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
     let default_name = Arc::new(Mutex::new(None::<String>));
     let synced = Arc::new(std::sync::atomic::AtomicI64::new(-1));
     // Objects stay in `hold` until they've been dropped under the loop
-    // lock — dispatch can race an unlocked drop otherwise.
+    // lock — dispatch can race an unlocked drop otherwise. LISTENERS
+    // FIRST: they unlink from their proxy's hook list on drop — dropping
+    // reg/core first would unlink into freed memory (same hazard class
+    // as MetaBind's field order and PipeWireSink's field order).
     let mut hold: Option<(
-        pw::context::ContextRc,
-        pw::core::CoreRc,
+        Box<dyn std::any::Any>,
+        Box<dyn std::any::Any>,
         pw::registry::RegistryRc,
-        Box<dyn std::any::Any>,
-        Box<dyn std::any::Any>,
+        pw::core::CoreRc,
+        pw::context::ContextRc,
     )> = None;
     let r: Result<i64> = {
         let _guard = tl.lock();
@@ -267,11 +271,11 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
                 .register();
             let want = core.sync(0)?.seq() as i64;
             hold = Some((
-                ctx,
-                core,
-                reg,
-                Box::new(core_listener) as _,
                 Box::new(reg_listener) as _,
+                Box::new(core_listener) as _,
+                reg,
+                core,
+                ctx,
             ));
             Ok(want)
         })()
@@ -300,7 +304,7 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
         let want2 = {
             let _guard = tl.lock();
             hold.as_ref()
-                .and_then(|(_, core, ..)| core.sync(0).ok().map(|s| s.seq() as i64))
+                .and_then(|(_, _, _, core, _)| core.sync(0).ok().map(|s| s.seq() as i64))
                 .unwrap_or(-1)
         };
         if want2 >= 0 {
@@ -444,8 +448,10 @@ impl PipeWireCaps {
         if let Ok(mut e) = self.error.lock() {
             *e = None;
         }
-        // ~60ms staging ring: decouples the RT callback from the core mutex
-        // without adding audible latency to the graph.
+        // Staging ring: rate/8 samples (~125ms) or 4× the advertised
+        // quantum, whichever is larger — it decouples the RT callback
+        // from the core mutex but makes pull-side position lead the
+        // audible output by up to that depth.
         // Advertise the quantum we'd like; the ring covers 4× that plus
         // a feeder-chunk floor (handled inside spawn_feed) so an
         // unlucky graph quantum still can't starve a full cycle.
@@ -642,6 +648,9 @@ impl PipeWireCaps {
             tl.stop();
             return Err(anyhow!("pipewire stream failed negotiation"));
         }
+        // Anchor the watchdog grace at negotiation END — the decisive
+        // wait itself can consume ~2s of it otherwise.
+        last_process_ms.store(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
         Ok(Box::new(PipeWireSink {
             _state_listener: Box::new(state_listener),
             _process_listener: Box::new(process_listener),
@@ -656,6 +665,7 @@ impl PipeWireCaps {
             last_process_ms,
             t0,
             staged,
+            error: Arc::clone(&self.error),
         }))
     }
 }
@@ -766,6 +776,10 @@ pub struct PipeWireSink {
     /// Frames staged but not yet delivered — respawn subtracts it so a
     /// rebuild doesn't skip the tail.
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Caps' shared error cell — the watchdog writes here (not just the
+    /// dead flag) so a mid-playback stall reaches the monitor's
+    /// device_error poll, not only the next open.
+    error: Arc<Mutex<Option<String>>>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -792,13 +806,22 @@ impl Sink for PipeWireSink {
         }
         // Watchdog: a stream that never processed while unpaused for
         // 2.5s sits forever at Paused — the graph has nothing to link
-        // it to. That's a real failure, just not an explicit one.
+        // it to. That's a real failure, just not an explicit one —
+        // write the error cell so the monitor's device_error poll sees
+        // it (the dead flag alone only matters at the next open).
         if self.paused.load(Ordering::Relaxed) {
             return false;
         }
         let last = self.last_process_ms.load(Ordering::Relaxed);
-        self.t0.elapsed().as_millis() as u64 - last > 2500
-            && self.t0.elapsed().as_millis() > 2500
+        let now = self.t0.elapsed().as_millis() as u64;
+        if now > 2500 && now - last > 2500 {
+            if let Ok(mut cell) = self.error.lock() {
+                *cell = Some("stream never scheduled (no process callbacks)".into());
+            }
+            self.dead.store(true, Ordering::Relaxed);
+            return true;
+        }
+        false
     }
 
     fn staged_frames(&self) -> u64 {

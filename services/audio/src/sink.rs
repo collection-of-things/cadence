@@ -70,6 +70,16 @@ impl Drop for FeedGuard {
     }
 }
 
+/// Ring capacity for the staging feed: the caller's latency cover, but
+/// never less than two whole feed chunks. The feeder pulls `chunk`
+/// whole frames at a time — a ring smaller than 2*chunk can never fit
+/// one (mono at <=32.8kHz starved silently under the old sizing).
+fn feed_capacity(min_capacity: usize, channels: usize) -> usize {
+    let ch = channels.max(1);
+    let chunk = (2048 / ch).max(1) * ch;
+    min_capacity.max(2 * chunk)
+}
+
 /// Spawn a feeder thread that pulls `core` into a lock-free staging ring.
 /// The device callback drains the ring instead of touching `core`'s mutex,
 /// so a contended callback can never be forced to emit silence.
@@ -89,12 +99,9 @@ pub fn spawn_feed<T: PcmSample>(
     channels: usize,
 ) -> Result<(Consumer<T>, FeedGuard)> {
     // Pull whole frames: a partial-frame tail at the scratch boundary
-    // would split a frame across pulls and skew position accounting for
-    // channel counts that don't divide the chunk size. The ring must
-    // hold at least two chunks or the feeder can never write (mono at
-    // low rates starves otherwise).
+    // would split a frame across pulls and skew position accounting.
     let chunk = (2048 / channels.max(1)).max(1) * channels.max(1);
-    let capacity = min_capacity.max(2 * chunk);
+    let capacity = feed_capacity(min_capacity, channels);
     let (prod, cons) = ringbuf::channel::<T>(capacity);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
@@ -135,7 +142,10 @@ pub fn spawn_feed<T: PcmSample>(
                         continue;
                     }
                     pull(&mut c, &mut scratch);
-                    prod.write(&scratch);
+                    // free_space can't shrink between the check above
+                    // and here — the only reducer was a consumer head
+                    // rewind, which the read-clamp made impossible.
+                    debug_assert_eq!(prod.write(&scratch), scratch.len());
                 }
             }
         })?;
@@ -801,14 +811,13 @@ mod tests {
 
     #[test]
     fn feeder_capacity_never_starves_a_chunk() {
-        // spawn_feed floors capacity at 2×chunk — a mono <=32.8kHz ring
-        // used to starve (chunk == capacity → free_space < chunk forever).
-        // Assert the invariant directly by reproducing the sizing math.
+        // The real function under test: capacity must exceed 2×chunk
+        // (+1 for the ring's reserved slot) or the feeder sleeps forever.
         for rate in [8000usize, 16000, 22050, 32000, 44100, 96000, 192000] {
             for ch in [1usize, 2, 6, 8] {
-                let min_cap = (rate * ch / 16).max(4 * 2048 * ch);
-                let chunk = (2048 / ch.max(1)).max(1) * ch.max(1);
-                let capacity = min_cap.max(2 * chunk);
+                let chunk = (2048 / ch).max(1) * ch;
+                let min_cap = (rate * ch / 8).max(4 * 2048 * ch);
+                let capacity = feed_capacity(min_cap, ch);
                 assert!(
                     capacity >= 2 * chunk + 1,
                     "rate {rate} ch {ch}: capacity {capacity} < 2*chunk+1"
