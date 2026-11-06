@@ -94,9 +94,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async prepare(): Promise<void> {
     await this.session.prepare();
     if (this.installed) return;
-    // The controller waits for MusicKit to appear — allow well past the
-    // normal 10s eval cap, but still bounded.
-    const ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 90_000);
+    // The controller waits for MusicKit to appear — bounded well under the
+    // 20s catalog IPC wait in the normal case (waits total ~24s max).
+    const ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 30_000);
     if (ok) this.installed = true;
   }
 
@@ -247,6 +247,12 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (!this.installed) return;
     const spec = specFor(item.track);
     if (this.mirrored.some((m) => m.providerId === spec.id)) return;
+    // Only the real successor may be mirrored — a replaced one must leave the
+    // provider queue or it could still promote and play.
+    if (this.mirrored.length > 0) {
+      this.mirrored = [];
+      await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
+    }
     try {
       await this.session.eval(
         `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
@@ -322,6 +328,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.emit({ kind: "capabilitiesChanged" });
     if (clearFailed) {
       this.error("Apple Music session data could not be cleared — sign-out is partial", true);
+      throw new Error("sign-out incomplete: provider session data could not be cleared");
     }
   }
 

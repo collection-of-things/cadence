@@ -24,7 +24,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   window.__cadenceCtlPromise = (async () => {
   try {
 
-  async function waitForMK(tries = 90) {
+  async function waitForMK(tries = 24) {
     for (let i = 0; i < tries; i++) {
       if (window.MusicKit) return window.MusicKit;
       await new Promise(r => setTimeout(r, 500));
@@ -36,7 +36,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
 
   // Wait for the site itself to configure an instance (it may do so lazily).
   let mk = null;
-  for (let i = 0; i < 40 && !mk; i++) {
+  for (let i = 0; i < 24 && !mk; i++) {
     try { mk = MK.getInstance(); } catch (e) { /* not configured yet */ }
     if (!mk) await new Promise(r => setTimeout(r, 500));
   }
@@ -174,9 +174,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     const qi = queueInfo();
     const dur = Math.round((item && item.playDuration) || (mk.currentPlaybackDuration * 1000) || 0);
     const posMs = Math.round((mk.currentPlaybackTime || 0) * 1000);
-    const naturalEnd =
-      st === STATES.ended || st === STATES.completed ||
-      (st === STATES.stopped && qi.nextItemId === null && dur > 0 && posMs >= dur - 1500);
+    // Only MusicKit's terminal states mean the track ended — a transient
+    // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
+    const naturalEnd = st === STATES.ended || st === STATES.completed;
     const s = {
       state: st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'
@@ -201,6 +201,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     if (force || j !== last) { last = j; emit('playerState', s); }
     if (item && String(item.id) !== lastNowPlayingId) {
       lastNowPlayingId = item ? String(item.id) : lastNowPlayingId;
+      // A mirrored item that MusicKit promoted is no longer a successor —
+      // consume it so clearPlayLater can't remove the now-current item.
+      appended = appended.filter(a => String(a.id) !== String(item.id));
       emit('nowPlaying', { id: s.nowPlayingId, kind: s.nowPlayingKind, queuePos: s.queuePos });
     }
     if (!item) lastNowPlayingId = null;
@@ -252,8 +255,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       appended = [];
       const q = mk.queue;
       const items = (q && q.items) || [];
+      const pos = q && typeof q.position === 'number' ? q.position : -1;
       for (let i = items.length - 1; i >= 0; i--) {
-        if (!ids.has(String(items[i].id))) continue;
+        // Duplicate songs share ids — never remove the item at the playhead.
+        if (i === pos || !ids.has(String(items[i].id))) continue;
         try {
           if (typeof mk.removeItem === 'function') await mk.removeItem(i);
           else items.splice(i, 1);

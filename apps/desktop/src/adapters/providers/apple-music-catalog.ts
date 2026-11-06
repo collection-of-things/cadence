@@ -550,7 +550,7 @@ export class AppleMusicCatalog {
       take(page);
     }
     if (next) {
-      // Pages beyond the cap are dropped honestly in the UI (partial list).
+      // Pages beyond the cap are dropped — flagged honestly on the page.
       trackResources = trackResources.slice(0, MAX_TRACKS);
     }
     const tracks = entriesOf(trackResources).filter(
@@ -561,6 +561,7 @@ export class AppleMusicCatalog {
       title: a.name ?? "Untitled",
       ...(a.artistName ?? a.curatorName ? { subtitle: a.artistName ?? a.curatorName } : {}),
       ...(aw ? { artwork: aw } : {}),
+      ...(next !== undefined ? { truncated: true } : {}),
       sections: [{ id: "tracks", title: "Tracks", entries: tracks }],
     };
     if (a.description?.standard ?? a.editorialNotes?.standard) {

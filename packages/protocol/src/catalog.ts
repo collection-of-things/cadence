@@ -113,6 +113,8 @@ export interface CatalogPage {
   nextOffset?: number;
   /** Lyrics payload for {kind:'lyrics'} — LRC text, or plain text. */
   lyrics?: string;
+  /** True when entries were cut at an internal cap — the list is partial. */
+  truncated?: boolean;
 }
 
 /**

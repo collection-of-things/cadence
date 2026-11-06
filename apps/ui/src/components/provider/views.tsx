@@ -342,7 +342,9 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
             )}
             <div className="album-facts" aria-label="Details">
               {container.year !== undefined && <span className="album-fact">{container.year}</span>}
-              <span className="album-fact">{tracks.length || container.itemCount || 0} tracks</span>
+              <span className="album-fact">
+                {page?.truncated ? `first ${tracks.length} tracks` : `${tracks.length || container.itemCount || 0} tracks`}
+              </span>
               {totalDuration > 0 && <span className="album-fact">{formatTime(totalDuration)}</span>}
             </div>
             <div className="album-actions">

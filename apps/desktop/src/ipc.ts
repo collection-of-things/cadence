@@ -141,7 +141,7 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     return Promise.race([
       adapter.catalog(request),
       new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`catalog on route "${route}" timed out`)), 20_000),
+        setTimeout(() => rej(new Error(`catalog on route "${route}" timed out`)), 30_000),
       ),
     ]);
   });
