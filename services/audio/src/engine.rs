@@ -116,6 +116,10 @@ struct TrackReader {
     /// this reader's own fidelity-bypass flag — promotion must adopt it
     /// (the successor may be non-bypass on the same stream format)
     bypass: bool,
+    /// the negotiated format this reader renders — installs verify the
+    /// stream still matches so a concurrent rebuild can't pin an
+    /// old-format reader onto a new stream
+    neg: Negotiated,
     /// set by producer once it has buffered data or finished
     ready: Arc<AtomicBool>,
 }
@@ -1148,7 +1152,7 @@ impl Engine {
                         cur_kind
                     );
                 }
-                self.rebuild_stream(&neg, expected)?;
+                self.rebuild_stream(&neg, expected, None)?;
                 // The open just proved this format works — drop any
                 // remembered native-open failure for it (transient
                 // contention shouldn't downgrade the format forever).
@@ -1233,6 +1237,7 @@ impl Engine {
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::F32(cons),
                         bypass,
+                        neg: neg.clone(),
                         ready,
                     },
                     join,
@@ -1273,6 +1278,7 @@ impl Engine {
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::S32(cons),
                         bypass,
+                        neg: neg.clone(),
                         ready,
                     },
                     join,
@@ -1307,7 +1313,12 @@ impl Engine {
     /// so the RT callback never finds the mutex held across a device open.
     /// Pipelines are NOT preserved across a rate/format change — callers
     /// respawn them (see respawn_pipelines).
-    fn rebuild_stream(&self, neg: &Negotiated, expected: Option<(u64, u64)>) -> Result<()> {
+    fn rebuild_stream(
+        &self,
+        neg: &Negotiated,
+        expected: Option<(u64, u64)>,
+        caps_override: Option<Arc<dyn DeviceCaps>>,
+    ) -> Result<()> {
         let _serial = self.stream_mu.lock().unwrap();
         // Another rebuild may have landed while we waited on the lock — only
         // skip when the format matches AND a healthy sink exists.
@@ -1350,7 +1361,7 @@ impl Engine {
         if let Some(mut old) = old {
             old.stop();
         }
-        let caps = Arc::clone(&self.caps.lock().unwrap());
+        let caps = caps_override.unwrap_or_else(|| Arc::clone(&self.caps.lock().unwrap()));
         // Open BEFORE committing negotiated: on failure the core keeps the
         // old negotiation so the next load still attempts a rebuild instead
         // of rendering into a dead sink.
@@ -1373,6 +1384,24 @@ impl Engine {
     /// Rebuild caps for a device change and re-negotiate the stream, then
     /// respawn the current track at its position and the prefetch from 0.
     pub fn set_device(&self, name: Option<&str>) -> Result<Value> {
+        // Don't probe or commit anything while a boundary is un-adopted —
+        // the guarded rebuild would bail anyway and leave mixed state.
+        let (pos, expected) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core.ended_pending
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            {
+                bail!("track boundary in flight — retry device change");
+            }
+            (
+                core.position_ms(),
+                Some((core.boundary_seq, st.generation)),
+            )
+        };
         let new_caps: Arc<dyn DeviceCaps> = if self.cfg.null_sink {
             crate::sink::initial_caps(&self.cfg)?
         } else {
@@ -1390,35 +1419,19 @@ impl Engine {
                 caps
             }
         };
-        // Don't commit the new caps while a boundary is un-adopted —
-        // the guarded rebuild would bail anyway and leave mixed state.
-        let (pos, expected) = {
-            let core = self.core.lock().unwrap();
-            let st = self.state.lock().unwrap();
-            if core.ended_pending
-                || core.active.as_ref().map(|r| r.instance) != Some(st.current_instance)
-            {
-                bail!("track boundary in flight — retry device change");
-            }
-            (
-                core.position_ms(),
-                Some((core.boundary_seq, st.generation)),
-            )
+        // Default negotiated for the new device; next spawn refines it.
+        let neg = Negotiated {
+            rate: new_caps.default_rate(),
+            channels: new_caps.default_channels(),
+            kind: new_caps.default_kind(),
+            device_name: new_caps.name(),
         };
+        // Rebuild under the new caps BEFORE committing them — a rejected
+        // rebuild leaves the old device caps and stream intact.
+        self.rebuild_stream(&neg, expected, Some(new_caps.clone()))?;
         *self.caps.lock().unwrap() = new_caps;
         // New device: the cached native-open failure belongs to the old one.
         self.state.lock().unwrap().native_failed = None;
-        // Default negotiated for the new device; next spawn refines it.
-        let neg = {
-            let caps = self.caps.lock().unwrap().clone();
-            Negotiated {
-                rate: caps.default_rate(),
-                channels: caps.default_channels(),
-                kind: caps.default_kind(),
-                device_name: caps.name(),
-            }
-        };
-        self.rebuild_stream(&neg, expected)?;
         self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -1501,9 +1514,11 @@ impl Engine {
                         // a boundary (promotion or end) landed mid-spawn
                         || core.boundary_seq != seq
                         || core.ended_pending
-                        // a stream rebuild is mid-flight — attaching now
+                        // a stream rebuild is mid-flight or already
+                        // committed a different format — attaching now
                         // would pin this reader to the outgoing format
-                        || core.rebuilding;
+                        || core.rebuilding
+                        || core.negotiated != reader.neg;
                     if stale {
                         drop(st);
                         drop(core);
@@ -1587,6 +1602,7 @@ impl Engine {
                         let stale = core.boundary_seq != seq
                             || core.ended_pending
                             || core.rebuilding
+                            || core.negotiated != reader.neg
                             || st.prefetch
                                 .as_ref()
                                 .map(|p| p.queue_id.as_str())
@@ -1675,10 +1691,18 @@ impl Engine {
 
         let load_instance = reader.instance;
         // Reader and state install in ONE critical section — a fast-ending
-        // track can't slip a boundary between them and be discarded.
+        // track can't slip a boundary between them and be discarded, and a
+        // rebuild mid-spawn can't pin an old-format reader to the stream.
         {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
+            if core.rebuilding || core.negotiated != reader.neg {
+                reader.pipe.abort();
+                drop(st);
+                drop(core);
+                drop(handle);
+                bail!("stream rebuild in flight — retry load");
+            }
             core.set_active(reader);
             core.paused = p.start_paused;
             st.current_instance = load_instance;
@@ -1742,7 +1766,10 @@ impl Engine {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
             if core.ended_pending
-                || core.active.as_ref().map(|r| r.instance) != Some(st.current_instance)
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
             {
                 bail!("track boundary in flight — retry prefetch");
             }
@@ -1806,6 +1833,7 @@ impl Engine {
             let stale = core.boundary_seq != seq
                 || core.ended_pending
                 || core.rebuilding
+                || core.negotiated != reader.neg
                 || st.generation != generation
                 || core
                     .active
@@ -1938,6 +1966,7 @@ impl Engine {
             let stale = core.boundary_seq != seq
                 || core.ended_pending
                 || core.rebuilding
+                || core.negotiated != reader.neg
                 || st.generation != generation
                 || st.current_instance != cur_inst;
             if stale {
@@ -2093,7 +2122,12 @@ impl Engine {
         // still needs the slot's source/ReplayGain to finish adopting it.
         let core = self.core.lock().unwrap();
         let mut st = self.state.lock().unwrap();
-        if core.active.as_ref().map(|r| r.instance) == Some(st.current_instance) {
+        let torn = core.ended_pending
+            || core
+                .active
+                .as_ref()
+                .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
+        if !torn {
             st.prefetch = None;
             st.reported_prefetch_ready = false;
         }
@@ -2272,7 +2306,8 @@ impl Engine {
                                     let mut st = self.state.lock().unwrap();
                                     let stale = st.generation != gen
                                         || st.queue_id.is_some()
-                                        || core.rebuilding;
+                                        || core.rebuilding
+                                        || core.negotiated != reader.neg;
                                     if stale {
                                         eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
                                         drop(st);
@@ -2319,13 +2354,17 @@ impl Engine {
                                 }
                             }
                         }
-                        // Only stop when nothing newer took over mid-handling.
-                        let ours = {
-                            let st = self.state.lock().unwrap();
-                            st.generation == gen && st.queue_id.is_none()
+                        // Check + stop atomically — a newer load must not
+                        // be overwritten with Stopped in the gap.
+                        let stopped = {
+                            let mut st = self.state.lock().unwrap();
+                            let ours = st.generation == gen && st.queue_id.is_none();
+                            if ours {
+                                st.state = PlayState::Stopped;
+                            }
+                            ours
                         };
-                        if ours {
-                            self.set_state(PlayState::Stopped);
+                        if stopped {
                             self.emit_state(None);
                         }
                     }
@@ -2422,8 +2461,10 @@ impl Engine {
                     let core = self.core.lock().unwrap();
                     let st = self.state.lock().unwrap();
                     core.ended_pending
-                        || core.active.as_ref().map(|r| r.instance)
-                            != Some(st.current_instance)
+                        || core
+                            .active
+                            .as_ref()
+                            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
                 };
                 if pending_boundary {
                     // A guarded rebuild would bail during adoption — defer
@@ -2454,8 +2495,10 @@ impl Engine {
                                     let core = self.core.lock().unwrap();
                                     let st = self.state.lock().unwrap();
                                     core.ended_pending
-                                        || core.active.as_ref().map(|r| r.instance)
-                                            != Some(st.current_instance)
+                                        || core
+                                            .active
+                                            .as_ref()
+                                            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
                                 };
                                 if pending {
                                     deferred_device_error = Some(msg);
@@ -2465,13 +2508,29 @@ impl Engine {
                             }
                         }
                     }
-                    self.emit_error(None, &format!("output device lost: {msg}"), false);
+                    // Check + destroy atomically — a boundary or load
+                    // landing between them must not be torn down.
                     {
                         let mut core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        let pending = core.ended_pending
+                            || core
+                                .active
+                                .as_ref()
+                                .is_some_and(|r| {
+                                    Some(r.instance) != Some(st.current_instance)
+                                });
+                        if pending {
+                            deferred_device_error = Some(msg);
+                            continue;
+                        }
                         core.clear_all();
                         core.paused = true;
+                        st.state = PlayState::Error;
+                        drop(st);
+                        drop(core);
                     }
-                    self.set_state(PlayState::Error);
+                    self.emit_error(None, &format!("output device lost: {msg}"), false);
                     self.emit_state(Some("device lost"));
                 }
             }
@@ -2881,6 +2940,12 @@ mod tests {
             seek_offset_ms: 0,
             pipe: PipeReader::F32(cons),
             bypass: false,
+            neg: Negotiated {
+                rate: 48_000,
+                channels: 2,
+                kind: PcmKind::F32,
+                device_name: "test".into(),
+            },
             ready: Arc::new(AtomicBool::new(true)),
         });
         assert!(!c.advance_track()); // nothing behind it -> Ended
@@ -2928,6 +2993,12 @@ mod tests {
                 seek_offset_ms: 0,
                 pipe: PipeReader::F32(cons),
                 bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::F32,
+                    device_name: "test".into(),
+                },
                 ready: Arc::new(AtomicBool::new(true)),
             });
             c.paused = false;
@@ -2962,6 +3033,12 @@ mod tests {
                 seek_offset_ms: 0,
                 pipe: PipeReader::S32(cons),
                 bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::S32,
+                    device_name: "test".into(),
+                },
                 ready: Arc::new(AtomicBool::new(true)),
             });
             c.paused = false;
@@ -2983,6 +3060,12 @@ mod tests {
                 seek_offset_ms: 0,
                 pipe: PipeReader::F32(consf),
                 bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::F32,
+                    device_name: "test".into(),
+                },
                 ready: Arc::new(AtomicBool::new(true)),
             });
             let mut out = [0i32; 5];
