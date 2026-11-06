@@ -3034,7 +3034,11 @@ impl Engine {
                             .unwrap()
                             .as_ref()
                             .map(|s| s.drain_fallback_ms())
-                            .unwrap_or(0);
+                            .unwrap_or(0)
+                            // Bounded: a garbage graph-reported delay
+                            // can't park the end past its deadline.
+                            .min(deadline_ms / 2)
+                            .max(50);
                         // Reaching this arm proves staged==0 — stamp
                         // ring0 the first time; the downstream wait
                         // runs from the ring-empty moment, NOT from
