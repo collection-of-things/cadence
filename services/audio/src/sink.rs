@@ -341,14 +341,26 @@ pub fn resolve_positions(
 ) -> Option<Vec<u32>> {
     use chan::*;
     if let Some(name) = layout {
-        return match layout_named(name) {
+        if let Some(p) = layout_named(name) {
             // Declared and matches the count — trust it.
-            Some(p) if p.len() as u32 == channels => Some(p),
-            // Declared but UNKNOWN (or count-mismatched): an
-            // unpositioned stream lets the graph infer — better than
-            // labeling a same-count guess that mislabels speakers.
-            _ => None,
-        };
+            if p.len() as u32 == channels {
+                return Some(p);
+            }
+        } else if channels <= 2 {
+            // Declared-but-unknown names ("2 channels", "unknown") at
+            // 1-2ch are unambiguous — use the count default so they
+            // compare equal to labeled stereo/mono.
+            return match channels {
+                1 => Some(vec![MONO]),
+                _ => Some(vec![FL, FR]),
+            };
+        } else {
+            // Declared but UNKNOWN at >2ch: an unpositioned stream
+            // lets the graph infer — better than a same-count guess
+            // that mislabels speakers.
+            return None;
+        }
+        return None;
     }
     let p = match channels {
         1 => vec![MONO],
