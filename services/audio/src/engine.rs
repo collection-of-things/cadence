@@ -1361,6 +1361,23 @@ impl Engine {
             core.clear_all();
         }
         let old = self.sink.lock().unwrap().take();
+        // Re-verify ownership before the irreversible stop — a load or
+        // boundary landing during our spawn makes this rebuild stale.
+        // The put-back keeps the old stream alive for the new owner.
+        if let Some((seq, gen)) = expected {
+            let stale = {
+                let core = self.core.lock().unwrap();
+                let st = self.state.lock().unwrap();
+                core.boundary_seq != seq
+                    || core.ended_pending
+                    || st.generation != gen
+            };
+            if stale {
+                *self.sink.lock().unwrap() = old;
+                self.core.lock().unwrap().rebuilding = false;
+                bail!("ownership changed mid-rebuild — stale pipeline");
+            }
+        }
         if let Some(mut old) = old {
             old.stop();
         }
@@ -1387,11 +1404,20 @@ impl Engine {
     /// Rebuild caps for a device change and re-negotiate the stream, then
     /// respawn the current track at its position and the prefetch from 0.
     pub fn set_device(&self, name: Option<&str>) -> Result<Value> {
+        self.set_device_inner(name, None)
+    }
+
+    fn set_device_inner(&self, name: Option<&str>, owner_gen: Option<u64>) -> Result<Value> {
         // Don't probe or commit anything while a boundary is un-adopted —
         // the guarded rebuild would bail anyway and leave mixed state.
         let (pos, expected) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
+            // The caller's ownership token: a newer load supersedes the
+            // request entirely.
+            if owner_gen.is_some_and(|g| st.generation != g) {
+                bail!("device change superseded by a newer load");
+            }
             if core.ended_pending
                 || core
                     .active
@@ -1649,6 +1675,8 @@ impl Engine {
 
     pub fn load(&self, p: LoadParams) -> Result<Value> {
         {
+            // core first, then state — the monitor holds that order.
+            let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             st.state = PlayState::Loading;
             st.generation = p.generation_id;
@@ -1657,7 +1685,18 @@ impl Engine {
             st.replay_gain_db = p.replay_gain_db;
             // A new generation obsoletes any un-adopted end — its event
             // will be dropped as stale, so the flag would otherwise wedge.
-            self.core.lock().unwrap().ended_pending = false;
+            core.ended_pending = false;
+            // A slot armed under a previous generation is retired here
+            // even when a promotion is pending — its adoption will drop
+            // as stale and the slot must not survive into this load.
+            if st
+                .prefetch
+                .as_ref()
+                .is_some_and(|pf| pf.generation != st.generation)
+            {
+                st.prefetch = None;
+                st.reported_prefetch_ready = false;
+            }
             // Unblock any producer still waiting on a previous feed.
             for (_, f) in st.feeds.drain() {
                 f.close();
@@ -2123,14 +2162,20 @@ impl Engine {
         // Clear the control slot except while a promotion is un-adopted —
         // the monitor still needs its source/ReplayGain to adopt. For a
         // pending END clearing is correct: the monitor takes the slot for
-        // the boundary reopen, and cancel means "no reopen".
+        // the boundary reopen, and cancel means "no reopen". A slot from
+        // another generation is retired either way — its adoption drops
+        // as stale and it must not reopen later.
         let core = self.core.lock().unwrap();
         let mut st = self.state.lock().unwrap();
-        let promotion_pending = core
+        let keep = core
             .active
             .as_ref()
-            .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
-        if !promotion_pending {
+            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            && st
+                .prefetch
+                .as_ref()
+                .is_some_and(|pf| pf.generation == st.generation);
+        if !keep {
             st.prefetch = None;
             st.reported_prefetch_ready = false;
         }
@@ -2417,20 +2462,22 @@ impl Engine {
                 }
             }
 
-            // prefetch readiness
+            // prefetch readiness — mark reported inside the same section
+            // so a replacement slot armed during the emit isn't
+            // suppressed; its own arm resets reported_prefetch_ready.
             {
-                let st = self.state.lock().unwrap();
+                let mut st = self.state.lock().unwrap();
                 if !st.reported_prefetch_ready {
                     if let Some(pf) = &st.prefetch {
                         if pf.ready.load(Ordering::Acquire) {
                             let gen = st.generation;
                             let qid = pf.queue_id.clone();
+                            st.reported_prefetch_ready = true;
                             drop(st);
                             self.emit(
                                 "event.prefetchReady",
                                 json!({ "generationId": gen, "queueId": qid }),
                             );
-                            self.state.lock().unwrap().reported_prefetch_ready = true;
                         }
                     }
                 }
@@ -2470,11 +2517,12 @@ impl Engine {
             // load supersedes it entirely, and an un-adopted boundary
             // defers handling to the next tick.
             let device_error = deferred_device_error.take().or_else(|| {
+                let gen = self.state.lock().unwrap().generation;
                 self.caps
                     .lock()
                     .unwrap()
                     .device_error()
-                    .map(|msg| (msg, self.state.lock().unwrap().generation))
+                    .map(|msg| (msg, gen))
             });
             if let Some((msg, err_gen)) = device_error {
                 let verdict = {
@@ -2507,7 +2555,7 @@ impl Engine {
                         caps.list().iter().any(|d| d.is_default && d.name == caps.name())
                     };
                     if !self.cfg.null_sink && !was_default {
-                        match self.set_device(None) {
+                        match self.set_device_inner(None, Some(err_gen)) {
                             Ok(_) => {
                                 self.emit_error(
                                     None,
