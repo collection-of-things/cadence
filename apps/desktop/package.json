@@ -26,10 +26,12 @@
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
     "electron": "45.1.0",
+    "electron-builder": "^26.0.0",
+    "fast-check": "4.10.2",
+    "tla-ts": "0.0.8",
     "tsup": "9.0.0",
     "typescript": "^5.9.3",
     "vite": "8.3.5",
-    "vitest": "5.0.5",
-    "electron-builder": "^26.0.0"
+    "vitest": "5.0.5"
   }
 }
