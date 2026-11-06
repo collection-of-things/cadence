@@ -464,11 +464,17 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
       ])) === SETTLED;
     if (settledEarly && (await authed) === false) {
+      // A popup may already be open (opened before the rejection, or by the
+      // user) — its close event owns the attempt from here.
+      if (this.session.hasOpenPopups) return;
       // authorize() rejected immediately — try the page's own button; if
       // even that can't run, fail loudly so the UI can toast it.
       const clicked = await this.session
         .eval<boolean>(`window.__cadenceCtl.clickSignIn()`)
         .catch(() => false);
+      // The eval boundary can outlive the attempt — sign-out or a newer
+      // flow may own pending state now. Act only if still ours.
+      if (attempt !== this.signInAttempt || !this.signInPending || this.destroyed) return;
       if (!clicked) {
         endAttempt();
         this.session.hide();
@@ -495,9 +501,23 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     void authed.then((ok) => {
       if (attempt !== this.signInAttempt) return; // stale result — drop it
       if (ok === true) {
-        // authorize() resolved, but ownership transfers to the observable
-        // signals: the authorized playerState ends the attempt, and popup
-        // close remains the fallback for a resolve that never lands.
+        // authorize() resolved — the authorized playerState ends the
+        // attempt. With no open popup there is no close event to fall back
+        // on, so bound the wait: a resolve that never lands can't lock the
+        // Sign-in button.
+        if (!this.session.hasOpenPopups) {
+          setTimeout(() => {
+            if (
+              !this.authorized &&
+              !this.destroyed &&
+              this.signInPending &&
+              attempt === this.signInAttempt
+            ) {
+              endAttempt();
+              this.emit({ kind: "capabilitiesChanged" });
+            }
+          }, 15_000);
+        }
         return;
       }
       if (ok === "timeout") {

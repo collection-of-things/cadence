@@ -329,11 +329,13 @@ export class ProviderSession {
 
   /** Destroy the view. The session partition (and login) persists. */
   async release(): Promise<void> {
+    // Popups die even when the parent is already gone — a dead view's
+    // auth window must not linger.
+    this.destroyPopups();
     if (!this.alive) return;
     const win = this.win!;
     this.win = null;
     if (!win.isDestroyed()) win.destroy();
-    this.destroyPopups();
   }
 
   async dispose(): Promise<void> {
