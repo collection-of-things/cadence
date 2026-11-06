@@ -942,6 +942,11 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         }
         None => 0,
     };
+    // Baseline THIS pull's hand-off on the driver timeline — a later
+    // paused cycle measures only progress since this buffer went out.
+    if let Ok(t) = stream.time() {
+        feed.last_ticks = t.ticks() as i64;
+    }
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as _;
