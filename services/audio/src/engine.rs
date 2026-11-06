@@ -2510,6 +2510,182 @@ impl Engine {
         );
     }
 
+    /// Handle a non-gapless track end AFTER the staging ring has
+    /// drained — see the parked-end logic in monitor_loop. The staged
+    /// tail must play out before we emit trackEnded or respawn, or the
+    /// last ~186ms of audio is cut (mpv drains via ao_drain).
+    fn handle_track_end(&self, queue_id: String, instance: u64) {
+        // Take the armed successor in the SAME critical section as the
+        // adoption — a write in between would be stolen by the boundary.
+        let (gen, pf) = {
+            // core first, then state.
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            // Ignore an end for a track no longer current
+            // (a concurrent load already replaced it).
+            if st.queue_id.as_deref() != Some(queue_id.as_str())
+                || st.current_instance != instance
+            {
+                return;
+            }
+            // The monitor owns this end now — pending-end
+            // is resolved, not "in flight" for respawns.
+            core.ended_pending = false;
+            st.current_instance = 0;
+            st.queue_id = None;
+            // A slot armed under another generation must
+            // not reopen against THIS track's end.
+            let pf = match st.prefetch.take() {
+                Some(pf) if pf.generation == st.generation => Some(pf),
+                _ => None,
+            };
+            (st.generation, pf)
+        };
+        self.emit(
+            "event.trackEnded",
+            json!({
+                "generationId": gen,
+                "queueId": queue_id,
+                "gapless": false,
+            }),
+        );
+        // A prefetched successor that couldn't share the
+        // stream (format reopen required) starts here —
+        // honestly NOT gapless.
+        if let Some(pf) = pf {
+            // A rebuild in flight makes the spawn/install
+            // transiently stale — retry on the settled
+            // format rather than lose the only successor.
+            for attempt in 0..3u8 {
+                // A load landing during this spawn must not
+                // be destroyed by the reopen's rebuild —
+                // guard it.
+                let seq = self.core.lock().unwrap().boundary_seq;
+                match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, Some((seq, gen))) {
+                    Ok((reader, handle, dur, bypass, _info)) => {
+                        // A concurrent audio.load may have landed
+                        // while we decoded — check + install in
+                        // ONE critical section so it can't be
+                        // clobbered mid-gap.
+                        let reopen_instance = reader.instance;
+                        let mut core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        let transient =
+                            core.rebuilding || core.negotiated != reader.neg;
+                        let stale = st.generation != gen
+                            || st.queue_id.is_some()
+                            // a stop() mid-reopen must not be
+                            // overridden back to Playing —
+                            // but a pause keeps the reader,
+                            // installed paused below
+                            || (st.state != PlayState::Playing
+                                && st.state != PlayState::Paused)
+                            || transient;
+                        if stale {
+                            drop(st);
+                            drop(core);
+                            reader.pipe.abort();
+                            let _ = handle;
+                            if transient && attempt < 2 {
+                                std::thread::sleep(
+                                    std::time::Duration::from_millis(25),
+                                );
+                                continue;
+                            }
+                            eprintln!(
+                                "monitor: dropped stale reopen for {}",
+                                pf.queue_id
+                            );
+                            break;
+                        }
+                        let paused = st.state == PlayState::Paused;
+                        core.set_active(reader);
+                        core.paused = paused;
+                        core.paused_flag.store(paused, Ordering::Release);
+                        st.current_instance = reopen_instance;
+                        st.queue_id = Some(pf.queue_id.clone());
+                        st.source = Some(pf.source.clone());
+                        st.replay_gain_db = pf.replay_gain_db;
+                        st.duration_ms = dur;
+                        st.fidelity_bypass = bypass;
+                        st.state = if paused {
+                            PlayState::Paused
+                        } else {
+                            PlayState::Playing
+                        };
+                        drop(st);
+                        drop(core);
+                        *self.producer.lock().unwrap() = Some(handle);
+                        self.emit_state(None);
+                        self.emit_output();
+                        self.emit(
+                            "event.trackStarted",
+                            json!({
+                                "generationId": gen,
+                                "queueId": pf.queue_id,
+                                "durationMs": dur,
+                                "gapless": false,
+                            }),
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        // A concurrent rebuild or boundary
+                        // can fail the spawn transiently —
+                        // retry like the install path does.
+                        let transient = {
+                            let core = self.core.lock().unwrap();
+                            core.rebuilding || core.boundary_seq != seq
+                        };
+                        if transient && attempt < 2 {
+                            std::thread::sleep(
+                                std::time::Duration::from_millis(25),
+                            );
+                            continue;
+                        }
+                        // A concurrent load may own the slot
+                        // now — only report against ours.
+                        let ours = {
+                            let st = self.state.lock().unwrap();
+                            st.generation == gen && st.queue_id.is_none()
+                        };
+                        if ours {
+                            self.emit_error(
+                                Some(&pf.queue_id),
+                                &format!("{e:#}"),
+                                true,
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+            // The successful install above already
+            // advanced the state — skip the stopped check
+            // when a successor is now active.
+            let advanced = {
+                let st = self.state.lock().unwrap();
+                st.queue_id.is_some()
+            };
+            if advanced {
+                return;
+            }
+        }
+        // Check + stop atomically — a newer load must not
+        // be overwritten with Stopped in the gap.
+        let stopped = {
+            let mut st = self.state.lock().unwrap();
+            let ours = st.generation == gen && st.queue_id.is_none();
+            if ours {
+                st.state = PlayState::Stopped;
+            }
+            ours
+        };
+        if stopped {
+            self.emit_state(None);
+        }
+    }
+
     // ------------------------------ monitor ---------------------------------
 
     fn monitor_loop(&self) {
@@ -2531,6 +2707,9 @@ impl Engine {
         // reports once per sink instance, not a probing/event storm
         // every tick.
         let mut sink_dead_reported: Option<usize> = None;
+        // A non-gapless Ended parked while the staged tail plays out —
+        // see the Ended arm below.
+        let mut pending_end: Option<(String, u64, std::time::Instant)> = None;
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2626,180 +2805,37 @@ impl Engine {
                         self.emit_output();
                     }
                     CoreEvent::Ended { queue_id, instance } => {
-                        // Take the armed successor in the SAME critical
-                        // section as the adoption — a write in between
-                        // would be stolen by the boundary.
-                        let (gen, pf) = {
-                            // core first, then state.
-                            let mut core = self.core.lock().unwrap();
-                            let mut st = self.state.lock().unwrap();
-                            // Ignore an end for a track no longer current
-                            // (a concurrent load already replaced it).
-                            if st.queue_id.as_deref() != Some(queue_id.as_str())
-                                || st.current_instance != instance
-                            {
-                                continue;
-                            }
-                            // The monitor owns this end now — pending-end
-                            // is resolved, not "in flight" for respawns.
-                            core.ended_pending = false;
-                            st.current_instance = 0;
-                            st.queue_id = None;
-                            // A slot armed under another generation must
-                            // not reopen against THIS track's end.
-                            let pf = match st.prefetch.take() {
-                                Some(pf) if pf.generation == st.generation => Some(pf),
-                                _ => None,
-                            };
-                            (st.generation, pf)
-                        };
-                        self.emit(
-                            "event.trackEnded",
-                            json!({
-                                "generationId": gen,
-                                "queueId": queue_id,
-                                "gapless": false,
-                            }),
-                        );
-                        // A prefetched successor that couldn't share the
-                        // stream (format reopen required) starts here —
-                        // honestly NOT gapless.
-                        if let Some(pf) = pf {
-                            // A rebuild in flight makes the spawn/install
-                            // transiently stale — retry on the settled
-                            // format rather than lose the only successor.
-                            for attempt in 0..3u8 {
-                                // A load landing during this spawn must not
-                                // be destroyed by the reopen's rebuild —
-                                // guard it.
-                                let seq = self.core.lock().unwrap().boundary_seq;
-                                match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, Some((seq, gen))) {
-                                    Ok((reader, handle, dur, bypass, _info)) => {
-                                        // A concurrent audio.load may have landed
-                                        // while we decoded — check + install in
-                                        // ONE critical section so it can't be
-                                        // clobbered mid-gap.
-                                        let reopen_instance = reader.instance;
-                                        let mut core = self.core.lock().unwrap();
-                                        let mut st = self.state.lock().unwrap();
-                                        let transient =
-                                            core.rebuilding || core.negotiated != reader.neg;
-                                        let stale = st.generation != gen
-                                            || st.queue_id.is_some()
-                                            // a stop() mid-reopen must not be
-                                            // overridden back to Playing —
-                                            // but a pause keeps the reader,
-                                            // installed paused below
-                                            || (st.state != PlayState::Playing
-                                                && st.state != PlayState::Paused)
-                                            || transient;
-                                        if stale {
-                                            drop(st);
-                                            drop(core);
-                                            reader.pipe.abort();
-                                            let _ = handle;
-                                            if transient && attempt < 2 {
-                                                std::thread::sleep(
-                                                    std::time::Duration::from_millis(25),
-                                                );
-                                                continue;
-                                            }
-                                            eprintln!(
-                                                "monitor: dropped stale reopen for {}",
-                                                pf.queue_id
-                                            );
-                                            break;
-                                        }
-                                        let paused = st.state == PlayState::Paused;
-                                        core.set_active(reader);
-                                        core.paused = paused;
-                                        core.paused_flag.store(paused, Ordering::Release);
-                                        st.current_instance = reopen_instance;
-                                        st.queue_id = Some(pf.queue_id.clone());
-                                        st.source = Some(pf.source.clone());
-                                        st.replay_gain_db = pf.replay_gain_db;
-                                        st.duration_ms = dur;
-                                        st.fidelity_bypass = bypass;
-                                        st.state = if paused {
-                                            PlayState::Paused
-                                        } else {
-                                            PlayState::Playing
-                                        };
-                                        drop(st);
-                                        drop(core);
-                                        *self.producer.lock().unwrap() = Some(handle);
-                                        self.emit_state(None);
-                                        self.emit_output();
-                                        self.emit(
-                                            "event.trackStarted",
-                                            json!({
-                                                "generationId": gen,
-                                                "queueId": pf.queue_id,
-                                                "durationMs": dur,
-                                                "gapless": false,
-                                            }),
-                                        );
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        // A concurrent rebuild or boundary
-                                        // can fail the spawn transiently —
-                                        // retry like the install path does.
-                                        let transient = {
-                                            let core = self.core.lock().unwrap();
-                                            core.rebuilding || core.boundary_seq != seq
-                                        };
-                                        if transient && attempt < 2 {
-                                            std::thread::sleep(
-                                                std::time::Duration::from_millis(25),
-                                            );
-                                            continue;
-                                        }
-                                        // A concurrent load may own the slot
-                                        // now — only report against ours.
-                                        let ours = {
-                                            let st = self.state.lock().unwrap();
-                                            st.generation == gen && st.queue_id.is_none()
-                                        };
-                                        if ours {
-                                            self.emit_error(
-                                                Some(&pf.queue_id),
-                                                &format!("{e:#}"),
-                                                true,
-                                            );
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            // The successful install above already
-                            // advanced the state — skip the stopped check
-                            // when a successor is now active.
-                            let advanced = {
-                                let st = self.state.lock().unwrap();
-                                st.queue_id.is_some()
-                            };
-                            if advanced {
-                                continue;
-                            }
-                        }
-                        // Check + stop atomically — a newer load must not
-                        // be overwritten with Stopped in the gap.
-                        let stopped = {
-                            let mut st = self.state.lock().unwrap();
-                            let ours = st.generation == gen && st.queue_id.is_none();
-                            if ours {
-                                st.state = PlayState::Stopped;
-                            }
-                            ours
-                        };
-                        if stopped {
-                            self.emit_state(None);
+                        // Park the end until the staging ring drains —
+                        // the last ~186ms of the track is still audible
+                        // in the ring. Handling it now would clear the
+                        // tail unplayed (mpv drains via ao_drain;
+                        // GStreamer waits on EOS). Bounded so a stalled
+                        // callback can't hang the transition.
+                        if pending_end.is_none() {
+                            pending_end =
+                                Some((queue_id, instance, std::time::Instant::now()));
                         }
                     }
                 }
             }
-
+            // A parked non-gapless end: wait out the staged tail before
+            // emitting trackEnded / respawning the successor.
+            if let Some((qid, inst, since)) = pending_end.take() {
+                let staged = self
+                    .sink
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|s| s.staged_frames())
+                    .unwrap_or(0);
+                if staged == 0
+                    || since.elapsed() > std::time::Duration::from_millis(400)
+                {
+                    self.handle_track_end(qid, inst);
+                } else {
+                    pending_end = Some((qid, inst, since));
+                }
+            }
             // underrun -> buffering (once per stall), then a state=playing
             // event when the stall clears so the UI never sticks on buffering.
             {
