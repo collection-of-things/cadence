@@ -80,10 +80,17 @@ fn layout_named(name: &str) -> Option<Vec<u32>> {
         "3.0(back)" => vec![FL, FR, RC],
         "4.0" => vec![FL, FR, FC, RC],
         "quad" => vec![FL, FR, RL, RR],
-        "5.0" | "5.0(side)" => vec![FL, FR, FC, SL, SR],
-        "5.1" | "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
+        // ffmpeg truth (`ffmpeg -layouts`): bare 5.0/5.1 use BACK
+        // channels (BL/BR → spa RL/RR); only the (side) variants use
+        // SL/SR. BL/BR and RL/RR are the same physical positions.
+        "5.0" => vec![FL, FR, FC, RL, RR],
+        "5.0(side)" => vec![FL, FR, FC, SL, SR],
+        "5.1" => vec![FL, FR, FC, LFE, RL, RR],
+        "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
         "6.0" => vec![FL, FR, FC, RC, SL, SR],
         "6.1" => vec![FL, FR, FC, LFE, RC, SL, SR],
+        "6.1(back)" => vec![FL, FR, FC, LFE, RL, RR, RC],
+        "quad(side)" => vec![FL, FR, SL, SR],
         "7.0" => vec![FL, FR, FC, RL, RR, SL, SR],
         "7.1" => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
         _ => return None,
@@ -108,11 +115,11 @@ fn positions_for(neg: &Negotiated) -> Option<[u32; 64]> {
         // count alone can't distinguish, so prefer the layout the vast
         // majority of 3ch sources carry.
         3 => Some(vec![FL, FR, FC]),
-        // ffmpeg's per-count defaults: 4=quad, 5=5.0-side, 6=5.1,
-        // 7=6.1 (FL FR FC LFE BC SL SR), 8=7.1.
+        // ffmpeg's per-count defaults (av_get_default_channel_layout):
+        // 4=quad, 5=5.0-back, 6=5.1-back, 7=6.1, 8=7.1.
         4 => Some(vec![FL, FR, RL, RR]),
-        5 => Some(vec![FL, FR, FC, SL, SR]),
-        6 => Some(vec![FL, FR, FC, LFE, SL, SR]),
+        5 => Some(vec![FL, FR, FC, RL, RR]),
+        6 => Some(vec![FL, FR, FC, LFE, RL, RR]),
         7 => Some(vec![FL, FR, FC, LFE, RC, SL, SR]),
         8 => Some(vec![FL, FR, FC, LFE, RL, RR, SL, SR]),
         _ => None,
@@ -1194,6 +1201,17 @@ mod layout_tests {
         assert_eq!(
             &p[..7],
             &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RC, pos::SL, pos::SR]
+        );
+        // ffmpeg 5.1 uses BACK pairs; only "5.1(side)" uses SL/SR.
+        let s51 = positions_for(&neg(6, Some("5.1"))).unwrap();
+        assert_eq!(
+            &s51[..6],
+            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RL, pos::RR]
+        );
+        let s51s = positions_for(&neg(6, Some("5.1(side)"))).unwrap();
+        assert_eq!(
+            &s51s[..6],
+            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::SL, pos::SR]
         );
         // 4.0 declared (FL FR FC BC) beats the quad count guess.
         let q = positions_for(&neg(4, Some("4.0"))).unwrap();

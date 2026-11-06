@@ -1219,11 +1219,14 @@ impl Engine {
             }
         }
 
-        // Another rebuild may have committed a different format while we
-        // planned — this reader is only valid for plan.neg.
+        // Adopt the format ACTUALLY committed by the rebuild — a CPAL
+        // fallback may have opened a different one than `neg` (the
+        // device carries its own default config). The reader must be
+        // built for the real stream format, not the PipeWire plan.
+        let neg = self.core.lock().unwrap().negotiated.clone();
         {
             let core = self.core.lock().unwrap();
-            if core.rebuilding || core.negotiated != neg {
+            if core.rebuilding {
                 bail!("stream format changed during spawn — retry");
             }
         }
@@ -1447,7 +1450,7 @@ impl Engine {
         // Open BEFORE committing negotiated: on failure the core keeps the
         // old negotiation so the next load still attempts a rebuild instead
         // of rendering into a dead sink.
-        let opened = match crate::sink::open_sink(&self.cfg, caps, neg, &self.core) {
+        let opened = match crate::sink::open_sink(&self.cfg, caps.clone(), neg, &self.core) {
             Ok(s) => s,
             Err(e) => {
                 self.core.lock().unwrap().rebuilding = false;
@@ -1462,9 +1465,11 @@ impl Engine {
             core.negotiated = opened.negotiated;
             core.rebuilding = false;
         }
-        if let Some(new_caps) = opened.caps {
-            *self.caps.lock().unwrap() = new_caps;
-        }
+        // Commit the caps that actually serve this stream — the CPAL
+        // fallback's caps, or the requested/override caps. Doing it
+        // HERE keeps set_device_inner from overwriting a fallback with
+        // the PipeWire caps that just failed.
+        *self.caps.lock().unwrap() = opened.caps.unwrap_or(caps);
         {
             let mut g = self.sink.lock().unwrap();
             *g = Some(opened.sink);
@@ -1559,7 +1564,8 @@ impl Engine {
             }
             return Err(e);
         }
-        *self.caps.lock().unwrap() = new_caps;
+        // Caps were committed by rebuild_stream (PW on success, CPAL
+        // on fallback) — overwriting here would clobber a fallback.
         // New device: the cached native-open failure belongs to the old one.
         self.state.lock().unwrap().native_failed = None;
         self.respawn_pipelines(pos);
