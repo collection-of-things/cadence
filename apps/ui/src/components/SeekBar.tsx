@@ -1,25 +1,31 @@
 import { useEffect, useRef } from 'react';
-import { session } from '../app';
+import { session } from '../session';
 import { formatTime } from '../format';
 import { positionNow, useUi } from '../hooks';
 import './controls.css';
 
-/**
- * Seek bar with interpolated position. The fill, input value and elapsed label
- * are written by a rAF loop straight to the DOM — no per-frame React render.
- */
-export function SeekBar() {
+function useCanSeek(): { duration: number; disabled: boolean } {
   const duration = useUi((s) => s.snapshot.durationMs);
-  const route = useUi((s) => s.snapshot.lease?.route ?? s.snapshot.current?.track.route);
   const canSeek = useUi((s) => {
+    const route = s.snapshot.lease?.route ?? s.snapshot.current?.track.route;
     const cap = s.capabilities.find((c) => c.route === route);
     return cap ? cap.playback.canSeek : true;
   });
-  const disabled = !canSeek || duration <= 0;
+  return { duration, disabled: !canSeek || duration <= 0 };
+}
 
+/**
+ * Seek bar with interpolated position. The fill, input value and time labels
+ * are written by a rAF loop straight to the DOM — no per-frame React render.
+ * `bar` shows elapsed and remaining time beside the track; `line` is the
+ * bare track used inside the full-screen dock.
+ */
+export function SeekBar({ variant = 'bar' }: { variant?: 'bar' | 'line' }) {
+  const { duration, disabled } = useCanSeek();
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
+  const leftRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const scrubbing = useRef(false);
 
@@ -34,6 +40,7 @@ export function SeekBar() {
       if (document.activeElement !== input) input.value = String(Math.round(pos));
       wrap.style.setProperty('--p', String(duration > 0 ? Math.min(1, pos / duration) : 0));
       if (timeRef.current) timeRef.current.textContent = formatTime(pos);
+      if (leftRef.current) leftRef.current.textContent = `-${formatTime(Math.max(0, duration - pos))}`;
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
@@ -46,10 +53,8 @@ export function SeekBar() {
   };
 
   return (
-    <div className={`seek ${disabled ? 'seek-off' : ''}`}>
-      <span className="seek-time" ref={timeRef}>
-        0:00
-      </span>
+    <div className={`seek seek-${variant} ${disabled ? 'seek-off' : ''}`}>
+      {variant === 'bar' && <span className="seek-time" ref={timeRef}>0:00</span>}
       <div
         className="seek-track"
         ref={wrapRef}
@@ -82,6 +87,7 @@ export function SeekBar() {
             scrubbing.current = true;
             if (wrap) wrap.style.setProperty('--p', String(duration > 0 ? v / duration : 0));
             if (timeRef.current) timeRef.current.textContent = formatTime(v);
+            if (leftRef.current) leftRef.current.textContent = `-${formatTime(Math.max(0, duration - v))}`;
           }}
           onPointerUp={commit}
           onKeyDown={(e) => {
@@ -99,7 +105,26 @@ export function SeekBar() {
           }}
         />
       </div>
-      <span className="seek-time seek-dur">{formatTime(duration)}</span>
+      {variant === 'bar' && <span className="seek-time seek-left" ref={leftRef}>-0:00</span>}
     </div>
   );
+}
+
+/** "elapsed / -remaining" text, rAF-written like the seek bar. */
+export function TimeReadout() {
+  const duration = useUi((s) => s.snapshot.durationMs);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    let last = '';
+    const loop = () => {
+      raf = requestAnimationFrame(loop);
+      const pos = positionNow();
+      const text = `${formatTime(pos)} / -${formatTime(Math.max(0, duration - pos))}`;
+      if (text !== last && ref.current) ref.current.textContent = last = text;
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [duration]);
+  return <span className="time-readout" ref={ref} aria-hidden="true" />;
 }

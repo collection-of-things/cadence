@@ -1,148 +1,218 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LibraryAlbum } from '@cadence/protocol';
-import { api } from '../app';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
+import { api, session } from '../session';
+import { albumKey, useCollection } from '../collection';
 import { useUi } from '../hooks';
-import { NoteIcon } from '../icons';
+import { ChevronIcon, NoteIcon, PlayIcon, RefreshIcon } from '../icons';
 import './home.css';
 
 interface HomeViewProps {
   onSelectAlbum(album: LibraryAlbum): void;
 }
 
-function Shelf({ title, subtitle, albums, onSelectAlbum }: {
-  title: string;
-  subtitle?: string;
-  albums: LibraryAlbum[];
-  onSelectAlbum(album: LibraryAlbum): void;
-}) {
+async function playAlbum(album: LibraryAlbum) {
+  const tracks = await api.library.tracks({ album: album.title, artist: album.artist });
+  session.playTracks(tracks, 0, { kind: 'album', id: album.id, name: album.title });
+}
+
+/** Horizontal rail with previous/next buttons that step by visible width. */
+function Shelf({ head, label, children }: { head: ReactNode; label: string; children: ReactNode }) {
   const railRef = useRef<HTMLDivElement>(null);
-  const [edges, setEdges] = useState<{ left: boolean; right: boolean }>({ left: true, right: true });
-  const updateEdges = useCallback(() => {
+  const [edges, setEdges] = useState({ start: true, end: true });
+  const update = useCallback(() => {
     const el = railRef.current;
     if (!el) return;
     const max = el.scrollWidth - el.clientWidth;
-    setEdges({ left: el.scrollLeft <= 2 || max <= 4, right: el.scrollLeft >= max - 2 || max <= 4 });
+    setEdges({ start: el.scrollLeft <= 2, end: el.scrollLeft >= max - 2 });
   }, []);
   useEffect(() => {
-    updateEdges();
-    window.addEventListener('resize', updateEdges);
-    return () => window.removeEventListener('resize', updateEdges);
-  }, [updateEdges, albums]);
-  const scroll = (direction: -1 | 1) => {
+    update();
+    const observer = new ResizeObserver(update);
+    if (railRef.current) observer.observe(railRef.current);
+    return () => observer.disconnect();
+  }, [update, children]);
+  const step = (direction: -1 | 1) => {
     const el = railRef.current;
     if (!el) return;
-    const card = el.querySelector('.home-album-card') as HTMLElement | null;
-    const step = card ? card.offsetWidth + 14 : 540;
-    el.scrollBy({ left: direction * step * 2, behavior: 'smooth' });
+    const card = el.firstElementChild as HTMLElement | null;
+    const width = card ? card.offsetWidth + 16 : 240;
+    const visible = Math.max(1, Math.floor(el.clientWidth / width) - 1);
+    el.scrollBy({ left: direction * visible * width, behavior: 'smooth' });
   };
-
-  if (!albums.length) return null;
+  const scrolls = !(edges.start && edges.end);
   return (
-    <section className="home-shelf" aria-label={title}>
-      <div className="home-shelf-head">
-        <div>
-          <h2>{title}</h2>
-          {subtitle && <p>{subtitle}</p>}
-        </div>
-        <div className="shelf-controls">
-          <button className="shelf-arrow" aria-label={`Scroll ${title} left`} disabled={edges.left} onClick={() => scroll(-1)}>
-            <Arrow direction="back" />
-          </button>
-          <button className="shelf-arrow" aria-label={`Scroll ${title} right`} disabled={edges.right} onClick={() => scroll(1)}>
-            <Arrow direction="forward" />
-          </button>
-        </div>
+    <section className="shelf" aria-label={label}>
+      <div className="shelf-head">
+        {head}
+        {scrolls && (
+          <div className="shelf-arrows">
+            <button className="round-btn" aria-label={`Scroll ${label} back`} disabled={edges.start} onClick={() => step(-1)}>
+              <ChevronIcon dir="left" size={18} />
+            </button>
+            <button className="round-btn" aria-label={`Scroll ${label} forward`} disabled={edges.end} onClick={() => step(1)}>
+              <ChevronIcon dir="right" size={18} />
+            </button>
+          </div>
+        )}
       </div>
-      <div className="home-rail" ref={railRef} onScroll={updateEdges}>
-        {albums.map((album, index) => (
-          <button
-            className="home-album-card"
-            key={album.id}
-            onClick={() => onSelectAlbum(album)}
-            aria-label={`Open ${album.title} by ${album.artist}`}
-          >
-            <span className="home-cover">
-              {album.artwork ? <img src={album.artwork.url} alt="" loading={index > 3 ? 'lazy' : 'eager'} /> : <span className="home-cover-empty"><NoteIcon size={36} /></span>}
-              <span className="home-cover-shade" />
-              <span className="home-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
-            </span>
-            <span className="home-card-caption">
-              <span className="home-card-title">{album.title}</span>
-              <span className="home-card-artist">{album.artist}</span>
-            </span>
-
-          </button>
-        ))}
+      <div className="shelf-rail" ref={railRef} onScroll={update}>
+        {children}
       </div>
     </section>
   );
 }
 
-function Arrow({ direction }: { direction: 'back' | 'forward' }) {
+function Cover({ album, eager }: { album: LibraryAlbum; eager?: boolean }) {
+  return album.artwork
+    ? <img src={album.artwork.url} alt="" loading={eager ? 'eager' : 'lazy'} draggable={false} />
+    : <span className="cover-empty"><NoteIcon size={40} /></span>;
+}
+
+/** Tall poster card with the caption laid over a dark fade. */
+function PosterCard({ album, label, onOpen }: { album: LibraryAlbum; label: string | undefined; onOpen(): void }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d={direction === 'back' ? 'm14.8 5.5-6.5 6.5 6.5 6.5' : 'm9.2 5.5 6.5 6.5-6.5 6.5'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <div className="poster-card">
+      <button className="poster-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
+        <span className="poster-art"><Cover album={album} eager /></span>
+        <span className="poster-caption">
+          {label && <span className="poster-label">{label}</span>}
+          <span className="poster-title">{album.title}</span>
+          <span className="poster-artist">{album.artist}</span>
+        </span>
+      </button>
+      <button className="card-play" aria-label={`Play ${album.title}`} onClick={() => void playAlbum(album)}>
+        <PlayIcon size={18} />
+      </button>
+    </div>
+  );
+}
+
+/** Square card with title and artist below the artwork. */
+function SquareCard({ album, onOpen }: { album: LibraryAlbum; onOpen(): void }) {
+  return (
+    <div className="square-card">
+      <button className="square-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
+        <span className="square-art"><Cover album={album} /></span>
+        <span className="square-title">{album.title}</span>
+        <span className="square-artist">{album.artist}</span>
+      </button>
+      <button className="card-play" aria-label={`Play ${album.title}`} onClick={() => void playAlbum(album)}>
+        <PlayIcon size={18} />
+      </button>
+    </div>
+  );
+}
+
+function SkeletonShelf({ tall }: { tall?: boolean }) {
+  return (
+    <section className="shelf" aria-hidden="true">
+      <div className="shelf-head"><span className="skeleton skeleton-title" /></div>
+      <div className="shelf-rail">
+        {Array.from({ length: 6 }, (_, i) => <span key={i} className={`skeleton ${tall ? 'skeleton-poster' : 'skeleton-square'}`} />)}
+      </div>
+    </section>
   );
 }
 
 export function HomeView({ onSelectAlbum }: HomeViewProps) {
   const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
-  const [genreShelf, setGenreShelf] = useState<{ name: string; albums: LibraryAlbum[] } | null>(null);
+  const [tracks, setTracks] = useState<TrackRef[]>([]);
+  const [nonce, setNonce] = useState(0);
   const scan = useUi((s) => s.scan);
+  const recent = useCollection((s) => s.recent);
+
   useEffect(() => {
     let live = true;
     setAlbums(null);
-    void api.library.albums({}).then((result) => {
-      if (!live) return;
-      setAlbums(result);
-      // Build a real genre shelf: dominant genre across tracks, albums
-      // whose titles appear in it. No fake curation.
-      void api.library.tracks({}).then((tracks) => {
+    void Promise.all([api.library.albums({}), api.library.tracks({}).catch(() => [] as TrackRef[])])
+      .then(([a, t]) => {
         if (!live) return;
-        const byGenre = new Map<string, Set<string>>();
-        for (const t of tracks) {
-          for (const g of t.genre ?? []) {
-            const set = byGenre.get(g) ?? new Set<string>();
-            if (t.album) set.add(t.album);
-            byGenre.set(g, set);
-          }
-        }
-        const best = [...byGenre.entries()].sort((a, b) => b[1].size - a[1].size)[0];
-        if (!best) return;
-        const matching = result.filter((a) => best[1].has(a.title));
-        if (matching.length >= 2) setGenreShelf({ name: best[0], albums: matching });
-      }).catch(() => undefined);
-    }).catch(() => {
-      if (live) setAlbums([]);
-    });
+        setAlbums(a);
+        setTracks(t);
+      })
+      .catch(() => live && setAlbums([]));
     return () => {
       live = false;
     };
-  }, [scan.phase]);
+  }, [scan.phase, nonce]);
+
+  // Genres per album, derived from track tags.
+  const genres = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const t of tracks) {
+      const artist = t.artists[0]?.name;
+      if (!t.album || !artist || !t.genre?.length) continue;
+      const key = albumKey(t.album, artist);
+      if (!map.has(key)) map.set(key, t.genre);
+    }
+    return map;
+  }, [tracks]);
+
+  const byKey = useMemo(() => new Map((albums ?? []).map((a) => [albumKey(a.title, a.artist), a])), [albums]);
+  const played = useMemo(() => recent.map((k) => byKey.get(k)).filter((a): a is LibraryAlbum => !!a), [recent, byKey]);
+
+  // "More like" seeds from the latest played album and matches shared genres.
+  const seed = played[0] ?? albums?.[0];
+  const similar = useMemo(() => {
+    if (!seed || !albums) return [];
+    const seedGenres = genres.get(albumKey(seed.title, seed.artist)) ?? [];
+    return albums.filter((a) => a.id !== seed.id && (genres.get(albumKey(a.title, a.artist)) ?? []).some((g) => seedGenres.includes(g)));
+  }, [seed, albums, genres]);
+
+  const posterLabel = (album: LibraryAlbum) => {
+    const genre = genres.get(albumKey(album.title, album.artist))?.[0];
+    return [genre, album.year].filter(Boolean).join(' · ') || undefined;
+  };
 
   return (
-    <div className="home-view">
-      <div className="home-scroll">
-        <header className="home-intro">
-          <h1>Home</h1>
-        </header>
-        {albums === null ? (
-          <div className="home-loading" role="status">Gathering your albums…</div>
-        ) : albums.length === 0 ? (
-          <div className="home-empty">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
-            <div><h2>Your shelves are waiting</h2><p>Add a music folder from Library to see your albums here.</p></div>
-          </div>
-        ) : (
-          <>
-            <Shelf title="Your albums" subtitle={`${albums.length} ${albums.length === 1 ? 'album' : 'albums'} in your library`} albums={albums} onSelectAlbum={onSelectAlbum} />
-            {genreShelf && (
-              <Shelf title={genreShelf.name} subtitle={`${genreShelf.albums.length} albums in this corner of your library`} albums={genreShelf.albums} onSelectAlbum={onSelectAlbum} />
-            )}
-          </>
-        )}
-      </div>
+    <div className="stage-scroll home">
+      <header className="page-head">
+        <h1>Home</h1>
+        <button className="round-btn round-btn-lg" aria-label="Refresh" title="Refresh" onClick={() => setNonce((n) => n + 1)}>
+          <RefreshIcon size={20} />
+        </button>
+      </header>
+      {albums === null ? (
+        <>
+          <SkeletonShelf tall />
+          <SkeletonShelf />
+        </>
+      ) : albums.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon"><NoteIcon size={30} /></span>
+          <h2>Bring your music to Cadence</h2>
+          <p>Add a music folder from Library to fill your shelves.</p>
+        </div>
+      ) : (
+        <>
+          <Shelf label="Your albums" head={<h2>Your albums</h2>}>
+            {albums.map((album) => (
+              <PosterCard key={album.id} album={album} label={posterLabel(album)} onOpen={() => onSelectAlbum(album)} />
+            ))}
+          </Shelf>
+          {played.length > 0 && (
+            <Shelf label="Recently played" head={<h2>Recently played</h2>}>
+              {played.map((album) => <SquareCard key={album.id} album={album} onOpen={() => onSelectAlbum(album)} />)}
+            </Shelf>
+          )}
+          {seed && similar.length > 0 && (
+            <Shelf
+              label={`More like ${seed.title}`}
+              head={
+                <button className="shelf-seed" onClick={() => onSelectAlbum(seed)}>
+                  <span className="shelf-seed-art"><Cover album={seed} /></span>
+                  <span className="shelf-seed-copy">
+                    <span className="shelf-seed-label">More like</span>
+                    <span className="shelf-seed-title">{seed.title} <ChevronIcon dir="right" size={18} /></span>
+                  </span>
+                </button>
+              }
+            >
+              {similar.map((album) => <SquareCard key={album.id} album={album} onOpen={() => onSelectAlbum(album)} />)}
+            </Shelf>
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { session } from './app';
+import { session } from './session';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/figtree';
 import './styles.css';
 
 // Screenshot/dev seam: lets capture scripts drive the mock session.

@@ -1,5 +1,5 @@
 import { useUi } from '../hooks';
-import { session } from '../app';
+import { session } from '../session';
 import { CloseIcon } from '../icons';
 import { providerForRoute, RouteBadge } from './RouteBadge';
 import './controls.css';

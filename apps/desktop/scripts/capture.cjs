@@ -1,9 +1,10 @@
 // Headless screenshot capture for the UI. Run under xvfb-run:
 //   electron scripts/capture.cjs --url=... --out=shot.png --wait=2500 [--eval=js]
 const { app, BrowserWindow } = require('electron');
+process.on('uncaughtException', (e) => { console.error('capture failed:', e.message); process.exit(1); });
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('ozone-platform', 'x11');
-app.setPath('userData', '/tmp/cadence-cap-' + process.pid);
+app.setPath('userData', require('node:path').join(require('node:os').tmpdir(), 'cadence-cap-' + process.pid));
 const { writeFileSync, mkdirSync } = require('node:fs');
 const { dirname, resolve } = require('node:path');
 
@@ -25,12 +26,14 @@ async function main() {
     width,
     height,
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false, offscreen: true },
+    paintWhenInitiallyHidden: true,
   });
   await win.loadURL(url);
   await new Promise((r) => setTimeout(r, wait));
   if (evalJs) {
-    await win.webContents.executeJavaScript(evalJs, true)
+    console.log('eval:', evalJs);
+    await win.webContents.executeJavaScript(evalJs, true).then((v) => console.log('eval result:', String(v)))
       .catch((e) => console.warn('eval failed:', e.message));
     await new Promise((r) => setTimeout(r, 1200));
   }

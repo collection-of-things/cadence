@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Application, Geometry, GlProgram, Mesh, Shader, UniformGroup } from 'pixi.js';
-import { session } from '../app';
+import { session } from '../session';
 import { useReducedMotion } from '../hooks';
 import type { Rgb } from '../palette';
 import { DEFAULT_PALETTE } from '../palette';

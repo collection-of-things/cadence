@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { positionNow } from '../hooks';
-import { session } from '../app';
+import { session } from '../session';
 
 type Line = { time: number; text: string };
 
@@ -100,12 +100,12 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
     };
   }, [lines]);
 
-  if (!raw?.trim()) return <div className="full-lyrics-empty">No lyrics available for this track.</div>;
-  if (!lines.length) return <div className="full-lyrics-plain">{raw}</div>;
+  if (!raw?.trim()) return <div className="lyrics-empty">No lyrics available for this track.</div>;
+  if (!lines.length) return <div className="lyrics-plain">{raw}</div>;
   return (
     <>
       <div
-        className="full-lyrics-scroll"
+        className="lyrics-scroll"
         ref={scrollRef}
         aria-label="Synced lyrics"
         tabIndex={0}
@@ -137,7 +137,7 @@ export function Lyrics({ raw }: { raw: string | undefined }) {
         ))}
       </div>
       {!following && (
-        <button className="full-lyrics-follow" onClick={follow}>Follow lyrics</button>
+        <button className="lyrics-follow" onClick={follow}>Follow lyrics</button>
       )}
     </>
   );

@@ -1,98 +1,112 @@
-import { session } from '../app';
-import { useEffect, useState } from 'react';
-import { SearchIcon } from '../icons';
+import { useState, type ReactNode } from 'react';
+import type { Location } from '../App';
+import { session } from '../session';
+import { useCollection } from '../collection';
+import { AlbumsIcon, ArtistIcon, ChevronIcon, HomeIcon, SearchIcon, SongIcon, SourcesIcon, StarIcon } from '../icons';
 import './shell.css';
 
-export type ShellPage = 'home' | 'library' | 'sources' | 'now' | 'album' | 'playlist';
-
-type NavSection = 'home' | 'library' | 'sources' | 'playlists';
-
-function Glyph({ name, size = 17 }: { name: NavSection; size?: number }) {
-  const common = { stroke: 'currentColor', strokeWidth: 1.65, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      {name === 'home' && <><path d="m3.6 10.5 8.4-7 8.4 7" {...common} /><path d="M5.8 9.3v10.2h12.4V9.3M9.4 19.5v-6h5.2v6" {...common} /></>}
-      {name === 'library' && <><path d="M4 5.2h16M4 9.8h16M4 14.4h10" {...common} /><path d="M4 19h8" {...common} /><circle cx="18" cy="17.6" r="2.8" {...common} /></>}
-      {name === 'sources' && <><path d="M5 8.2h14a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7.6a2 2 0 0 1 2-2Z" {...common} /><path d="M8 8.2V6.6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1.6M12 12v4" {...common} /></>}
-      {name === 'playlists' && <><path d="M5 5.5h13M5 10h13M5 14.5h8" {...common} /><path d="M17 14.2v5.2m0 0 3-1.7" {...common} /></>}
-    </svg>
-  );
-}
-
 interface SidebarProps {
-  activePage: ShellPage;
+  location: Location;
   collapsed: boolean;
-  onNavigate(page: Exclude<ShellPage, 'album'>): void;
+  onNavigate(next: Location): void;
 }
 
-export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
-  const [compact, setCompact] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 690px)').matches);
+type SectionId = 'cadence' | 'library' | 'pins' | 'playlists';
 
-  useEffect(() => {
-    const media = window.matchMedia('(max-width: 690px)');
-    const update = () => setCompact(media.matches);
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
+/** Left navigation: search, collapsible sections, pins and playlists. */
+export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
+  const pins = useCollection((s) => s.pins);
+  const favoriteCount = useCollection((s) => s.favorites.length);
+  const [closed, setClosed] = useState<Record<SectionId, boolean>>({ cadence: false, library: false, pins: false, playlists: false });
 
+  const row = (key: string, label: string, icon: ReactNode, active: boolean, go: () => void, trailing?: ReactNode) => (
+    <button
+      key={key}
+      className={`side-row ${active ? 'is-active' : ''}`}
+      aria-current={active ? 'page' : undefined}
+      title={collapsed ? label : undefined}
+      aria-label={collapsed ? label : undefined}
+      onClick={go}
+    >
+      <span className="side-row-icon">{icon}</span>
+      <span className="side-row-label">{label}</span>
+      {trailing}
+    </button>
+  );
 
-  const navRow = (target: 'home' | 'library' | 'sources', label: string) => {
-    const isActive = activePage === target;
-    return (
+  const section = (id: SectionId, title: string, children: ReactNode) => (
+    <section className="side-section" aria-label={title}>
       <button
-        key={target}
-        className={`sidebar-nav-row ${isActive ? 'is-active' : ''}`}
-        aria-current={isActive ? 'page' : undefined}
-        title={collapsed ? label : undefined}
-        onClick={() => onNavigate(target)}
+        className="side-section-head"
+        aria-expanded={!closed[id]}
+        onClick={() => setClosed((c) => ({ ...c, [id]: !c[id] }))}
       >
-        <span className="sidebar-row-icon"><Glyph name={target as NavSection} size={16} /></span>
-        {!collapsed && <span className="sidebar-row-label">{label}</span>}
+        <span>{title}</span>
+        <span className={`side-chevron ${closed[id] ? 'is-closed' : ''}`}><ChevronIcon size={15} /></span>
       </button>
-    );
+      {(!closed[id] || collapsed) && <div className="side-section-rows">{children}</div>}
+    </section>
+  );
+
+  const isLib = (tab: string) => location.page === 'library' && location.tab === tab;
+  const openSearch = (query: string) => {
+    session.setLibraryQuery(query);
+    onNavigate({ page: 'library', tab: 'songs' });
   };
 
   return (
-    <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Main sidebar">
-      <div className="sidebar-brand">
-        <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
-        {!collapsed && <span className="sidebar-brand-name">cadence</span>}
-      </div>
-
-      <label className="sidebar-search">
-        <SearchIcon size={16} />
-        {!collapsed && <input aria-label="Search Cadence" placeholder="Search your music" onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            session.setLibraryQuery(event.currentTarget.value.trim());
-            onNavigate('library');
-          }
-        }} />}
-        {collapsed && <span className="sidebar-search-tooltip">Search</span>}
-        {(collapsed || compact) && (
-          <button
-            className="sidebar-compact-search-hit"
+    <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Sidebar">
+      <div className="side-search">
+        <button className="side-search-btn" aria-label="Search" title="Search" onClick={() => {
+          openSearch('');
+          setTimeout(() => document.querySelector<HTMLInputElement>('.lib-search input')?.focus(), 60);
+        }}>
+          <SearchIcon size={18} />
+        </button>
+        <label className="side-search-field">
+          <input
             aria-label="Search your music"
-            onClick={() => {
-              session.setLibraryQuery('');
-              onNavigate('library');
-              setTimeout(() => (document.querySelector<HTMLElement>('.lib-search input') ?? document.querySelector<HTMLElement>('.lib-bar input'))?.focus(), 60);
+            placeholder="Search"
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              openSearch(event.currentTarget.value.trim());
+              event.currentTarget.value = '';
             }}
           />
-        )}
-      </label>
+          <SearchIcon size={16} />
+        </label>
+      </div>
 
-      <nav className="sidebar-nav" aria-label="Library navigation">
-        {navRow('home', 'Home')}
-        {navRow('library', 'Library')}
-        {navRow('sources', 'Sources')}
+      <nav className="side-scroll" aria-label="Main navigation">
+        {section('cadence', 'Cadence', <>
+          {row('home', 'Home', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
+          {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
+        </>)}
+        {section('library', 'Library', <>
+          {row('songs', 'Songs', <SongIcon size={19} />, isLib('songs'), () => onNavigate({ page: 'library', tab: 'songs' }))}
+          {row('albums', 'Albums', <AlbumsIcon size={19} />, isLib('albums'), () => onNavigate({ page: 'library', tab: 'albums' }))}
+          {row('artists', 'Artists', <ArtistIcon size={19} />, isLib('artists'), () => onNavigate({ page: 'library', tab: 'artists' }))}
+        </>)}
+        {pins.length > 0 && section('pins', 'Pins', pins.map((album) =>
+          row(
+            album.id,
+            album.title,
+            album.artwork ? <img className="side-thumb" src={album.artwork.url} alt="" /> : <AlbumsIcon size={19} />,
+            location.page === 'album' && location.album.id === album.id,
+            () => onNavigate({ page: 'album', album }),
+          ),
+        ))}
+        {section('playlists', 'Playlists', <>
+          {row(
+            'favorites',
+            'Favourite Songs',
+            <StarIcon size={19} />,
+            location.page === 'favorites',
+            () => onNavigate({ page: 'favorites' }),
+            favoriteCount > 0 && !collapsed ? <span className="side-count">{favoriteCount}</span> : undefined,
+          )}
+        </>)}
       </nav>
-
-      {!collapsed && (
-        <div className="sidebar-footer">
-          <span className="sidebar-live-dot" />
-          <span>Music, in one place</span>
-        </div>
-      )}
     </aside>
   );
 }

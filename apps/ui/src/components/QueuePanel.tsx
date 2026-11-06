@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
-import { session } from '../app';
+import { session } from '../session';
 import { formatTime } from '../format';
 import { useUi } from '../hooks';
 import { displayOrder } from '../store';

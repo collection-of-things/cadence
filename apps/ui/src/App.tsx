@@ -1,52 +1,66 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { LibraryAlbum } from '@cadence/protocol';
-import { session } from './app';
+import { session } from './session';
+import { recordPlayed } from './collection';
 import { AlbumView } from './components/AlbumView';
+import { FavoritesView } from './components/FavoritesView';
 import { HomeView } from './components/HomeView';
+import { LibraryView, type LibraryTab } from './components/LibraryView';
+import { LyricsRail } from './components/LyricsRail';
+import { NowPlayingFull } from './components/NowPlayingFull';
 import { PlayerBar } from './components/PlayerBar';
-import { LibraryView } from './components/LibraryView';
-import { NowPlaying } from './components/NowPlaying';
 import { QueuePanel } from './components/QueuePanel';
-import { SettingsSheet } from './components/SettingsSheet';
-import { Sidebar, type ShellPage } from './components/Sidebar';
+import { Sidebar } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
-import { createPortal } from 'react-dom';
 import { TopBar } from './components/TopBar';
 import { positionNow, useMediaSession, useUi } from './hooks';
 import { extractPalette, DEFAULT_PALETTE } from './palette';
 
-interface Location {
-  page: ShellPage;
-  album?: LibraryAlbum;
+/** Where the browse stage is. The now-playing overlay is not a location. */
+export type Location =
+  | { page: 'home' }
+  | { page: 'library'; tab: LibraryTab }
+  | { page: 'favorites' }
+  | { page: 'sources' }
+  | { page: 'album'; album: LibraryAlbum };
+
+const TABS_MAX = 6;
+
+export function sameLocation(a: Location, b: Location): boolean {
+  if (a.page !== b.page) return false;
+  if (a.page === 'library' && b.page === 'library') return a.tab === b.tab;
+  if (a.page === 'album' && b.page === 'album') return a.album.id === b.album.id;
+  return true;
 }
 
 export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
-  const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const hasTrack = useUi((s) => s.snapshot.current !== null);
-  const artUrl = useUi((s) => s.snapshot.current?.track.artwork?.url);
+  const expanded = useUi((s) => s.nowPlayingExpanded) && hasTrack;
+  const track = useUi((s) => s.snapshot.current?.track);
   const [location, setLocation] = useState<Location>({ page: 'home' });
-  const npExpanded = expanded && location.page === 'now';
   const [backStack, setBackStack] = useState<Location[]>([]);
   const [forwardStack, setForwardStack] = useState<Location[]>([]);
+  // Recently opened album pages, shown as tabs in the top bar.
+  const [tabs, setTabs] = useState<LibraryAlbum[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const previousStoreView = useRef(view);
+  const [railOpen, setRailOpen] = useState(false);
+  const locationRef = useRef(location);
+  locationRef.current = location;
   useMediaSession();
 
   useEffect(() => {
-    // Clear only when both truths left 'now' — the view→location handoff
-    // otherwise collapses the overlay right after it opens.
-    if ((location.page !== 'now' && view !== 'now' && expanded) ||
-        (!hasTrack && expanded)) session.setNowPlayingExpanded(false);
-  }, [location.page, view, expanded, hasTrack]);
+    if (!hasTrack && expanded) session.setNowPlayingExpanded(false);
+  }, [hasTrack, expanded]);
 
   useEffect(() => {
-    previousStoreView.current = 'home';
-    session.setView('home');
-  }, []);
+    if (track) recordPlayed(track);
+  }, [track]);
 
+  const artUrl = track?.artwork?.url;
   useEffect(() => {
     let live = true;
     if (!artUrl) {
@@ -61,19 +75,45 @@ export function App() {
     };
   }, [artUrl]);
 
+  const navigate = useCallback((next: Location) => {
+    const current = locationRef.current;
+    if (sameLocation(next, current)) return;
+    setBackStack((stack) => [...stack, current]);
+    setForwardStack([]);
+    setLocation(next);
+    if (next.page === 'album') {
+      const album = next.album;
+      setTabs((list) => [...list.filter((a) => a.id !== album.id), album].slice(-TABS_MAX));
+    }
+  }, []);
+
+  // External view requests (store.setView from capture scripts, other
+  // components): 'now' opens the overlay, the rest navigate.
   useEffect(() => {
     if (viewNonce === 0) return;
-    if (previousStoreView.current === view && location.page === view) return;
-    if (previousStoreView.current !== view || location.page !== view) {
-      if (location.page !== view) setBackStack((stack) => [...stack, location]);
-      setForwardStack([]);
-      setLocation({ page: view });
-    }
-    previousStoreView.current = view;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewNonce]);
+    if (view === 'now') session.setNowPlayingExpanded(true);
+    else if (view === 'library') navigate({ page: 'library', tab: 'albums' });
+    else navigate({ page: view });
+  }, [viewNonce, view, navigate]);
+
+  const goBack = () => {
+    const previous = backStack.at(-1);
+    if (!previous) return;
+    setBackStack((stack) => stack.slice(0, -1));
+    setForwardStack((stack) => [...stack, location]);
+    setLocation(previous);
+  };
+
+  const goForward = () => {
+    const next = forwardStack.at(-1);
+    if (!next) return;
+    setForwardStack((stack) => stack.slice(0, -1));
+    setBackStack((stack) => [...stack, location]);
+    setLocation(next);
+  };
 
   useEffect(() => {
+    // Buttons never take focus on mousedown, so Space stays play/pause.
     const onDown = (e: MouseEvent) => {
       const el = e.target as HTMLElement | null;
       if (el?.closest?.('button')) e.preventDefault();
@@ -89,10 +129,10 @@ export function App() {
       if (tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
       // Focusable containers own their Enter/Space; other keys still pass.
       if ((e.key === ' ' || e.key === 'Enter') &&
-          el?.closest?.('.q-row, .tr-row, .album-track-row, .src-hit, [data-lyric], [role="button"], button, a')) return;
+          el?.closest?.('.q-row, .tr-row, .track-row, .src-hit, [data-lyric], [role="button"], [role="menu"], button, a')) return;
       // Focused scrollable regions own their scrolling keys only.
       if ((e.key.startsWith('Arrow') || e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') &&
-          el?.closest?.('.full-lyrics-scroll, .queue, .lib, .home-scroll, .album-track-list, .src, .sidebar')) return;
+          el?.closest?.('.lyrics-scroll, .queue, .lib, .stage-scroll, .src, .sidebar, .lyrics-rail')) return;
       // Volume lives behind Ctrl — plain arrows scroll.
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey) return;
       if (tag === 'INPUT') {
@@ -115,16 +155,12 @@ export function App() {
           session.seek(positionNow() - (e.shiftKey ? 30_000 : 5_000));
           break;
         case 'ArrowUp':
-          if (e.ctrlKey) {
-            e.preventDefault();
-            session.setVolume(s.snapshot.volume + 0.05);
-          }
+          e.preventDefault();
+          session.setVolume(s.snapshot.volume + 0.05);
           break;
         case 'ArrowDown':
-          if (e.ctrlKey) {
-            e.preventDefault();
-            session.setVolume(s.snapshot.volume - 0.05);
-          }
+          e.preventDefault();
+          session.setVolume(s.snapshot.volume - 0.05);
           break;
         case 'q':
         case 'Q':
@@ -134,82 +170,52 @@ export function App() {
         case 'M':
           session.toggleMute();
           break;
+        case 'l':
+        case 'L':
+          if (s.snapshot.current) setRailOpen((open) => !open);
+          break;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const navigate = (next: Location) => {
-    if (next.page === location.page && !next.album) return; // same page — no history entry
-    setBackStack((stack) => [...stack, location]);
-    setForwardStack([]);
-    setLocation(next);
-    if (next.page !== 'album' && next.page !== 'playlist') {
-      previousStoreView.current = next.page;
-      session.setView(next.page);
-    }
-  };
-
-  const goBack = () => {
-    const previous = backStack.at(-1);
-    if (!previous) return;
-    setBackStack((stack) => stack.slice(0, -1));
-    setForwardStack((stack) => [...stack, location]);
-    setLocation(previous);
-    if (previous.page !== 'album' && previous.page !== 'playlist') {
-      previousStoreView.current = previous.page;
-      session.setView(previous.page);
-    }
-  };
-
-  const goForward = () => {
-    const next = forwardStack.at(-1);
-    if (!next) return;
-    setForwardStack((stack) => stack.slice(0, -1));
-    setBackStack((stack) => [...stack, location]);
-    setLocation(next);
-    if (next.page !== 'album' && next.page !== 'playlist') {
-      previousStoreView.current = next.page;
-      session.setView(next.page);
-    }
-  };
-
   const openAlbum = (album: LibraryAlbum) => navigate({ page: 'album', album });
-  const activePage = location.page === 'album' || location.page === 'playlist' ? 'library' : location.page;
+  const openNowPlaying = () => session.setNowPlayingExpanded(true);
+  const rail = railOpen && hasTrack;
 
   return (
-    <div className={`app app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
-      <Sidebar
-        activePage={location.page === 'playlist' ? 'playlist' : activePage}
-        collapsed={sidebarCollapsed}
-        onNavigate={(page) => navigate({ page })}
-      />
-      <div className="shell-stage">
+    <div className={`app ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${rail ? 'has-rail' : ''}`}>
+      <Sidebar location={location} collapsed={sidebarCollapsed} onNavigate={navigate} />
+      <div className="stage">
         <TopBar
-          activePage={activePage}
+          location={location}
+          tabs={tabs}
           canGoBack={backStack.length > 0}
           canGoForward={forwardStack.length > 0}
           sidebarCollapsed={sidebarCollapsed}
+          railOpen={rail}
           onBack={goBack}
           onForward={goForward}
-          onNavigate={(page) => navigate({ page })}
+          onOpenAlbum={openAlbum}
           onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          onToggleRail={() => setRailOpen((open) => !open)}
         />
-        <main className="main shell-main">
+        <main className="stage-main">
           {location.page === 'home' && <HomeView onSelectAlbum={openAlbum} />}
-          {location.page === 'library' && <LibraryView onSelectAlbum={openAlbum} />}
-          {location.page === 'album' && location.album && (
-            <AlbumView album={location.album} onBack={goBack} />
+          {location.page === 'library' && (
+            <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
           )}
-          {location.page === 'playlist' && <div className="home-view"><div className="home-scroll"><header className="home-intro"><h1>Playlists</h1></header><div className="home-empty"><div><h2>Playlists are coming soon</h2><p>Your playlists will appear here.</p></div></div></div></div>}
+          {location.page === 'favorites' && <FavoritesView />}
+          {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}
           {location.page === 'sources' && <SourcesView />}
-          {location.page === 'now' && <NowPlaying />}
         </main>
+        {!expanded && <PlayerBar onOpenNowPlaying={openNowPlaying} />}
       </div>
-      {!npExpanded && <PlayerBar />}
+      {rail && <LyricsRail />}
       <QueuePanel />
-{createPortal(<Toasts />, document.body)}
+      {expanded && createPortal(<NowPlayingFull onClose={() => session.setNowPlayingExpanded(false)} />, document.body)}
+      {createPortal(<Toasts />, document.body)}
     </div>
   );
 }

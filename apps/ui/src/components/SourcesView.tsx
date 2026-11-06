@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RouteCapabilities, RouteId, TrackRef } from '@cadence/protocol';
-import { api, session } from '../app';
+import { api, session } from '../session';
 import { artistsLine, formatTime } from '../format';
 import { useUi } from '../hooks';
 import { NoteIcon, PlusIcon, SearchIcon } from '../icons';

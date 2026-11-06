@@ -1,16 +1,12 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
-import { api, session } from '../app';
-import { formatTime } from '../format';
+import { api, session } from '../session';
+import { togglePin, useCollection } from '../collection';
 import { useUi } from '../hooks';
-import { NoteIcon, PlayIcon, PlusIcon, ShuffleIcon } from '../icons';
+import { CheckIcon, ClockIcon, NoteIcon, PinIcon, PlayIcon, PlusIcon, SearchIcon, ShuffleIcon, SongIcon, SortIcon } from '../icons';
 import { DEFAULT_PALETTE, extractPalette, type Rgb } from '../palette';
+import { TrackRow } from './TrackRow';
 import './home.css';
-
-interface AlbumViewProps {
-  album: LibraryAlbum;
-  onBack(): void;
-}
 
 function shuffled<T>(items: T[]): T[] {
   const out = [...items];
@@ -21,147 +17,156 @@ function shuffled<T>(items: T[]): T[] {
   return out;
 }
 
-function TrackRow({ track, index, onPlay, albumArtist }: { track: TrackRef; index: number; onPlay(): void; albumArtist?: string }) {
-  const isCurrent = useUi((s) => s.snapshot.current?.track.id === track.id);
-  const playing = useUi((s) => s.snapshot.status === 'playing');
-  return (
-    <div
-      className={`album-track-row ${isCurrent ? 'now' : ''}`}
-      tabIndex={0}
-      onClick={onPlay}
-      onKeyDown={(event) => {
-        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
-          event.preventDefault();
-          onPlay();
-        }
-      }}
-    >
-      <span className="album-track-index">
-        {isCurrent && playing
-          ? <span className="q-eq on" aria-hidden="true"><i /><i /><i /></span>
-          : String(index + 1).padStart(2, '0')}
-      </span>
-      <span className="album-track-copy">
-        <span className="album-track-title">{track.title}</span>
-        {track.artists.map((a) => a.name).join(', ') !== albumArtist && (
-          <span className="album-track-artist">{track.artists.map((artist) => artist.name).join(', ')}</span>
-        )}
-      </span>
-      <span className="album-track-duration">{formatTime(track.durationMs)}</span>
-      <button
-        className="album-track-add"
-        aria-label={`Add ${track.title} next`}
-        title="Play next"
-        onClick={(event) => {
-          event.stopPropagation();
-          session.insertNext(track);
-        }}
-      >
-        <PlusIcon size={16} />
-      </button>
-    </div>
-  );
-}
+type Sort = 'track' | 'title' | 'duration';
+const SORT_LABEL: Record<Sort, string> = { track: 'Track order', title: 'Title', duration: 'Duration' };
+const NEXT_SORT: Record<Sort, Sort> = { track: 'title', title: 'duration', duration: 'track' };
 
-export function AlbumView({ album, onBack }: AlbumViewProps) {
+/** Album detail: artwork-washed hero, facts, actions and a filterable track list. */
+export function AlbumView({ album }: { album: LibraryAlbum }) {
   const [tracks, setTracks] = useState<TrackRef[] | null>(null);
-  const [albumPalette, setAlbumPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
+  const [palette, setPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
+  const [filter, setFilter] = useState<string | null>(null);
+  const [sort, setSort] = useState<Sort>('track');
+  const filterRef = useRef<HTMLInputElement>(null);
   const scan = useUi((s) => s.scan);
+  const filtering = filter !== null;
+  const pinned = useCollection((s) => s.pins.some((p) => p.id === album.id));
 
   useEffect(() => {
     let live = true;
     setTracks(null);
-    void api.library.tracks({ album: album.title, artist: album.artist }).then((result) => {
-      if (live) setTracks(result);
-    }).catch(() => {
-      if (live) setTracks([]);
-    });
+    void api.library.tracks({ album: album.title, artist: album.artist })
+      .then((result) => live && setTracks(result))
+      .catch(() => live && setTracks([]));
     return () => {
       live = false;
     };
-  }, [album.id, album.title, album.artist, scan.phase]);
+  }, [album.title, album.artist, scan.phase]);
 
   useEffect(() => {
     let live = true;
-    if (!album.artwork?.url) {
-      setAlbumPalette(DEFAULT_PALETTE);
-      return;
-    }
-    void extractPalette(album.artwork.url).then((result) => {
-      if (live) setAlbumPalette(result ?? DEFAULT_PALETTE);
-    });
+    if (!album.artwork?.url) return;
+    void extractPalette(album.artwork.url).then((result) => live && setPalette(result ?? DEFAULT_PALETTE));
     return () => {
       live = false;
     };
   }, [album.artwork?.url]);
 
-  const firstTrack = tracks?.[0];
-  const genre = firstTrack?.genre?.[0];
-  const year = album.year ?? firstTrack?.year;
-  const totalDuration = tracks?.reduce((sum, track) => sum + track.durationMs, 0) ?? 0;
-  const tone = albumPalette[0] ?? DEFAULT_PALETTE[0]!;
-  const pageStyle = { '--album-rgb': tone.join(' ') } as CSSProperties;
-  const origin = { kind: 'album' as const, id: album.id, name: album.title };
+  useEffect(() => {
+    if (filtering) filterRef.current?.focus();
+  }, [filtering]);
 
-  const playAll = () => {
-    if (tracks?.length) session.playTracks(tracks, 0, origin);
-  };
+  const shown = useMemo(() => {
+    if (!tracks) return [];
+    const q = filter?.trim().toLowerCase();
+    const list = q ? tracks.filter((t) => t.title.toLowerCase().includes(q)) : [...tracks];
+    if (sort === 'title') list.sort((a, b) => a.title.localeCompare(b.title));
+    if (sort === 'duration') list.sort((a, b) => a.durationMs - b.durationMs);
+    return list;
+  }, [tracks, filter, sort]);
+
+  const genre = tracks?.[0]?.genre?.[0];
+  const year = album.year ?? tracks?.[0]?.year;
+  const count = tracks?.length ?? album.trackCount;
+  const [c0, c1] = [palette[0] ?? DEFAULT_PALETTE[0]!, palette[1] ?? palette[0] ?? DEFAULT_PALETTE[0]!];
+  const style = { '--wash-a': c0.join(' '), '--wash-b': c1.join(' ') } as CSSProperties;
+  const origin = { kind: 'album' as const, id: album.id, name: album.title };
+  const ready = !!tracks?.length;
 
   return (
-    <div className="album-page" style={pageStyle}>
-      <div className="album-page-glow" aria-hidden="true" />
-      <div className="album-page-scroll">
-        <button className="album-back" onClick={onBack}>
-          <BackArrow /> <span>Back</span>
-        </button>
+    <div className="album" style={style}>
+      <div className="album-wash" aria-hidden="true" />
+      <div className="stage-scroll album-scroll">
+        <div className="album-corner">
+          <button
+            className={`round-btn ${pinned ? 'is-on' : ''}`}
+            aria-label={pinned ? 'Unpin album' : 'Pin album to sidebar'}
+            aria-pressed={pinned}
+            title={pinned ? 'Unpin' : 'Pin to sidebar'}
+            onClick={() => togglePin(album)}
+          >
+            <PinIcon size={18} filled={pinned} />
+          </button>
+        </div>
         <section className="album-hero">
-          <div className="album-artwork-wrap">
-            {album.artwork ? <img className="album-artwork" src={album.artwork.url} alt={`${album.title} album artwork`} /> : <div className="album-artwork album-artwork-empty"><NoteIcon size={58} /></div>}
+          <div className="album-art">
+            {album.artwork ? <img src={album.artwork.url} alt={`${album.title} artwork`} draggable={false} /> : <NoteIcon size={64} />}
           </div>
-          <div className="album-details">
-            <span className="album-eyebrow">ALBUM</span>
+          <div className="album-info">
             <h1>{album.title}</h1>
-            <p className="album-artist-name">{album.artist}</p>
-            <div className="album-facts" aria-label="Album details">
-              {genre && <span className="album-fact">{genre}</span>}
-              {year && <span className="album-fact">{year}</span>}
-              <span className="album-fact">{tracks?.length ?? album.trackCount} tracks</span>
-              {tracks && <span className="album-fact">{formatTime(totalDuration)}</span>}
+            <div className="album-byline">
+              <span className="album-avatar" aria-hidden="true">
+                {album.artwork ? <img src={album.artwork.url} alt="" /> : album.artist.slice(0, 1)}
+              </span>
+              <span>{album.artist}</span>
+              {pinned && <span className="album-pinned" title="Pinned"><CheckIcon size={16} /></span>}
+            </div>
+            <div className="album-chips">
+              {genre && <span className="chip"><NoteIcon size={13} />{genre}</span>}
+              {year && <span className="chip"><ClockIcon size={13} />{year}</span>}
+              <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'track' : 'tracks'}</span>
             </div>
             <div className="album-actions">
-              <button className="album-shuffle" aria-label="Shuffle album" title="Shuffle album" disabled={!tracks?.length} onClick={() => tracks?.length && session.playTracks(shuffled(tracks), 0, origin)}>
-                <ShuffleIcon size={18} />
+              <button className="round-btn round-btn-lg" aria-label="Shuffle album" title="Shuffle" disabled={!ready} onClick={() => tracks && session.playTracks(shuffled(tracks), 0, origin)}>
+                <ShuffleIcon size={19} />
               </button>
-              <button className="album-play" disabled={!tracks?.length} onClick={playAll}>
-                <PlayIcon size={19} /> <span>Play album</span>
+              <button className="play-pill" disabled={!ready} onClick={() => tracks && session.playTracks(tracks, 0, origin)}>
+                <PlayIcon size={18} /> Play
               </button>
-              <button className="album-add" aria-label="Add album to queue" title="Add album to queue" disabled={!tracks?.length} onClick={() => tracks?.forEach((track) => session.append(track))}>
-                <PlusIcon size={19} />
+              <button className="round-btn round-btn-lg" aria-label="Add album to queue" title="Add to queue" disabled={!ready} onClick={() => tracks?.forEach((t) => session.append(t))}>
+                <PlusIcon size={20} />
               </button>
             </div>
           </div>
         </section>
 
-        <section className="album-tracklist" aria-label={`${album.title} track list`}>
-          <div className="album-tracklist-head">
-            <h2>Tracks</h2>
-            {tracks && <span>{tracks.length} songs</span>}
+        <section className="album-tracks" aria-label={`${album.title} tracks`}>
+          <div className="list-toolbar">
+            {filter === null ? (
+              <button className="ghost-btn" aria-label="Filter tracks" title="Filter tracks" onClick={() => setFilter('')}>
+                <SearchIcon size={17} />
+              </button>
+            ) : (
+              <label className="list-filter">
+                <SearchIcon size={16} />
+                <input
+                  ref={filterRef}
+                  aria-label="Filter tracks"
+                  placeholder="Filter tracks"
+                  value={filter}
+                  onChange={(e) => setFilter(e.currentTarget.value)}
+                  onBlur={(e) => !e.currentTarget.value && setFilter(null)}
+                  onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setFilter(null))}
+                />
+              </label>
+            )}
+            <button className="ghost-btn" aria-label={`Sort: ${SORT_LABEL[sort]}`} title={`Sort: ${SORT_LABEL[sort]}`} onClick={() => setSort(NEXT_SORT[sort])}>
+              <SortIcon size={17} />
+              {sort !== 'track' && <span className="ghost-btn-text">{SORT_LABEL[sort]}</span>}
+            </button>
           </div>
           {tracks === null ? (
-            <div className="album-track-status" role="status">Loading tracks…</div>
-          ) : tracks.length === 0 ? (
-            <div className="album-track-status">No tracks found for this album.</div>
+            <div className="track-list" aria-hidden="true">
+              {Array.from({ length: 7 }, (_, i) => <span key={i} className="skeleton skeleton-row" />)}
+            </div>
+          ) : shown.length === 0 ? (
+            <p className="list-empty">{tracks.length ? 'No tracks match.' : 'No tracks found for this album.'}</p>
           ) : (
-            <div className="album-track-list">
-              {tracks.map((track, index) => <TrackRow key={track.id} track={track} index={index} albumArtist={album.artist} onPlay={() => session.playTracks(tracks, index, origin)} />)}
+            <div className="track-list">
+              {shown.map((track) => (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  index={(track.trackNumber ?? tracks.indexOf(track) + 1) - 1}
+                  variant="album"
+                  albumArtist={album.artist}
+                  onPlay={() => session.playTracks(shown, shown.indexOf(track), origin)}
+                />
+              ))}
             </div>
           )}
         </section>
       </div>
     </div>
   );
-}
-
-function BackArrow() {
-  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.8 5.5-6.5 6.5 6.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
