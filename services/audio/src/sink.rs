@@ -631,6 +631,7 @@ impl DeviceCaps for CpalCaps {
             feed,
             dead,
             staged: staged_fn,
+            rate_hz: neg.rate,
         }))
     }
 }
@@ -640,6 +641,7 @@ struct CpalSink {
     feed: FeedGuard,
     dead: Arc<AtomicBool>,
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
+    rate_hz: u32,
 }
 
 // cpal marks Stream !Send (portability across hosts), but the Cadence engine
@@ -660,6 +662,17 @@ impl Sink for CpalSink {
 
     fn staged_frames(&self) -> u64 {
         (self.staged)()
+    }
+
+    fn device_delay_frames(&self) -> u64 {
+        // BufferSize::Default leaves the real depth opaque — report a
+        // conservative ~200ms so the end-of-track fallback waits long
+        // enough for the tail (never less, never unbounded).
+        self.rate_hz as u64 / 5
+    }
+
+    fn format_rate_hz(&self) -> u64 {
+        self.rate_hz as u64
     }
 }
 

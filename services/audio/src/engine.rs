@@ -2735,6 +2735,7 @@ impl Engine {
             std::time::Instant,
             u64,
             Option<(u64, u64)>,
+            Option<std::time::Instant>,
         )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
@@ -2863,6 +2864,7 @@ impl Engine {
                             std::time::Instant::now(),
                             deadline_ms,
                             None,
+                            None,
                         ));
                     }
                 }
@@ -2875,7 +2877,7 @@ impl Engine {
             // quantum. Issue a drain and wait for the `drained` event
             // (mpv's pw_stream_flush model); the deadline bounds a
             // stalled graph.
-            while let Some((qid, inst, since, deadline_ms, issued)) =
+            while let Some((qid, inst, since, deadline_ms, issued, ring0)) =
                 pending_ends.pop_front()
             {
                 // Ownership first: a parked end superseded by a load
@@ -3004,6 +3006,7 @@ impl Engine {
                             std::time::Instant::now(),
                             deadline_ms,
                             issued,
+                            ring0,
                         ));
                         break;
                     }
@@ -3014,6 +3017,7 @@ impl Engine {
                             since,
                             deadline_ms,
                             drain_base,
+                            ring0,
                         ));
                         break;
                     }
@@ -3035,7 +3039,13 @@ impl Engine {
                                 f * 1000 / r + 50
                             })
                             .unwrap_or(0);
-                        if since.elapsed()
+                        // Reaching this arm proves staged==0 — stamp
+                        // ring0 the first time; the downstream wait
+                        // runs from the ring-empty moment, NOT from
+                        // park time (a long ring drain mustn't absorb
+                        // the graph-side delay).
+                        let r0 = ring0.unwrap_or_else(std::time::Instant::now);
+                        if r0.elapsed()
                             > std::time::Duration::from_millis(wait_ms)
                         {
                             self.handle_track_end(qid, inst);
@@ -3046,6 +3056,7 @@ impl Engine {
                                 since,
                                 deadline_ms,
                                 issued,
+                                Some(r0),
                             ));
                             break;
                         }
@@ -3082,6 +3093,7 @@ impl Engine {
                                 since,
                                 deadline_ms,
                                 issued,
+                                ring0,
                             ));
                             break;
                         }

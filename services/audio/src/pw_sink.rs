@@ -1048,10 +1048,28 @@ impl Sink for PipeWireSink {
     fn drained_since(&self, baseline: u64) -> bool {
         // OUR marker must have run (proves every event queued before
         // this request was delivered and folded into `settled`), then
-        // a strictly newer drained event is a real completion.
-        self.barrier.dispatched.load(Ordering::Acquire) >= baseline
-            && self.drained_seq.load(Ordering::Acquire)
-                > self.barrier.settled.load(Ordering::Acquire)
+        // EITHER a strictly newer drained event, OR a post-marker
+        // process-callback stall — `drained` latches `draining`
+        // upstream, stopping process() for good, so the callback
+        // going quiet IS the completion signal (covers PipeWire's
+        // notification coalescing, which can suppress our event when
+        // an old one was still pending).
+        if self.barrier.dispatched.load(Ordering::Acquire) < baseline {
+            return false;
+        }
+        if self.drained_seq.load(Ordering::Acquire)
+            > self.barrier.settled.load(Ordering::Acquire)
+        {
+            return true;
+        }
+        // ~4 quanta of silence from the RT callback = drained.
+        let stall_ms = 2048 * 4000 / self.rate_hz + 40;
+        let last = self.last_process_ms.load(Ordering::Acquire);
+        self.t0
+            .elapsed()
+            .as_millis()
+            .saturating_sub(last as u128)
+            > stall_ms as u128
     }
 
     fn resume(&self) {
