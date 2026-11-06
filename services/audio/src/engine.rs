@@ -996,7 +996,11 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
-                positions: None,
+                // Resolved like any other negotiation — a device-default
+                // stereo stream IS FL/FR, and comparing None here would
+                // force a spurious rebuild against a native-labeled one.
+                positions: crate::sink::resolve_positions(
+                    None, caps.default_channels()),
             },
             false,
         )

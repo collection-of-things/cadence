@@ -296,7 +296,7 @@ def ffprobe_channels(path):
     return int(out)
 
 
-def ffmpeg_ref(path, tap_channels):
+def ffmpeg_ref(path, tap_channels=2):
     """Reference in the tap's channel count. A mono source played into a
     stereo tap at MONO labeling is duplicated at unity — NOT ffmpeg -ac 2,
     which applies the -3 dB center matrix."""
@@ -858,7 +858,7 @@ def main():
             # MONO semantics) stays the gate.
             print("  mpv     vs ffmpeg: skipped (mono: mpv uses its own "
                   "upmix, not MONO unity-dup)")
-            ok_m, zm, x_m = True, 0, True
+            ok_m, zm, x_m = True, 0, None
         else:
             ok_m, zm, x_m = compare(
                 "mpv", mcap, ref, ch, "mpv     vs ffmpeg",
@@ -868,7 +868,8 @@ def main():
         # `*_exact` requires literally zero diffs (Sol: a 32-diff
         # tolerance must not wear the name).
         results["cadence_vs_ffmpeg_exact"] = x_c
-        results["mpv_vs_ffmpeg_exact"] = x_m
+        if x_m is not None:
+            results["mpv_vs_ffmpeg_exact"] = x_m
         # Mid-signal zero runs are dropouts — gate them too.
         results["cadence_no_dropouts"] = zc == 0
         results["mpv_no_dropouts"] = zm == 0
@@ -884,7 +885,6 @@ def main():
             print("  cadence vs mpv    : skipped (mono: mpv uses its own "
                   "upmix, not MONO unity-dup)")
             results["cadence_vs_mpv_ok"] = True
-            results["cadence_vs_mpv_exact"] = True
             silent = False
             res = np.zeros(0, dtype="<f4")
             cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
