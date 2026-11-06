@@ -281,6 +281,15 @@ pub trait Sink: Send {
     fn drain_marker_ran(&self, _baseline: u64) -> bool {
         true
     }
+    /// Re-issue a drain whose completion may have been coalesced,
+    /// rechecking `drained_since(baseline)` under the loop lock so a
+    /// completion arriving between the caller's check and the new
+    /// marker can never be silently folded away. Returns the new
+    /// baseline, None when unsupported, or `u64::MAX` when the
+    /// original request is already complete.
+    fn retry_drain(&self, _baseline: u64) -> Option<u64> {
+        None
+    }
     /// Reactivate a stream that was drained or suspended — PipeWire
     /// documents reactivation after a drain; no-op for backends that
     /// don't need it. Called whenever playback resumes on a reused sink.

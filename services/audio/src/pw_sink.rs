@@ -1064,6 +1064,22 @@ impl Sink for PipeWireSink {
         self.barrier.dispatched.load(Ordering::Acquire) >= baseline
     }
 
+    fn retry_drain(&self, baseline: u64) -> Option<u64> {
+        // Under `tl` the main loop cannot dispatch — so drained_seq
+        // and `settled` are frozen for the whole check-and-issue.
+        // If the original completion already landed (possibly folded
+        // into a later marker's settled… no — completions can only
+        // ADD to drained_seq; drained_since(baseline) still detects
+        // it), report u64::MAX instead of re-draining.
+        {
+            let _g = self.tl.lock();
+            if self.drained_since(baseline) {
+                return Some(u64::MAX);
+            }
+        }
+        self.request_drain()
+    }
+
     fn drain_fallback_ms(&self) -> u64 {
         // Measured graph-side delay → ms + a quantum of slack.
         let f = self.device_delay_frames();

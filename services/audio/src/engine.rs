@@ -3109,6 +3109,11 @@ impl Engine {
                                         100,
                                     )
                                 {
+                                    // The state guard is held THROUGH
+                                    // the retry — same discipline as
+                                    // the initial request: a load or
+                                    // pause can't land between the
+                                    // checks and the flush.
                                     let g =
                                         self.sink.lock().unwrap();
                                     if let Some(s) = g.as_ref() {
@@ -3117,28 +3122,62 @@ impl Engine {
                                                 .state
                                                 .lock()
                                                 .unwrap();
-                                            st.queue_id.as_deref()
+                                            let own = st.queue_id
+                                                .as_deref()
                                                 == Some(qid.as_str())
                                                 && st.current_instance
                                                     == inst
                                                 && st.state
-                                                    != PlayState::Paused
-                                        };
-                                        if ok
-                                            && self.sink_gen
-                                                .load(Ordering::Acquire)
-                                                == gen
-                                            && s.drain_marker_ran(b)
-                                        {
-                                            if let Some(b2) =
-                                                s.request_drain()
-                                            {
-                                                drain_base = Some((
-                                                    b2,
-                                                    gen,
-                                                    std::time::Instant::now(),
-                                                ));
+                                                    != PlayState::Paused;
+                                            let r = own
+                                                && self.sink_gen
+                                                    .load(
+                                                        Ordering::Acquire,
+                                                    )
+                                                    == gen
+                                                && s.drain_marker_ran(
+                                                    b,
+                                                );
+                                            if r {
+                                                s.retry_drain(b).map(
+                                                    |b2| {
+                                                        (
+                                                            b2,
+                                                            gen,
+                                                            std::time::Instant::now(),
+                                                        )
+                                                    },
+                                                )
+                                            } else {
+                                                None
                                             }
+                                        };
+                                        match ok {
+                                            Some((
+                                                u64::MAX,
+                                                _,
+                                                _,
+                                            )) => {
+                                                // retry_drain's
+                                                // recheck under tl
+                                                // found the original
+                                                // completion — resume
+                                                // + handle now.
+                                                if let Some(s2) =
+                                                    g.as_ref()
+                                                {
+                                                    s2.resume();
+                                                }
+                                                self.handle_track_end(
+                                                    qid, inst,
+                                                );
+                                                continue;
+                                            }
+                                            Some(new_base) => {
+                                                drain_base =
+                                                    Some(new_base);
+                                            }
+                                            None => {}
                                         }
                                     }
                                 }
