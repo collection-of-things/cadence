@@ -216,13 +216,13 @@ def main():
     # allows at most ~2 boundary frames at the stream edge.
     def frame_cov(ref):
         return 1.0 - 2.5 / max(1, len(ref) // ch)
-    ok_a, _ = compare(
+    ok_a, _, _ = compare(
         "cadence", a_region, ref_a, ch, "track A vs ffmpeg",
         min_cov=frame_cov(ref_a))
-    ok_b, _ = (
+    ok_b, _, _ = (
         compare("cadence", cap[b_start:], ref_b, ch, "track B vs ffmpeg",
                 min_cov=frame_cov(ref_b))
-        if b_start >= 0 else (False, 0)
+        if b_start >= 0 else (False, 0, False)
     )
     results["a_tail_intact"] = ok_a
     results["b_head_intact"] = ok_b

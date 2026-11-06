@@ -23,3 +23,4 @@ credentials*
 target-review/
 prototypes/
 scripts/__pycache__/
+services/audio/loom-check/target/

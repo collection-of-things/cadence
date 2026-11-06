@@ -183,7 +183,7 @@ impl<T: RingWord> Producer<T> {
             // behaviour, and the tag lets the consumer prove tornness
             // without depending on fence visibility.
             self.s.buf[(tail + i) % self.s.cap]
-                .store((gen << 32) | data[i].to_word() as u64, Ordering::Relaxed);
+                .store((gen << 32) | data[i].to_word() as u64, Ordering::Release);
         }
         self.s.tail.store(tail + n, Ordering::Release);
         n
@@ -254,7 +254,7 @@ impl<T: RingWord> Consumer<T> {
         }
         let mut torn = false;
         for i in 0..n {
-            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed);
+            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Acquire);
             // The slot's generation differs from the one at read start
             // → a clear bumped it and the producer rewrote this slot
             // while we were copying → the slice is torn.
@@ -310,7 +310,7 @@ impl<T: RingWord> Consumer<T> {
         }
         let mut torn = false;
         for i in 0..n {
-            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed);
+            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Acquire);
             torn |= (slot >> 32) as u32 != g0;
             out[i] = T::from_word(slot as u32);
         }

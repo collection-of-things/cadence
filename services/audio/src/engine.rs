@@ -927,6 +927,7 @@ impl Engine {
         src_rate: u32,
         src_channels: u32,
         src_depth: BitDepth,
+        src_layout: Option<&str>,
         prefer_native: bool,
     ) -> (Negotiated, bool) {
         let caps = self.caps.lock().unwrap().clone();
@@ -941,6 +942,9 @@ impl Engine {
                         channels: src_channels,
                         kind,
                         device_name: caps.name(),
+                        // Native path: the stream carries the source's
+                        // channel order — label it.
+                        layout: src_layout.map(str::to_string),
                     },
                     true,
                 );
@@ -962,6 +966,7 @@ impl Engine {
                         channels: src_channels,
                         kind,
                         device_name: caps.name(),
+                        layout: src_layout.map(str::to_string),
                     };
                     // Skip a format this device recently failed to open.
                     const NATIVE_RETRY_BACKOFF: std::time::Duration =
@@ -987,6 +992,7 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
+                layout: None,
             },
             false,
         )
@@ -1020,8 +1026,16 @@ impl Engine {
             } => (*sample_rate_hz, *channels, *bit_depth, 0, None),
         };
 
-        let (neg, mut bypass) =
-            self.negotiate(src_rate, src_channels, src_depth, prefer_native);
+        let src_layout = info
+            .as_ref()
+            .and_then(|i| i.channel_layout.clone());
+        let (neg, mut bypass) = self.negotiate(
+            src_rate,
+            src_channels,
+            src_depth,
+            src_layout.as_deref(),
+            prefer_native,
+        );
         // Track whether the negotiation landed on the device's native
         // acceptance of the source format vs. its default — the spawn path
         // falls back to the default when a native stream won't open.
@@ -1033,6 +1047,7 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
+                layout: None,
             };
             // Only the non-fidelity preference falls back to the device
             // default — strict fidelity stays honest about what it took.
@@ -1432,7 +1447,7 @@ impl Engine {
         // Open BEFORE committing negotiated: on failure the core keeps the
         // old negotiation so the next load still attempts a rebuild instead
         // of rendering into a dead sink.
-        let new_sink = match crate::sink::open_sink(&self.cfg, caps, neg, &self.core) {
+        let opened = match crate::sink::open_sink(&self.cfg, caps, neg, &self.core) {
             Ok(s) => s,
             Err(e) => {
                 self.core.lock().unwrap().rebuilding = false;
@@ -1441,12 +1456,18 @@ impl Engine {
         };
         {
             let mut core = self.core.lock().unwrap();
-            core.negotiated = neg.clone();
+            // Commit the format the stream ACTUALLY opened — a CPAL
+            // fallback re-negotiates against its own capabilities and
+            // may land on a different rate/channels than requested.
+            core.negotiated = opened.negotiated;
             core.rebuilding = false;
+        }
+        if let Some(new_caps) = opened.caps {
+            *self.caps.lock().unwrap() = new_caps;
         }
         {
             let mut g = self.sink.lock().unwrap();
-            *g = Some(new_sink);
+            *g = Some(opened.sink);
             // Bump under the same guard — the monitor reads (sink, gen)
             // atomically under it, so a rebuild can never tear the pair.
             self.sink_gen.fetch_add(1, Ordering::Relaxed);
@@ -1525,6 +1546,7 @@ impl Engine {
             channels: new_caps.default_channels(),
             kind: new_caps.default_kind(),
             device_name: new_caps.name(),
+            layout: None,
         };
         // Rebuild under the new caps BEFORE committing them — a rejected
         // rebuild leaves the old device caps and stream intact.
@@ -3855,6 +3877,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::F32,
             device_name: "test".into(),
+            layout: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         let mut c = core.lock().unwrap();
@@ -3872,6 +3895,7 @@ mod tests {
                 channels: 2,
                 kind: PcmKind::F32,
                 device_name: "test".into(),
+            layout: None,
             },
             ready: Arc::new(AtomicBool::new(true)),
         });
@@ -3897,6 +3921,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::S16,
             device_name: "test".into(),
+            layout: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         let vals = [
@@ -3925,6 +3950,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::F32,
                     device_name: "test".into(),
+            layout: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });
@@ -3944,6 +3970,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::S32,
             device_name: "test".into(),
+            layout: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         // s32 pipe: bit-exact passthrough (bypass path)
@@ -3965,6 +3992,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::S32,
                     device_name: "test".into(),
+            layout: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });
@@ -3992,6 +4020,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::F32,
                     device_name: "test".into(),
+            layout: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });

@@ -66,26 +66,60 @@ mod pos {
     pub const RR: u32 = 13;
 }
 
-/// Standard speaker layouts; None -> leave UNPOSITIONED and let the
-/// graph infer from the channel count.
-fn layout_for(channels: u32) -> Option<[u32; 64]> {
+/// Speaker positions for an ffmpeg channel-order layout — the decoder
+/// emits samples in the file's layout order, so the positions must
+/// label that order exactly (a 6.1 file is FL FR FC LFE BC SL SR, NOT
+/// a rear-pair+rear-center guess).
+fn layout_named(name: &str) -> Option<Vec<u32>> {
     use pos::*;
-    let layout: &[u32] = match channels {
-        1 => &[MONO],
-        2 => &[FL, FR],
+    Some(match name {
+        "mono" => vec![FC],
+        "stereo" => vec![FL, FR],
+        "2.1" => vec![FL, FR, LFE],
+        "3.0" => vec![FL, FR, FC],
+        "3.0(back)" => vec![FL, FR, RC],
+        "4.0" => vec![FL, FR, FC, RC],
+        "quad" => vec![FL, FR, RL, RR],
+        "5.0" | "5.0(side)" => vec![FL, FR, FC, SL, SR],
+        "5.1" | "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
+        "6.0" => vec![FL, FR, FC, RC, SL, SR],
+        "6.1" => vec![FL, FR, FC, LFE, RC, SL, SR],
+        "7.0" => vec![FL, FR, FC, RL, RR, SL, SR],
+        "7.1" => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
+        _ => return None,
+    })
+}
+
+/// Speaker positions for the negotiated stream: prefer the source
+/// file's declared layout (correct order); else ffmpeg's per-count
+/// DEFAULT order — not a guess at a different layout with the same
+/// count. None -> leave UNPOSITIONED and let the graph infer.
+fn positions_for(neg: &Negotiated) -> Option<[u32; 64]> {
+    use pos::*;
+    let by_name = neg
+        .layout
+        .as_deref()
+        .and_then(layout_named)
+        .filter(|v| v.len() == neg.channels as usize);
+    let by_count = || match neg.channels {
+        1 => Some(vec![MONO]),
+        2 => Some(vec![FL, FR]),
         // 3ch content is more often 3.0 (FL/FR/FC) than 2.1 — channel
         // count alone can't distinguish, so prefer the layout the vast
         // majority of 3ch sources carry.
-        3 => &[FL, FR, FC],
-        4 => &[FL, FR, RL, RR],
-        5 => &[FL, FR, FC, RL, RR],
-        6 => &[FL, FR, FC, LFE, SL, SR],
-        7 => &[FL, FR, FC, LFE, RL, RR, RC],
-        8 => &[FL, FR, FC, LFE, RL, RR, SL, SR],
-        _ => return None,
+        3 => Some(vec![FL, FR, FC]),
+        // ffmpeg's per-count defaults: 4=quad, 5=5.0-side, 6=5.1,
+        // 7=6.1 (FL FR FC LFE BC SL SR), 8=7.1.
+        4 => Some(vec![FL, FR, RL, RR]),
+        5 => Some(vec![FL, FR, FC, SL, SR]),
+        6 => Some(vec![FL, FR, FC, LFE, SL, SR]),
+        7 => Some(vec![FL, FR, FC, LFE, RC, SL, SR]),
+        8 => Some(vec![FL, FR, FC, LFE, RL, RR, SL, SR]),
+        _ => None,
     };
+    let layout = by_name.or_else(by_count)?;
     let mut p = [0u32; 64];
-    p[..layout.len()].copy_from_slice(layout);
+    p[..layout.len()].copy_from_slice(&layout);
     Some(p)
 }
 
@@ -615,7 +649,7 @@ impl PipeWireCaps {
             info.set_channels(neg.channels);
             // Standard layouts for common channel counts; UNPOSITIONED
             // otherwise (the graph infers from the count).
-            if let Some(p) = layout_for(neg.channels) {
+            if let Some(p) = positions_for(neg) {
                 info.set_position(p);
             }
             let pod_bytes = spa::pod::serialize::PodSerializer::serialize(
@@ -1025,10 +1059,13 @@ impl Sink for PipeWireSink {
         // The same accounting mpv's ao_pipewire does: `delay` is the
         // stream-to-device latency in `rate` ticks (usually 1/rate —
         // docs: delay*num/denom seconds) and `buffered` is the
-        // converter's own backlog in frames. `queued` is not usable
-        // here — it sums pw_buffer.size values the app must set, and
-        // pipewire-rs exposes no size setter. Fall back to the
-        // negotiated quantum if the query fails.
+        // converter's own backlog in frames. `queued` is absent by
+        // DESIGN, not omission: fill() dequeues a buffer, fills it for
+        // the CURRENT cycle, and hands it straight back — the app
+        // never queues ahead, so every unheard frame downstream of the
+        // staging ring sits inside `delay`/`buffered` already.
+        // (Audible position subtracts this plus staged.) Fall back to
+        // the negotiated quantum if the query fails.
         // tl.lock() on the 20ms monitor path — a bounded struct read
         // only. This MUST stay non-blocking: it's the only monitor →
         // thread-loop-lock edge, so nothing inside may wait on the
@@ -1119,5 +1156,57 @@ impl Sink for PipeWireSink {
 impl Drop for PipeWireSink {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn neg(ch: u32, layout: Option<&str>) -> Negotiated {
+        Negotiated {
+            rate: 48_000,
+            channels: ch,
+            kind: crate::decode::PcmKind::F32,
+            device_name: "t".into(),
+            layout: layout.map(str::to_string),
+        }
+    }
+
+    /// Sol P2: a 6.1 file's channel order is FL FR FC LFE BC SL SR —
+    /// rear-center is 5th, sides are 6th/7th. The old map declared a
+    /// rear PAIR in slots 5-6 and RC last, routing sides to rears.
+    #[test]
+    fn layout_61_labels_bc_then_sides() {
+        let p = positions_for(&neg(7, Some("6.1"))).unwrap();
+        assert_eq!(
+            &p[..7],
+            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RC, pos::SL, pos::SR]
+        );
+    }
+
+    /// Unknown/absent layout names fall back to ffmpeg's per-count
+    /// defaults — same positions for 7ch.
+    #[test]
+    fn layout_count_fallback_uses_ffmpeg_defaults() {
+        let p = positions_for(&neg(7, None)).unwrap();
+        assert_eq!(
+            &p[..7],
+            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RC, pos::SL, pos::SR]
+        );
+        // 4.0 declared (FL FR FC BC) beats the quad count guess.
+        let q = positions_for(&neg(4, Some("4.0"))).unwrap();
+        assert_eq!(&q[..4], &[pos::FL, pos::FR, pos::FC, pos::RC]);
+        let quad = positions_for(&neg(4, None)).unwrap();
+        assert_eq!(&quad[..4], &[pos::FL, pos::FR, pos::RL, pos::RR]);
+    }
+
+    /// A layout name whose channel count mismatches is ignored rather
+    /// than mislabeling the stream.
+    #[test]
+    fn layout_name_mismatch_falls_back() {
+        let p = positions_for(&neg(2, Some("6.1"))).unwrap();
+        assert_eq!(&p[..2], &[pos::FL, pos::FR]);
     }
 }

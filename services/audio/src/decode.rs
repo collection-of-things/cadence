@@ -78,6 +78,10 @@ pub struct AudioInfo {
     pub duration_ms: u64,
     pub sample_rate_hz: u32,
     pub channels: u32,
+    /// ffmpeg channel-order layout name ("5.1", "6.1", "quad") — the
+    /// decoder emits samples in THIS order; the stream positions must
+    /// label it, not a same-count guess.
+    pub channel_layout: Option<String>,
     pub bit_depth: BitDepth,
 }
 
@@ -92,6 +96,7 @@ struct FfprobeStream {
     codec_name: Option<String>,
     sample_rate: Option<String>,
     channels: Option<u32>,
+    channel_layout: Option<String>,
     bits_per_raw_sample: Option<String>,
     bits_per_sample: Option<u32>,
     sample_fmt: Option<String>,
@@ -185,6 +190,7 @@ pub fn probe_file(path: &Path) -> Result<AudioInfo> {
         duration_ms,
         sample_rate_hz,
         channels: stream.channels.unwrap_or(2),
+        channel_layout: stream.channel_layout.clone(),
         bit_depth,
     })
 }

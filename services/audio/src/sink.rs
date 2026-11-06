@@ -181,6 +181,11 @@ pub struct Negotiated {
     pub channels: u32,
     pub kind: PcmKind,
     pub device_name: String,
+    /// ffmpeg channel-order layout name when the source declares one —
+    /// the decoder emits samples in THIS order; stream positions must
+    /// label it, not a same-count guess. None on the device-default
+    /// fallback (channels there are the device's, not the source's).
+    pub layout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -458,6 +463,32 @@ impl CpalCaps {
             _ => PcmKind::F32,
         }
     }
+}
+
+impl CpalCaps {
+    /// Negotiate against THIS device's actual capabilities: keep the
+    /// requested format when CPAL can carry it, else fall back to the
+    /// device's default config (a PipeWire-chosen format can be
+    /// anything — CPAL devices often can't).
+    pub fn renegotiate(&self, neg: &Negotiated) -> Negotiated {
+        let depth = match neg.kind {
+            PcmKind::F32 => BitDepth::Float,
+            PcmKind::S32 => BitDepth::Int(32),
+            PcmKind::S16 => BitDepth::Int(16),
+        };
+        if let Some(kind) = self.accepts(neg.rate, neg.channels, depth) {
+            return Negotiated { kind, ..neg.clone() };
+        }
+        let d = &self.default_cfg;
+        Negotiated {
+            rate: d.sample_rate().0,
+            channels: d.channels() as u32,
+            kind: Self::kind_of(d.sample_format()),
+            device_name: self.name(),
+            layout: None,
+        }
+    }
+
 }
 
 impl DeviceCaps for CpalCaps {
@@ -756,13 +787,23 @@ impl Sink for DeadSink {
     }
 }
 
+/// Result of open_sink: the sink, the negotiated format it ACTUALLY
+/// opened (CPAL fallback may differ from the requested PipeWire
+/// format — the engine must commit the returned one), and replacement
+/// caps when the backend itself swapped.
+pub struct OpenedSink {
+    pub sink: Box<dyn Sink>,
+    pub negotiated: Negotiated,
+    pub caps: Option<Arc<dyn DeviceCaps>>,
+}
+
 /// Build the right caps + initial sink for the configured mode.
 pub fn open_sink(
     cfg: &EngineConfig,
     caps: Arc<dyn DeviceCaps>,
     neg: &Negotiated,
     core: &Arc<Mutex<OutputCore>>,
-) -> Result<Box<dyn Sink>> {
+) -> Result<OpenedSink> {
     let _ = cfg;
     match caps.open_stream(neg, Arc::clone(core)) {
         Err(e) if caps.is_pipewire() => {
@@ -791,9 +832,25 @@ pub fn open_sink(
                 }
                 c.set_error_cell(cell);
             }
-            c.open_stream(neg, Arc::clone(core))
+            // Re-negotiate against CPAL's own capabilities — `neg` was
+            // chosen for PipeWire, which accepts almost any native
+            // format; a CPAL device restricted to 44.1k/S16 could
+            // reject it while having a perfectly usable default. The
+            // caller commits the returned format and caps.
+            let cpal_neg = c.renegotiate(neg);
+            c.open_stream(&cpal_neg, Arc::clone(core)).map(|sink| {
+                OpenedSink {
+                    sink,
+                    negotiated: cpal_neg,
+                    caps: Some(c as Arc<dyn DeviceCaps>),
+                }
+            })
         }
-        other => other,
+        other => other.map(|sink| OpenedSink {
+            sink,
+            negotiated: neg.clone(),
+            caps: None,
+        }),
     }
 }
 
