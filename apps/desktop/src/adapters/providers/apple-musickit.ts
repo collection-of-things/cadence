@@ -378,11 +378,6 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async signIn(): Promise<void> {
     this.signedOut = false;
     this.installBackoffUntil = 0; // explicit user action clears backoff
-    await this.prepare();
-    if (this.authorized) {
-      this.session.hide();
-      return;
-    }
     // A second Sign-in click while a flow is live doesn't stack another
     // authorize() or popup — it raises the existing one (the popup itself
     // when there is one).
@@ -390,6 +385,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       if (!this.session.focusPopup()) this.session.reveal();
       return;
     }
+    // Ownership is claimed BEFORE the first await — signOut/dispose can
+    // only invalidate an attempt it can see. A sign-out landing mid-
+    // prepare() would otherwise let this resume into a wiped session.
     this.signInPending = true;
     const attempt = ++this.signInAttempt;
     // Ownership ends on observable events — auth completes, every popup
@@ -440,6 +438,27 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.signInAttempt++;
       endAttempt();
     };
+    try {
+      await this.prepare();
+    } catch (e) {
+      endAttempt();
+      throw e;
+    }
+    // prepare() is the first async boundary — sign-out or a newer flow may
+    // have taken over while it ran.
+    if (
+      attempt !== this.signInAttempt ||
+      !this.signInPending ||
+      this.destroyed ||
+      this.signedOut
+    ) {
+      return;
+    }
+    if (this.authorized) {
+      endAttempt();
+      this.session.hide();
+      return;
+    }
     // MusicKit's authorize() opens Apple's own IDMSA sign-in popup in the
     // provider partition — the DOM click on the site's button is gesture-
     // gated and silently no-ops from injected code. Keep it as a fallback.

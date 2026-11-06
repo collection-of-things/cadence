@@ -427,4 +427,21 @@ describe("apple adapter page events", () => {
     expect(clicks).toBe(0);
     (sess as any).eval = orig;
   });
+
+  it("sign-out during prepare() stops the attempt before authorize()", async () => {
+    const origPrep = sess.prepare.bind(sess);
+    const origEval = sess.eval.bind(sess);
+    const waiters: Array<() => void> = [];
+    (sess as any).prepare = () => new Promise<void>((r) => waiters.push(r));
+    const p = adapter.signIn();
+    await new Promise((r) => setImmediate(r));
+    const out = adapter.signOut(); // lands while signIn still awaits prepare()
+    for (const r of waiters) r(); // release every pending prepare()
+    await p;
+    await out;
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(false);
+    expect((adapter as any).signInPending).toBe(false);
+    (sess as any).prepare = origPrep;
+    (sess as any).eval = origEval;
+  });
 });
