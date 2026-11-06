@@ -2994,6 +2994,31 @@ impl Engine {
                         {
                             Gate::Drained
                         }
+                        Some(s2)
+                            if issued.is_some()
+                                && since.elapsed()
+                                    > std::time::Duration::from_millis(
+                                        100,
+                                    ) =>
+                        {
+                            // A completion can be coalesced away if our
+                            // drain finished on the data loop while a
+                            // predecessor's notification was still
+                            // undispatched. Once OUR marker ran,
+                            // pending_drain==0 — a re-issued drain's
+                            // completion cannot be suppressed.
+                            if let Some((b, gen)) = issued {
+                                if self.sink_gen.load(Ordering::Acquire)
+                                    == gen
+                                    && s2.drain_marker_ran(b)
+                                {
+                                    if let Some(b2) = s2.request_drain() {
+                                        drain_base = Some((b2, gen));
+                                    }
+                                }
+                            }
+                            Gate::DrainIssued
+                        }
                         Some(_) => Gate::Playing,
                     }
                 };
@@ -3011,30 +3036,6 @@ impl Engine {
                         break;
                     }
                     Gate::DrainIssued => {
-                        // A completion CAN still be lost: if our drain
-                        // finished on the data loop while a predecessor's
-                        // notification was still undispatched, PipeWire
-                        // coalesces our event away. Once OUR marker ran,
-                        // pending_drain==0 — so re-issue the drain: its
-                        // completion cannot be suppressed.
-                        if since.elapsed()
-                            > std::time::Duration::from_millis(100)
-                        {
-                            let g = self.sink.lock().unwrap();
-                            if let Some(s) = g.as_ref() {
-                                if let Some((b, gen)) = issued {
-                                    if s.drain_marker_ran(b)
-                                        && self.sink_gen
-                                            .load(Ordering::Acquire)
-                                            == gen
-                                    {
-                                        if let Some(b2) = s.request_drain() {
-                                            drain_base = Some((b2, gen));
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         pending_ends.push_front((
                             qid,
                             inst,
@@ -3059,12 +3060,11 @@ impl Engine {
                             .as_ref()
                             .map(|s| s.drain_fallback_ms())
                             .unwrap_or(0)
-                            // Bounded: a garbage graph-reported delay
-                            // can't park the end past its deadline —
-                            // but never under the backend's own
-                            // estimate (no /2 shortcut that could cut
-                            // the CPAL wait below what it reports).
-                            .min(deadline_ms)
+                            // Absolute bound only: never under the
+                            // backend's own estimate (under-waiting a
+                            // MEASURED delay is tail loss), never a
+                            // pathological value.
+                            .min(2000)
                             .max(50);
                         // Reaching this arm proves staged==0 — stamp
                         // ring0 the first time; the downstream wait
