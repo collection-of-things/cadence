@@ -188,7 +188,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         this.warming = true;
         void this.session
           .hasSessionCookies()
-          .then((has) => (has ? this.prepare() : undefined))
+          // Re-check inside the continuation — signOut can land between the
+          // cookie read and prepare().
+          .then((has) => (has && !this.signedOut ? this.prepare() : undefined))
           .catch(() => undefined)
           .finally(() => {
             this.warming = false;
@@ -240,6 +242,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
     this.session.setAudioMuted(false);
     this.generation = lease.generationId;
+    // Suppress stale boundary 'ended' events while the new item starts.
+    this.promotedAt = Date.now();
     await this.prepare();
     const spec = specFor(item.track);
     try {
@@ -267,34 +271,48 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     }
   }
 
+  /** Mirror operations are serialized — an in-flight playLater must not
+   * land after a later clear, or the stale item re-enters the queue. */
+  private mirrorChain: Promise<void> = Promise.resolve();
+
+  private enqueueMirror(work: () => Promise<void>): Promise<void> {
+    const next = this.mirrorChain.then(work, work);
+    this.mirrorChain = next.catch(() => {});
+    return next;
+  }
+
   /** Mirror the coordinator's successor into the provider queue for gapless. */
   async prefetch(item: QueueItem): Promise<void> {
     if (!this.installed) return;
     const spec = specFor(item.track);
-    // A station has no track boundary — mirroring gains nothing and MusicKit
-    // would report the stream's song id (not the station id) on advance.
-    if (spec.type === "station") return;
-    if (this.mirrored.some((m) => m.providerId === spec.id)) return;
-    // Only the real successor may be mirrored — a replaced one must leave the
-    // provider queue or it could still promote and play.
-    if (this.mirrored.length > 0) {
-      this.mirrored = [];
-      await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
-    }
-    try {
-      await this.session.eval(
-        `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
-      );
-      this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: false });
-    } catch {
-      // Mirroring is an optimization; failure only costs seamlessness.
-    }
+    return this.enqueueMirror(async () => {
+      // Only the real successor may be mirrored — a replaced one must leave
+      // the provider queue or it could still promote and play.
+      if (this.mirrored.length > 0 && !this.mirrored.some((m) => m.providerId === spec.id)) {
+        this.mirrored = [];
+        await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
+      }
+      // A station has no track boundary — mirroring gains nothing and
+      // MusicKit would report the stream's song id (not the station id).
+      if (spec.type === "station") return;
+      if (this.mirrored.some((m) => m.providerId === spec.id)) return;
+      try {
+        await this.session.eval(
+          `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
+        );
+        this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: false });
+      } catch {
+        // Mirroring is an optimization; failure only costs seamlessness.
+      }
+    });
   }
 
   async clearPrefetch(): Promise<void> {
-    this.mirrored = [];
-    if (!this.installed) return;
-    await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
+    return this.enqueueMirror(async () => {
+      this.mirrored = [];
+      if (!this.installed) return;
+      await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
+    });
   }
 
   async pause(lease: PlaybackLease): Promise<void> {
@@ -390,8 +408,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       return this.error(msg, true);
     }
     if (name === "nowPlaying") {
-      const d = typeof data === "object" && data !== null ? (data as { id?: unknown }) : null;
-      this.onNowPlaying(d !== null && typeof d.id === "string" ? d.id : null);
+      const d = typeof data === "object" && data !== null ? (data as { id?: unknown; queuePos?: unknown }) : null;
+      this.onNowPlaying(
+        d !== null && typeof d.id === "string" ? d.id : null,
+        d !== null && typeof d.queuePos === "number" ? d.queuePos : undefined,
+      );
       return;
     }
     if (name !== "playerState") return;
@@ -408,6 +429,17 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // only trust MusicKit's terminal states and its explicit ended flag.
     // Stations are exempt: a stream pauses between songs but never "ends".
     if ((s.ended || s.state === "ended" || s.state === "completed") && !this.current?.station) {
+      // If the engine already advanced to a mirrored successor by the time
+      // this end-state arrived, it's a promotion — not an end. Ending the
+      // promoted item here would stop playback mid-queue.
+      if (s.nowPlayingId !== null && s.nowPlayingId !== this.current?.providerId) {
+        this.onNowPlaying(s.nowPlayingId, s.queuePos);
+        return;
+      }
+      // A boundary 'ended' can arrive AFTER the promotion that replaced the
+      // item — ending the just-promoted track would stop playback mid-queue.
+      // End events while the promoted item has barely started are stale.
+      if (this.current !== null && Date.now() - this.promotedAt < 4000) return;
       if (this.current !== null) {
         this.emit({ kind: "ended", generationId, queueId: this.current.queueId });
       } else {
@@ -428,23 +460,49 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
    * successor, the provider engine itself carried the boundary — report it as
    * a gapless end + promoted start so the coordinator adopts the lease.
    */
-  private onNowPlaying(id: string | null): void {
+  private onNowPlaying(id: string | null, queuePos?: number): void {
     if (id === null || this.current === null) return;
-    if (id === this.current.providerId) return;
+    if (id === this.current.providerId) {
+      // Same id at a NEW queue position = MusicKit promoted a second copy
+      // of the song (a duplicate entry) — treat it as a mirror promotion.
+      const dup = this.mirrored.findIndex((m) => m.providerId === id);
+      if (dup === -1 || queuePos === undefined) return;
+      this.promoteMirror(dup);
+      return;
+    }
     // A station streams its constituent songs as a rolling nowPlayingItem —
     // Cadence keeps it as ONE queue item; item changes inside the stream are
     // not promotions and must not end the queue item.
     if (this.current.station) return;
     const hit = this.mirrored.findIndex((m) => m.providerId === id);
     if (hit === -1) {
-      // Something else started inside the provider queue (leftover state,
-      // external edit). Report the current item ended so the coordinator's
-      // fallback drives the real successor instead of drifting — and pause
-      // the page so an unrecognized item can never play phantom audio.
-      this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
-      void this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
+      // Something else started inside the provider queue. Act only on the
+      // SECOND sighting (~750ms apart) — a transient id during a queue
+      // transition must not pause the item that's about to be promoted.
+      if (this.unknownNpId === id) {
+        this.unknownNpId = null;
+        void this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
+        this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
+      } else {
+        this.unknownNpId = id;
+      }
       return;
     }
+    this.unknownNpId = null;
+    this.promoteMirror(hit);
+  }
+
+  /** Last unrecognized nowPlaying id — needs two sightings before ending. */
+  private unknownNpId: string | null = null;
+
+  /** When a fresh item last started (play or mirror promotion) — stale
+   * boundary ends inside this window must not end the new item. */
+  private promotedAt = 0;
+
+  private promoteMirror(hit: number): void {
+    if (this.current === null) return;
+    this.promotedAt = Date.now();
+    this.unknownNpId = null;
     const promoted = this.mirrored[hit]!;
     this.mirrored = this.mirrored.slice(hit + 1);
     const previous = this.current;

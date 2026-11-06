@@ -315,11 +315,18 @@ try {
       const cur = await ev('window.cadence.getSnapshot()');
       const durMs = cur?.durationMs ?? 0;
       if (gNext && durMs > 30_000) {
-        await ev(`window.cadence.sendCommand({kind:'seek', positionMs:${durMs - 6000}})`).catch(() => {});
+        // MusicKit can clamp/refuse seeks right at the stream tail — aim a
+        // little earlier and retry once if the position doesn't land.
+        for (const target of [durMs - 12_000, durMs - 20_000]) {
+          await ev(`window.cadence.sendCommand({kind:'seek', positionMs:${target}})`).catch(() => {});
+          await sleep(1500);
+          const s = await ev('window.cadence.getSnapshot()');
+          if ((s?.positionMs ?? 0) > durMs - 25_000) break;
+        }
         const promoted = await waitFor(async () => {
           const s = await ev('window.cadence.getSnapshot()');
           return s?.current?.queueId === gNext.queueId && s?.status === 'playing' ? s : null;
-        }, 'natural end promotion', 30_000);
+        }, 'natural end promotion', 45_000);
         record('natural track end advances to successor', true,
           `"${promoted.current?.track?.title}" @ ${Math.round((promoted.positionMs ?? 0) / 1000)}s`);
       } else {

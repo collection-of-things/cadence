@@ -769,6 +769,22 @@ export class Coordinator {
         // fan-in across adapters sharing the graph). Ended events carry the
         // ended track's queueId — the same track ending twice under the same
         // generation is always a duplicate.
+        // Stale-boundary guard: an item that started seconds ago with a much
+        // longer known duration cannot have physically ended — provider
+        // engines fire lingering end-state events across queue transitions.
+        {
+          const leaseAgeMs = this.now() - this.lease.issuedAtMs;
+          const leaseItem = this.queue.items.find((it) => it.queueId === this.lease?.queueId);
+          const durMs = leaseItem?.track.durationMs ?? 0;
+          if (
+            e.queueId === this.lease.queueId &&
+            durMs > 0 &&
+            leaseAgeMs < Math.min(durMs - 5000, 10_000) &&
+            leaseAgeMs >= 0
+          ) {
+            return;
+          }
+        }
         const endedKey = `${e.generationId}:${e.queueId ?? this.lease.queueId}`;
         if (this.handledEnded.has(endedKey)) return;
         this.handledEnded.add(endedKey);

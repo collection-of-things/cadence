@@ -117,6 +117,19 @@ describe("apple adapter page events", () => {
     expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
   });
 
+  it("same song at a new queue position promotes the duplicate mirror", () => {
+    (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
+    (adapter as any).mirrored = [{ queueId: "q2", providerId: "s1", station: false }];
+    sess.emit("nowPlaying", { id: "s1", queuePos: 1 });
+    const started = events.find((e) => e.kind === "started") as { queueId?: string };
+    expect(started?.queueId).toBe("q2");
+    // Without queuePos there's no way to tell a replay from a promotion.
+    (adapter as any).mirrored = [{ queueId: "q3", providerId: "s1", station: false }];
+    const before = events.length;
+    sess.emit("nowPlaying", { id: "s1" });
+    expect(events.length).toBe(before);
+  });
+
   it("prefetch never mirrors stations", async () => {
     await adapter.prefetch(item("q2", "ra1", "am:station:ra1"));
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
@@ -128,5 +141,13 @@ describe("apple adapter page events", () => {
     await adapter.prefetch(item("qB", "sB"));
     expect(sess.evals.some((e) => e.includes("clearPlayLater()"))).toBe(true);
     expect((adapter as any).mirrored[0]?.providerId).toBe("sB");
+  });
+
+  it("prefetch to a station still clears the previous mirror", async () => {
+    (adapter as any).mirrored = [{ queueId: "qA", providerId: "sA", station: false }];
+    await adapter.prefetch(item("qSt", "ra1", "am:station:ra1"));
+    expect(sess.evals.some((e) => e.includes("clearPlayLater()"))).toBe(true);
+    expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
+    expect((adapter as any).mirrored).toHaveLength(0);
   });
 });

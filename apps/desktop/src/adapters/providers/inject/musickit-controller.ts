@@ -168,6 +168,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
 
   let last = '';
   let lastNowPlayingId = null;
+  let lastNowPlayingPos = -1;
   function post(force) {
     const item = mk.nowPlayingItem;
     const st = mk.playbackState;
@@ -199,8 +200,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     };
     const j = JSON.stringify(s);
     if (force || j !== last) { last = j; emit('playerState', s); }
-    if (item && String(item.id) !== lastNowPlayingId) {
+    // Emit on item-id change OR queue-position change — consecutive copies
+    // of the same song share an id but advance the position.
+    if (item && (String(item.id) !== lastNowPlayingId || qi.position !== lastNowPlayingPos)) {
       lastNowPlayingId = item ? String(item.id) : lastNowPlayingId;
+      lastNowPlayingPos = qi.position;
       // A mirrored item that MusicKit promoted is no longer a successor —
       // consume it so clearPlayLater can't remove the now-current item.
       appended = appended.filter(a => String(a.id) !== String(item.id));
