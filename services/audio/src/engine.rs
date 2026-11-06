@@ -2735,7 +2735,7 @@ impl Engine {
             std::time::Instant,
             u64,
             Option<(u64, u64, std::time::Instant)>,
-            Option<std::time::Instant>,
+            Option<(std::time::Instant, u64)>,
         )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
@@ -3058,13 +3058,17 @@ impl Engine {
                             .min(10_000)
                             .max(50);
                         // Reaching this arm proves staged==0 — stamp
-                        // ring0 the first time; the downstream wait
-                        // runs from the ring-empty moment, NOT from
-                        // park time (a long ring drain mustn't absorb
-                        // the graph-side delay).
-                        let r0 = ring0.unwrap_or_else(std::time::Instant::now);
+                        // (ring0, wait_ms) the FIRST time and snapshot
+                        // the measured delay there: the wait runs
+                        // from ring-empty, NOT park time, and the
+                        // measurement mustn't shrink mid-wait (a
+                        // falling backlog reading would let the wait
+                        // finish while audio remains downstream).
+                        let (r0, wait0) = ring0.unwrap_or_else(|| {
+                            (std::time::Instant::now(), wait_ms)
+                        });
                         if r0.elapsed()
-                            > std::time::Duration::from_millis(wait_ms)
+                            > std::time::Duration::from_millis(wait0)
                         {
                             self.handle_track_end(qid, inst);
                         } else {
@@ -3074,7 +3078,7 @@ impl Engine {
                                 since,
                                 deadline_ms,
                                 issued,
-                                Some(r0),
+                                Some((r0, wait0)),
                             ));
                             break;
                         }
