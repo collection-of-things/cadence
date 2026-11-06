@@ -1370,6 +1370,11 @@ impl Engine {
             .map(|s| !s.is_dead())
             .unwrap_or(false);
         if self.core.lock().unwrap().negotiated == *neg && healthy {
+            // Same-format reuse: a completed end-of-track drain leaves
+            // the stream deactivated — reactivate or it stays silent.
+            if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                s.resume();
+            }
             return Ok(());
         }
         if self.monitor_stop.load(Ordering::Acquire) {
@@ -1410,6 +1415,11 @@ impl Engine {
                     || st.generation != gen
             };
             if stale {
+                if let Some(s) = old.as_ref() {
+                    // The put-back stream may have been drained —
+                    // reactivate so the new owner isn't silent.
+                    s.resume();
+                }
                 *self.sink.lock().unwrap() = old;
                 self.core.lock().unwrap().rebuilding = false;
                 bail!("ownership changed mid-rebuild — stale pipeline");
@@ -2865,25 +2875,45 @@ impl Engine {
             while let Some((qid, inst, since, deadline_ms, issued)) =
                 pending_ends.pop_front()
             {
+                // Ownership first: a parked end superseded by a load
+                // must never flush the NEW track's stream — drop it
+                // (the handler's own guard returns immediately).
+                let owned = {
+                    let st = self.state.lock().unwrap();
+                    st.queue_id.as_deref() == Some(qid.as_str())
+                        && st.current_instance == inst
+                };
+                if !owned {
+                    self.handle_track_end(qid, inst);
+                    continue;
+                }
                 enum Gate {
                     Playing,
                     Drained,
-                    WaitDrain,
+                    DrainIssued,
+                    DrainUnsupported,
                     Paused,
                 }
+                // Check + drain-request under ONE sink lock — the sink
+                // can't be swapped between observation and action, and
+                // a stale `drained` flag can't satisfy an end that
+                // never issued a flush (request_drain clears it first).
+                let paused =
+                    self.state.lock().unwrap().state == PlayState::Paused;
                 let gate = {
                     let g = self.sink.lock().unwrap();
-                    let sd = g
-                        .as_ref()
-                        .map(|s| (s.staged_frames(), s.downstream_drained()));
-                    let paused =
-                        self.state.lock().unwrap().state == PlayState::Paused;
-                    match sd {
+                    match g.as_ref() {
                         _ if paused => Gate::Paused,
                         None => Gate::Drained,
-                        Some((0, true)) => Gate::Drained,
-                        Some((0, false)) if !issued => Gate::WaitDrain,
-                        Some((0, false)) => Gate::Playing,
+                        Some(s) if s.staged_frames() > 0 => Gate::Playing,
+                        Some(s) if !issued => {
+                            if s.request_drain() {
+                                Gate::DrainIssued
+                            } else {
+                                Gate::DrainUnsupported
+                            }
+                        }
+                        Some(s) if s.downstream_drained() => Gate::Drained,
                         Some(_) => Gate::Playing,
                     }
                 };
@@ -2899,31 +2929,17 @@ impl Engine {
                         ));
                         break;
                     }
-                    Gate::WaitDrain => {
-                        // staged hit 0 — flush once and wait for the
-                        // `drained` event next ticks.
-                        let ok = self
-                            .sink
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .map(|s| s.request_drain())
-                            .unwrap_or(false);
-                        if ok {
-                            pending_ends.push_front((
-                                qid,
-                                inst,
-                                since,
-                                deadline_ms,
-                                true,
-                            ));
-                            break;
-                        }
-                        // Backend can't drain-report — fall through to
-                        // handling (the staged tail already played).
-                        self.handle_track_end(qid, inst);
+                    Gate::DrainIssued => {
+                        pending_ends.push_front((
+                            qid,
+                            inst,
+                            since,
+                            deadline_ms,
+                            true,
+                        ));
+                        break;
                     }
-                    Gate::Drained => {
+                    Gate::DrainUnsupported | Gate::Drained => {
                         self.handle_track_end(qid, inst);
                     }
                     Gate::Playing => {

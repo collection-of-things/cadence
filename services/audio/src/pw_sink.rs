@@ -957,6 +957,13 @@ impl Sink for PipeWireSink {
     fn downstream_drained(&self) -> bool {
         self.drained.load(Ordering::Relaxed)
     }
+
+    fn resume(&self) {
+        // A drain leaves the stream deactivated — reactivate or the
+        // reused sink stays silent on the next track.
+        let _g = self.tl.lock();
+        let _ = self.stream.set_active(true);
+    }
 }
 
 // A bare drop (e.g. a stale sink swapped out without an explicit stop)

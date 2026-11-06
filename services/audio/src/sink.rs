@@ -267,6 +267,10 @@ pub trait Sink: Send {
     fn downstream_drained(&self) -> bool {
         true
     }
+    /// Reactivate a stream that was drained or suspended — PipeWire
+    /// documents reactivation after a drain; no-op for backends that
+    /// don't need it. Called whenever playback resumes on a reused sink.
+    fn resume(&self) {}
 }
 
 // ------------------------------- null device -------------------------------
