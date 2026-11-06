@@ -75,8 +75,8 @@ a{color:inherit}
 .ib:disabled{opacity:.32;cursor:default}
 .ib.on{color:var(--acc)}
 #pLove.on .ic{fill:currentColor;stroke:none}
-#pLove.on::after{display:none}
-.ib.on::after{content:"";position:absolute;left:50%;bottom:2px;width:3.5px;height:3.5px;margin-left:-1.75px;border-radius:50%;background:currentColor}
+
+
 .ib:not(:disabled):hover{background:var(--well-hi);color:var(--t1)}.ib.on:hover{color:var(--acc)}
 /* source monograms */
 .src{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:5px;flex:none;
@@ -124,10 +124,10 @@ a{color:inherit}
 #switch button{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;height:32px;border-radius:9px;color:var(--t3);transition:color 150ms ease,transform 140ms var(--eo)}
 #switch button:active{transform:scale(.93)}
 #switch button .src{width:19px;height:19px;border-radius:6px;font-size:8.5px;transition:box-shadow 200ms ease,opacity 200ms ease}
-#switch button.off{opacity:.42}
+#switch button.off .src{opacity:.5;box-shadow:none}
 #switch button.on{color:var(--t1)}
-#switch button .st{position:absolute;right:5px;top:4px;width:4.5px;height:4.5px;border-radius:50%;background:var(--sc);opacity:0;transform:scale(.5);transition:opacity 160ms ease,transform 160ms var(--eo)}
-#switch button.off .st{opacity:1;transform:none;background:var(--t4)}
+#switch button .st{position:absolute;right:4px;bottom:4px;width:9px;height:9px;display:grid;place-items:center;font:750 9px/1 var(--font);color:var(--t3);opacity:0;transform:scale(.5);transition:opacity 160ms ease,transform 160ms var(--eo)}
+#switch button.off .st{opacity:1;transform:none;color:var(--t3)}
 #switch button:hover{color:var(--t1)}
 #locRow{display:flex;align-items:center;gap:8px;width:100%;height:34px;margin-top:10px;padding:0 10px;border-radius:10px;
   font:550 13px/1 var(--font);color:var(--t2);background:oklch(0 0 0/.18);box-shadow:inset 0 0 0 1px oklch(1 0 0/.05);transition:background-color 120ms ease,color 120ms ease,transform 140ms var(--eo)}
@@ -138,8 +138,8 @@ a{color:inherit}
 
 #locRow:hover{background:oklch(0 0 0/.3);color:var(--t1)}
 #svcName{display:flex;align-items:center;gap:7px;margin-top:10px;padding:0 4px;height:16px}
-body[data-svc=spotify]{--rad-card:13px;--jc-rad:14px}
-body[data-svc=ytm]{--rad-card:22px;--jc-rad:20px}
+body[data-svc=spotify]{--rad-card:11px;--jc-rad:12px}
+body[data-svc=ytm]{--rad-card:26px;--jc-rad:24px}
 body[data-svc=apple]{--jc-rad:18px}
 .jc{border-radius:var(--jc-rad,18px)}
 #svcName .eyebrow{color:var(--t3)}
@@ -150,12 +150,12 @@ body[data-svc=apple]{--jc-rad:18px}
 .slab{font:700 10.5px/1 var(--font);letter-spacing:.09em;text-transform:uppercase;color:var(--t4);padding:16px 10px 7px;display:flex;align-items:center;gap:6px}
 .slab .add{margin-left:auto;width:24px;height:24px;margin-right:-6px;border-radius:5px;display:grid;place-items:center;color:var(--t4)}
 .slab .add:hover{color:var(--t1);background:var(--well-hi)}
-.ni{position:relative;display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border-radius:10px;color:var(--t2);
+.ni{position:relative;display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px 0 14px;border-radius:10px;color:var(--t2);
   font:550 13.5px/1 var(--font);letter-spacing:-.005em;transition:background-color 110ms ease,color 110ms ease,transform 140ms var(--eo)}
 .ni:active{transform:scale(.985)}
 .ni .ic{width:17px;height:17px;color:var(--t3);transition:color 110ms ease}
 .ni.on{background:oklch(1 0 0/.1);color:var(--t1);font-weight:650}
-.ni.on::before{content:"";position:absolute;left:-7px;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--svc)}
+.ni.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--svc)}
 .ni.on .ic{color:var(--svc)}
 .ni .ct{margin-left:auto;font:650 11px/1 var(--font);color:var(--t4);font-variant-numeric:tabular-nums}
 .ni .tag{margin-left:auto;height:16px;padding:0 5px;font-size:8.5px}
@@ -183,7 +183,7 @@ body[data-svc=apple]{--jc-rad:18px}
   background:oklch(0 0 0/.28);box-shadow:inset 0 0 0 1px oklch(1 0 0/.06),inset 0 1px 2px oklch(0 0 0/.25);transition:box-shadow 140ms ease,background-color 140ms ease}
 #search input:focus{background:oklch(0 0 0/.42);box-shadow:inset 0 0 0 1.5px color-mix(in oklab,var(--svc) 55%,transparent),inset 0 1px 2px oklch(0 0 0/.25)}
 #search .kbds{position:absolute;right:8px;top:50%;translate:0 -50%;display:flex;gap:3px}
-#view{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scroll-behavior:auto;padding:2px 28px 140px;scrollbar-width:thin;scrollbar-color:oklch(1 0 0/.16) transparent}
+#view{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scroll-behavior:auto;padding:2px 28px 160px;scrollbar-width:thin;scrollbar-color:oklch(1 0 0/.16) transparent}
 #view::-webkit-scrollbar{width:10px}
 #view::-webkit-scrollbar-thumb{background:oklch(1 0 0/.12);border-radius:8px;border:3px solid transparent;background-clip:content-box}
 .page{transition:opacity 200ms var(--eo),transform 200ms var(--eo),filter 200ms var(--eo)}
@@ -221,7 +221,9 @@ body[data-svc=apple]{--jc-rad:18px}
 .card .cv .ply .ic{width:16px;height:16px;margin-left:1.5px}
 .card .cv .sb{position:absolute;left:7px;bottom:7px}
 .card .tt{margin-top:11px;font:650 13.5px/1.25 var(--font);letter-spacing:-.008em}
-.card .ts{margin-top:2px;font:450 12px/1.35 var(--font);color:var(--t3)}
+.card .ts{margin-top:2px;font:450 12px/1.35 var(--font);color:var(--t3);display:flex;min-width:0;gap:4px}
+.card .ts .ell{min-width:0;flex:0 1 auto}
+.card .ts .y{flex:none;color:var(--t4)}
 .card .ts .src{vertical-align:-3.5px;margin-right:4px}
 .card:hover{background:var(--well)}.card:hover .ply{opacity:1;transform:none}
 /* mosaic playlist cover */
@@ -255,11 +257,12 @@ body[data-svc=apple]{--jc-rad:18px}
 .chip:not(.on):hover{color:var(--t1);background:var(--well-hi)}
 /* track table */
 .tbl{margin-top:14px}
+.alb+.tbl{margin-top:30px}
 .thead,.tr{display:grid;grid-template-columns:26px minmax(0,5fr) minmax(0,3fr) 44px 20px;gap:14px;align-items:center}
-.tr.bare{grid-template-columns:26px minmax(0,5fr) minmax(0,2fr) 44px 20px}
+.tbl.bare .thead,.tr.bare{grid-template-columns:26px minmax(0,1fr) 44px 20px}
 .thead{height:28px;padding:0 10px;font:650 10.5px/1 var(--font);letter-spacing:.09em;text-transform:uppercase;color:var(--t4);border-bottom:1px solid var(--hair-soft)}
 .tr{position:relative;height:46px;padding:0 10px;border-radius:10px;color:var(--t2);transition:background-color 100ms ease}
-.tr .n{font:450 12.5px/1 var(--font);color:var(--t4);font-variant-numeric:tabular-nums;text-align:right}
+.tr .n{display:flex;justify-content:flex-end;align-items:center;font:450 12.5px/1 var(--font);color:var(--t4);font-variant-numeric:tabular-nums}
 .tr .ti{display:flex;align-items:center;gap:10px;min-width:0}
 .tr .ti img{width:30px;height:30px;border-radius:6px;flex:none;object-fit:cover}
 .tr .ti .nm{font:550 13.5px/1.2 var(--font);letter-spacing:-.006em;color:var(--t1)}
@@ -282,10 +285,11 @@ body[data-svc=apple]{--jc-rad:18px}
 /* album header */
 .alb{display:flex;align-items:flex-end;gap:26px;margin-top:8px}
 .alb>img{width:212px;height:212px;border-radius:14px;box-shadow:0 18px 50px -14px oklch(0 0 0/.75),0 0 0 1px oklch(1 0 0/.08)}
-.alb .inf{min-width:0;padding-bottom:4px}
+.alb .inf{min-width:0;display:flex;flex-direction:column}
 .alb h1{margin-top:10px;font-size:clamp(28px,2.8vw,40px);font-weight:750;letter-spacing:-.03em;line-height:1.05}
 .alb .by{margin-top:9px;display:flex;align-items:center;gap:8px;font:650 14px/1 var(--font)}
-.alb .by .a{color:var(--acc)}
+.alb .by .a{font-weight:650;transition:color 120ms ease}.alb .by .a:hover{color:var(--acc);cursor:pointer}
+.alb .by .a{color:var(--t1)}
 .alb .meta{margin-top:7px;font:450 12px/1.4 var(--font);color:var(--t3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .alb .acts{margin-top:18px;display:flex;align-items:center;gap:9px}
 .alb .acts .ib{width:34px;height:34px}
@@ -315,6 +319,8 @@ body[data-svc=apple]{--jc-rad:18px}
 .stn .ts{position:relative;margin-top:3px;font:550 11.5px/1.3 var(--font);color:oklch(1 0 0/.75)}
 
 /* ============ player pill ============ */
+body.q-open #search{width:min(340px,34%)}
+#search{transition:width 240ms var(--eo)}
 #playerHost{position:fixed;left:calc(50% + (var(--sb) + 12px)/2);transform:translateX(-50%);bottom:14px;z-index:26;width:min(820px,calc(100% - var(--sb) - 80px));pointer-events:none}
 #player{position:relative;width:100%;height:66px;pointer-events:auto;
   display:flex;align-items:center;gap:14px;padding:0 12px;border-radius:22px;
@@ -322,9 +328,9 @@ body[data-svc=apple]{--jc-rad:18px}
 #player .art{position:relative;width:42px;height:42px;border-radius:10px;overflow:hidden;flex:none;cursor:pointer;transition:transform 150ms var(--eo)}
 #player .art:active{transform:scale(.95)}
 #player .art img{width:100%;height:100%;object-fit:cover}
-#player .meta{min-width:0;width:192px;flex:none;cursor:pointer}
+#player .meta{min-width:0;width:228px;flex:none;cursor:pointer}
 #player .tt{font:650 13px/1.25 var(--font);letter-spacing:-.008em}
-#player .ta{margin-top:1px;font:450 11.5px/1.3 var(--font);color:var(--t3);display:flex;align-items:center;gap:5px}
+#player .ta{margin-top:1px;font:450 12px/1.3 var(--font);color:var(--t3);display:flex;align-items:center;gap:5px}
 #player .cen{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px}
 #player .tc{display:flex;align-items:center;gap:5px}
 #player .pb{display:flex;align-items:center;gap:9px;width:100%}
@@ -356,36 +362,37 @@ body[data-svc=apple]{--jc-rad:18px}
 .np-open #np{opacity:1;pointer-events:auto;transform:none}
 #np .lft{max-width:470px;justify-self:end;width:100%}
 #np .eyebrow{display:flex;align-items:center;gap:8px;color:var(--t2)}
-#np .artw{position:relative;margin-top:18px;border-radius:16px;width:min(100%,46vh);aspect-ratio:1;box-shadow:0 60px 140px -30px color-mix(in oklab,var(--acc) 45%,transparent)}
+#np .artw{position:relative;margin-top:18px;border-radius:16px;width:min(100%,48vh);aspect-ratio:1;box-shadow:0 60px 140px -30px color-mix(in oklab,var(--acc) 45%,transparent)}
 #np .artw img{width:100%;height:100%;object-fit:cover;border-radius:16px;box-shadow:0 30px 90px -18px oklch(0 0 0/.85),0 0 0 1px oklch(1 0 0/.09)}
 #np h1{margin-top:22px;font-size:clamp(26px,2.6vw,38px);font-weight:750;letter-spacing:-.03em;line-height:1.08}
 #np .sub{margin-top:8px;display:flex;align-items:center;gap:9px;font:550 15px/1.3 var(--font);color:var(--t2)}
-#np .sub .a{color:var(--acc)}
+#np .sub .a{color:var(--t1);font-weight:650}
 #np .badges{margin-top:13px;display:flex;gap:7px;flex-wrap:wrap}
-#np .lrow{margin-top:22px;display:flex;flex-direction:column;gap:8px;max-width:min(100%,46vh)}
-#np .nxr{display:flex;align-items:center;gap:11px;width:min(100%,46vh);padding:8px 12px 8px 8px;border-radius:12px;background:oklch(1 0 0/.05);box-shadow:inset 0 0 0 1px oklch(1 0 0/.05);transition:background-color 120ms ease}
+#np .lrow{margin-top:26px;display:flex;flex-direction:column;gap:8px;max-width:min(100%,48vh)}
+#np .lrow .nxr{width:100%}
+#np .nxr{display:flex;align-items:center;gap:11px;width:100%;padding:8px 12px 8px 8px;border-radius:12px;background:oklch(1 0 0/.05);box-shadow:inset 0 0 0 1px oklch(1 0 0/.05);transition:background-color 120ms ease}
 #np .nxr img{width:36px;height:36px;border-radius:8px;object-fit:cover;flex:none}
 #np .nxr .t{min-width:0;flex:1;text-align:left}
 #np .nxr b{display:block;font:650 12.5px/1.25 var(--font);color:var(--t1)}
 #np .nxr small{display:block;font:450 11.5px/1.3 var(--font);color:var(--t3);margin-top:1px}
 #np .nxr:hover{background:oklch(1 0 0/.09)}
 /* lyrics */
-#np .lyr{position:relative;height:min(64vh,620px);mask-image:linear-gradient(180deg,transparent,#000 20%,#000 82%,transparent);-webkit-mask-image:linear-gradient(180deg,transparent,#000 20%,#000 82%,transparent);overflow:hidden}
-#np .lyr .sp{height:44%}
+#np .lyr{position:relative;height:min(58vh,600px);mask-image:linear-gradient(180deg,transparent,#000 15%,#000 85%,transparent);-webkit-mask-image:linear-gradient(180deg,transparent,#000 15%,#000 85%,transparent);overflow:hidden}
+#np .lyr .sp{height:34%}
 #np .line{padding:7px 0;cursor:pointer;font-size:clamp(20px,2.1vw,29px);font-weight:700;letter-spacing:-.02em;line-height:1.28;
-  color:oklch(1 0 0/.34);filter:blur(1.6px);transform-origin:left;
+  color:oklch(1 0 0/.34);transform-origin:left;
   transition:color 260ms ease,filter 260ms ease,transform 300ms var(--eo),opacity 260ms ease}
 #np .line:hover{color:oklch(1 0 0/.6)}
-#np .line.past{color:oklch(1 0 0/.24);filter:blur(1.4px)}
-#np .line.near{color:oklch(1 0 0/.55);filter:blur(1px)}
+#np .line.past{color:oklch(1 0 0/.26)}
+#np .line.near{color:oklch(1 0 0/.6);filter:none}
 #np .line.act{color:#fff;filter:blur(0);transform:scale(1.015)}
 #np .nolyr{height:100%;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:10px;color:var(--t3)}
 #np .nolyr .ic{width:26px;height:26px;color:var(--t4)}
 #np .tools{position:absolute;top:22px;right:24px;display:flex;gap:4px}
 #np .tools .ib{width:36px;height:36px;color:var(--t2);background:oklch(0 0 0/.2)}
 /* queue */
-#fadeB{position:fixed;left:var(--sb);right:0;bottom:0;height:150px;z-index:4;pointer-events:none;background:linear-gradient(180deg,transparent,color-mix(in oklab,var(--amb2) 60%,#050508) 88%)}
-#qDim{position:fixed;inset:0;z-index:8;background:oklch(0 0 0/.26);opacity:0;pointer-events:none;transition:opacity 240ms ease}
+#fadeB{position:fixed;left:calc(var(--sb) + 12px);right:0;bottom:0;height:180px;z-index:6;pointer-events:none;background:linear-gradient(180deg,transparent 0%,color-mix(in oklab,var(--amb2) 32%,#050508) 62%,color-mix(in oklab,var(--amb2) 72%,#030306) 100%)}
+#qDim{position:fixed;inset:0;z-index:8;background:oklch(0 0 0/.4);opacity:0;pointer-events:none;transition:opacity 240ms ease}
 #qDim.on{opacity:1;pointer-events:auto}
 #queue{position:fixed;top:12px;right:12px;bottom:92px;width:354px;z-index:9;display:flex;flex-direction:column;
   border-radius:19px;background:var(--panel-hi);backdrop-filter:blur(56px) saturate(1.8);-webkit-backdrop-filter:blur(56px) saturate(1.8);box-shadow:var(--shadow-pop);
@@ -393,18 +400,20 @@ body[data-svc=apple]{--jc-rad:18px}
 #queue.open{transform:none}
 #queue .qh{flex:none;display:flex;align-items:center;gap:10px;padding:16px 16px 10px}
 #queue .qh h3{font:700 14px/1 var(--font);letter-spacing:-.01em}
-#queue .qh .ib{margin-left:auto}
+#queue .qh .ib{margin-left:4px}
 #queue .clr{margin-left:auto;font:600 11.5px/1 var(--font);color:var(--t3);padding:6px 9px;border-radius:8px;transition:color 110ms ease,background-color 110ms ease}
 #queue .clr:hover{color:var(--t1);background:var(--well-hi)}
 #queue .qs{flex:none;padding:0 16px 8px;font:650 11px/1 var(--font);letter-spacing:.09em;text-transform:uppercase;color:var(--t4)}
 #queue .qb{flex:1;min-height:0;overflow-y:auto;padding:0 8px 12px;scrollbar-width:none}
 #queue .qb::-webkit-scrollbar{display:none}
 .qr{position:relative;display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:11px;transition:background-color 100ms ease,transform 180ms var(--eo),opacity 160ms ease}
-.qr .grip{width:14px;color:var(--t4);cursor:grab;flex:none;touch-action:none}
+.qr:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.qr .grip{width:14px;color:var(--t4);cursor:grab;flex:none;touch-action:none;opacity:.35;transition:opacity 120ms ease}
+.qr:hover .grip{opacity:1}
 .qr .grip:active{cursor:grabbing}
 .qr img{width:34px;height:34px;border-radius:7px;object-fit:cover;flex:none}
 .qr .tt{font:650 12.5px/1.25 var(--font)}
-.qr .ts{margin-top:1px;font:450 11.5px/1.3 var(--font);color:var(--t3);display:flex;gap:5px;align-items:center}
+.qr .ts{margin-top:1px;font:450 12px/1.3 var(--font);color:var(--t3);display:flex;gap:5px;align-items:center}
 .qr .du{margin-left:auto;font:550 11.5px/1 var(--font);color:var(--t4);font-variant-numeric:tabular-nums}
 .qr .rm{position:absolute;right:6px;top:50%;translate:0 -50%;width:24px;height:24px;border-radius:7px;display:none;place-items:center;color:var(--t3);background:var(--panel-hi)}
 .qr.done{opacity:.45}
@@ -423,17 +432,18 @@ body[data-svc=apple]{--jc-rad:18px}
 #pal .pin .ic{width:17px;height:17px;color:var(--t3)}
 #pal .pin input{flex:1;font-size:15px;font-weight:550;letter-spacing:-.01em}
 #pal .pin input:focus-visible{outline:none}
-#pal .lst{max-height:min(46vh,420px);overflow-y:auto;padding:7px;scrollbar-width:none}
+#pal .lst{max-height:min(46vh,420px);overflow-y:auto;padding:7px;scrollbar-width:none;mask-image:linear-gradient(180deg,#000 88%,transparent 100%);-webkit-mask-image:linear-gradient(180deg,#000 88%,transparent 100%)}
 #pal .lst::-webkit-scrollbar{display:none}
 #pal .gl{font:700 10.5px/1 var(--font);letter-spacing:.09em;text-transform:uppercase;color:var(--t4);padding:10px 10px 5px}
 .pit{display:flex;align-items:center;gap:11px;width:100%;height:36px;padding:0 10px;border-radius:10px;color:var(--t2);font:550 13.5px/1 var(--font);cursor:pointer}
 .pit .ic{width:16px;height:16px;color:var(--t3)}
+.pit .src{width:20px;height:20px}
 .pit img{width:22px;height:22px;border-radius:5px;object-fit:cover}
 .pit .hint{margin-left:auto;font:450 11px/1 var(--font);color:var(--t4)}
 .pit .kbd{margin-left:auto}
 .pit.sel{background:oklch(1 0 0/.09);color:var(--t1)}
 .pit.sel .ic{color:var(--acc)}
-#pal .ft{display:flex;align-items:center;gap:14px;padding:9px 14px;border-top:1px solid var(--hair-soft);font:450 11.5px/1 var(--font);color:var(--t3)}
+#pal .ft{display:flex;align-items:center;gap:14px;padding:9px 14px;border-top:1px solid var(--hair-soft);font:450 12px/1 var(--font);color:var(--t3)}
 #pal .ft span{display:flex;align-items:center;gap:5px}
 #pal .empty{padding:34px 0;text-align:center;color:var(--t3);font-size:13px}
 /* context menu */
@@ -444,7 +454,9 @@ body[data-svc=apple]{--jc-rad:18px}
 .cit{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border-radius:8px;color:var(--t2);font:550 13px/1 var(--font);text-align:left}
 .cit .ic{width:15px;height:15px;color:var(--t2)}
 .cit .hint{margin-left:auto;font:450 10.5px/1 var(--font);color:var(--t4)}
-.cit.ctxhd{pointer-events:none;color:var(--t1);font-weight:650}.cit.ctxhd .hint{color:var(--t3)}
+.cit.ctxhd{pointer-events:none;flex-direction:column;align-items:flex-start;height:auto;padding:8px 10px 6px;gap:2px}
+.cit.ctxhd>span:first-of-type{font:650 13px/1.25 var(--font);color:var(--t1)}
+.cit.ctxhd .hint{margin-left:0;font:450 11.5px/1.3 var(--font);color:var(--t3)}
 .cit.danger{color:#ff6d5e}.cit.danger .ic{color:#ff6d5e}
 .cit.on .ic{color:var(--acc)}
 .csep{height:1px;margin:5px 8px;background:var(--hair-soft)}
@@ -461,7 +473,7 @@ body[data-svc=apple]{--jc-rad:18px}
 #conn .cl .src{width:42px;height:42px;border-radius:13px;font-size:15px}
 #conn .cl .ring2{position:absolute;inset:-6px;border-radius:26px;border:1px solid color-mix(in oklab,var(--csvc) 25%,transparent)}
 #conn h2{margin-top:18px;font-size:19px;font-weight:750;letter-spacing:-.02em}
-#conn .why{margin:9px auto 0;max-width:300px;font:450 12.5px/1.55 var(--font);color:var(--t2);text-wrap:pretty;text-align:left}
+#conn .why{margin:9px auto 0;max-width:300px;font:450 12.5px/1.55 var(--font);color:var(--t2);text-wrap:pretty;text-align:center}
 #conn .feats{margin:14px auto 0;display:flex;flex-direction:column;gap:7px;max-width:300px;text-align:left}
 #conn .feats li{display:flex;align-items:center;gap:9px;font:550 12.5px/1.3 var(--font);color:var(--t2)}
 #conn .feats .ic{width:14px;height:14px;color:var(--csvc)}
@@ -476,7 +488,7 @@ body[data-svc=apple]{--jc-rad:18px}
 #conn .cta:hover{filter:brightness(1.08)}
 #conn .later{margin-top:10px;font:550 12px/1 var(--font);color:var(--t3);padding:7px 12px;border-radius:8px}
 #conn .later:hover{color:var(--t1);background:var(--well)}
-#conn .note{margin-top:14px;font:450 11px/1.5 var(--font);color:var(--t3)}
+#conn .note{margin-top:14px;font:450 11px/1.5 var(--font);color:var(--t3);text-wrap:balance;max-width:290px;margin-left:auto;margin-right:auto}
 /* toasts */
 #toasts{position:fixed;left:calc(var(--sb) + 24px);bottom:22px;z-index:45;display:flex;flex-direction:column;gap:8px;pointer-events:none}
 .toast{display:flex;align-items:center;gap:9px;height:38px;padding:0 14px;border-radius:11px;font:550 12.5px/1 var(--font);color:var(--t1);
@@ -524,8 +536,8 @@ body[data-svc=apple]{--jc-rad:18px}
     <div id="sideTop">
       <div class="brand"><span class="mk"></span><b>Cadence</b><span class="v">β</span></div>
       <div id="switch"><div class="ind"></div></div>
-      <button id="locRow" title="Local files — always available"><svg class="ic" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--t3)"><path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2.5h8A1.5 1.5 0 0 1 20.5 9.5V18A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18V7Z"/></svg><span class="ell">Local files</span><span class="tag">FLAC</span></button>
       <div id="svcName"><span class="eyebrow" id="svcLabel">Apple Music</span><span class="st2" id="svcStat"></span></div>
+      <button id="locRow" title="Local files — always available"><svg class="ic" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--t3)"><path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2.5h8A1.5 1.5 0 0 1 20.5 9.5V18A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18V7Z"/></svg><span class="ell">Local files</span><span class="tag">FLAC</span></button>
     </div>
     <nav id="sideNav"></nav>
     <button id="acct" title="Switch platform">
@@ -589,7 +601,7 @@ body[data-svc=apple]{--jc-rad:18px}
     <div class="badges" id="npBadges"></div>
     <div class="lrow">
       <span class="eyebrow" style="color:var(--t4)">Up next</span>
-      <button class="nxr" id="npNext"><img id="npNextCv" alt=""><span class="t"><b id="npNextT">—</b><small id="npNextA">—</small></span></button>
+      <div id="npNext" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
   </div>
   <div class="lyr" id="lyrBox"></div>
@@ -642,6 +654,7 @@ const I={
   grip:'<circle cx="9" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.2" fill="currentColor" stroke="none"/>',
   queue:'<path d="M4 6h16M4 11h10M4 16h10m4-4v6m0 0 2-2m-2 2-2-2"/>',
   fwd:'<path d="M12 5v14m0 0 5-5m-5 5-5-5"/>',
+  skip:'<path d="M7 6.4v11.2l8.2-5.6-8.2-5.6Z"/><path d="M17.5 5.5v13"/>',
   arrowR:'<path d="M5 12h14m0 0-5-5m5 5-5 5"/>',
   lib:'<path d="M5 4.5v15M9.5 4.5v15m1-15 4.5 14.5"/>',
   down:'<path d="M12 4v12m0 0 4.5-4.5M12 16l-4.5-4.5"/><path d="M5 20h14"/>',
@@ -796,7 +809,7 @@ const S={
 };
 const track=(ref)=>{const[aid,tt]=ref.split(':');const al=ALBM[aid];const dur=parseDur((al.tr.find(x=>x[0]===tt)||['','3:30'])[1]);return{key:ref,title:tt,artist:al.a,alid:aid,dur,src:(al.local?'local':(al.src.includes(S.svc)?S.svc:al.src[0])),lyr:(LYR[ref]||GENLYR(tt)).map(([s,x])=>({s:+s,x}))}};
 const svcOf=al=>al.src[0];
-const GLYPH={apple:I.note,spotify:'<path d="M5 9.6c4-1.1 9.4-.9 14 1M5.7 13.1c3.4-.9 8-.7 11.8.8M6.4 16.4c2.7-.7 6.3-.5 9.3.8"/>',ytm:'<rect x="3.8" y="7.2" width="16.4" height="9.6" rx="4.8"/><path d="M10.6 9.9v4.2l3.9-2.1-3.9-2.1Z" fill="currentColor" stroke="none"/>',local:I.folder};
+const GLYPH={apple:I.note,spotify:'<path d="M5 9.6c4-1.1 9.4-.9 14 1M5.7 13.1c3.4-.9 8-.7 11.8.8M6.4 16.4c2.7-.7 6.3-.5 9.3.8"/>',ytm:'<rect x="3.5" y="7" width="17" height="10" rx="5"/><path d="M10.2 9.6v4.8l4.6-2.4-4.6-2.4Z" fill="currentColor" stroke="none"/>',local:I.folder};
 const srcTile=(id,c='')=>`<span class="src ${c}" style="--sc:${SVC[id].sc}" title="${SVC[id].name}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="width:62%;height:62%">${GLYPH[id]}</svg></span>`;
 const albumsOf=s=>ALB.filter(a=>a.src.includes(s));
 const applyAccent=(al)=>{const r=document.documentElement.style;r.setProperty('--acc',al.acc);r.setProperty('--amb1',al.amb[0]);r.setProperty('--amb2',al.amb[1]);};
@@ -815,7 +828,7 @@ function renderSwitch(){
   const sw=$('#switch');
   sw.querySelectorAll('button').forEach(b=>b.remove());
   SORDER.forEach((id,i)=>{const s=SVC[id];
-    const b=el(`<button class="${id===S.svc?'on':''} ${s.connected?'':'off'}" title="${s.name}${s.connected?'':'not connected'}">${srcTile(id)}<span class="st" style="--sc:${s.sc}"></span></button>`);
+    const b=el(`<button class="${id===S.svc?'on':''} ${s.connected?'':'off'}" title="${s.name}${s.connected?'':' — not connected'}">${srcTile(id)}<span class="st" style="--sc:${s.sc}">${s.connected?'':'+'}</span></button>`);
     b.onclick=()=>switchSvc(id);sw.append(b);});
   const i=SORDER.indexOf(S.svc);
   sw.querySelector('.ind').style.transform=`translateX(${i*100}%)`;
@@ -835,7 +848,7 @@ function renderNav(){
   else{mk(s.nav,'This Mac');}
   const pl=Object.entries(PLAYLISTS).filter(([id,p])=>s.local?p.src.includes('local'):!p.src.includes('local')&&p.src.includes(S.svc));
   if(pl.length){nav.append(el(`<div class="slab">Playlists<button class="add press" title="New playlist">${ic('plus')}</button></div>`));
-    pl.forEach(([id,p])=>{const n=el(`<button class="pj" data-p="${id}"><img src="${C+(p.cv==='mos'?ALBM[p.mos[0]].cv:p.cv)}" alt=""><span class="ell">${esc(p.t)}</span><span class="dot" style="--dc:${SVC[p.src.includes(S.svc)?S.svc:p.src[0]].sc}"></span></button>`);
+    pl.forEach(([id,p])=>{const n=el(`<button class="pj" data-p="${id}"><img src="${C+(p.cv==='mos'?ALBM[p.mos[0]].cv:p.cv)}" alt=""><span class="ell">${esc(p.t)}</span></button>`);
       n.onclick=()=>go('playlist',id);nav.append(n);});}
 
   $('#locRow').classList.toggle('on',S.view==='localPeek'||S.view==='local');
@@ -849,7 +862,7 @@ function cardHTML(kind,id,extra=''){
     const cv=p.cv==='mos'?`<div class="cv ring mos">${p.mos.map(m=>`<img src="${C+ALBM[m].cv}">`).join('')}</div>`:`<div class="cv ring"><img src="${C+p.cv}"></div>`;
     return `<button class="card press" data-pl="${id}">${cv.replace('</div>',`<span class="ply press" data-playpl="${id}">${icF('play')}</span></div>`)}<div class="tt ell">${esc(p.t)}</div><div class="ts ell">${esc(p.d)}</div></button>`;}
   const al=ALBM[id];
-  return `<button class="card press" data-al="${id}"><div class="cv ring"><img src="${C+al.cv}"><span class="ply press" data-play="${id}">${icF('play')}</span></div><div class="tt ell">${esc(al.t)}</div><div class="ts ell">${esc(al.a)} · ${al.y}</div></button>`;
+  return `<button class="card press" data-al="${id}"><div class="cv ring"><img src="${C+al.cv}"><span class="ply press" data-play="${id}">${icF('play')}</span></div><div class="tt ell">${esc(al.t)}</div><div class="ts"><span class="ell">${esc(al.a)}</span><span class="y">· ${al.y}</span></div></button>`;
 }
 function jumpHTML(kind,id,p){const obj=kind==='pl'?{t:PLAYLISTS[id].t,s:PLAYLISTS[id].d,cv:PLAYLISTS[id].cv==='mos'?ALBM[PLAYLISTS[id].mos[0]].cv:PLAYLISTS[id].cv,src:(PLAYLISTS[id].src.includes(S.svc)?S.svc:PLAYLISTS[id].src[0])}:{t:ALBM[id].t,s:`${ALBM[id].a} · Album`,cv:ALBM[id].cv,src:(ALBM[id].local?'local':(ALBM[id].src.includes(S.svc)?S.svc:svcOf(ALBM[id])))};
   return `<button class="jc" data-${kind}="${id}"><img src="${C+obj.cv}"><span class="t"><span class="tt ell">${esc(obj.t)}</span><span class="ts ell">${esc(obj.s)}</span><span class="pb"><i style="--p:${p};--pc:${SVC[obj.src].sc}"></i></span></span><span class="ply">${icF('play')}</span></button>`;}
@@ -857,8 +870,7 @@ function trHTML(tk,i,showAl=true){const al=ALBM[tk.alid];const cur=S.track&&S.tr
   if(!showAl){const plays=(37+((tk.key.charCodeAt(0)+i*29)%64))*137;
     return `<div class="tr bare ${cur?'cur':''} ${cur&&!S.playing?'paused':''}" data-trk="${tk.key}">
     <span class="n"><span class="num">${i+1}</span><span class="eq"><i></i><i></i><i></i></span></span>
-    <span class="ti"><span class="nm ell">${esc(tk.title)}</span></span>
-    <span class="al ell">${tk.artist!==al.a?esc(tk.artist):''}</span>
+    <span class="ti"><span class="nm ell">${esc(tk.title)}${tk.artist!==al.a?`<small>${esc(tk.artist)}</small>`:''}</span></span>
     <span class="du num">${fmt(tk.dur)}</span>
     <button class="x" data-x="${tk.key}" title="More">${ic('dots')}</button></div>`;}
   return `<div class="tr ${cur?'cur':''} ${cur&&!S.playing?'paused':''}" data-trk="${tk.key}">
@@ -867,12 +879,12 @@ function trHTML(tk,i,showAl=true){const al=ALBM[tk.alid];const cur=S.track&&S.tr
     <span class="al ell">${esc(al.t)}</span>
     <span class="du num">${fmt(tk.dur)}</span>
     <button class="x" data-x="${tk.key}" title="More">${ic('dots')}</button></div>`;}
-function sectionTracks(list,showAl=true){return `<div class="tbl"><div class="thead"><span></span><span>Title</span><span>${showAl?'Album':''}</span><span style="text-align:right">Time</span><span></span></div>${list.map((t,i)=>trHTML(t,i,showAl)).join('')}</div>`}
+function sectionTracks(list,showAl=true){return `<div class="tbl ${showAl?'':'bare'}"><div class="thead"><span></span><span>Title</span>${showAl?'<span>Album</span>':''}<span style="text-align:right">Time</span><span></span></div>${list.map((t,i)=>trHTML(t,i,showAl)).join('')}</div>`}
 
 function greet(){const h=new Date().getHours();return h<12?'Good morning':h<18?'Good afternoon':'Good evening'}
 
 function vHome(){const s=SVC[S.svc];const shl=SHELVES[S.svc];
-  const lines={apple:'Hand-picked for you across Apple Music',spotify:'Your mixes, podcasts and more from Spotify',ytm:'Mixes and videos from YouTube Music',local:'Everything on this Mac, always available'};
+  const lines={apple:'Hand-picked for you on Apple Music',spotify:'Your mixes, podcasts and more from Spotify',ytm:'Mixes and videos from YouTube Music',local:'Everything on this Mac, always available'};
   return `<div class="page"><div style="padding-top:14px"><h1 class="greet">${greet()}, Nirvaan</h1>
   <div class="gsub">${srcTile(S.svc)}<span>${lines[S.svc]}</span><span style="color:var(--t4)">·</span><span>${albumsOf(S.svc).length} releases this week</span></div></div>
   ${shl.map(sh=>`<section class="shelf"><h2>${sh.t}${sh.sub?`<span class="sub">${sh.sub}</span>`:''}<button class="more">See all${ic('arrowR')}</button></h2>
@@ -908,12 +920,12 @@ function vAlbum(id){const al=ALBM[id];const trs=al.tr.map(([t])=>track(al.id+':'
   const src=SVC[svcOf(al)];
   return `<div class="page"><div class="alb"><img src="${C+al.cv}" class="ring"><div class="inf">
   <div class="eyebrow">${al.local?'Local album':al.tag||al.g} · ${al.y}</div><h1>${esc(al.t)}</h1>
-  <div class="by">${srcTile(svcOf(al),'lg')}<span class="a">${esc(al.a)}</span></div>
-  <div class="meta"><span>${src.name}</span><span style="color:var(--t4)">·</span><span>${al.tr.length} songs, ${Math.round(dur/60)} min</span><span style="color:var(--t4)">·</span><span>${al.q}</span></div>
+  <div class="by">${al.local?srcTile('local','lg'):(svcOf(al)!==S.svc?srcTile(svcOf(al),'lg'):'')}<span class="a" data-ar="${esc(al.a)}">${esc(al.a)}</span></div>
+  <div class="meta"><span>${al.tr.length} songs, ${Math.round(dur/60)} min</span><span style="color:var(--t4)">·</span><span>${al.q}</span></div>
   <div class="acts"><button class="btn acc" data-play="${al.id}">${icF('play')} Play</button><button class="btn" data-shuf="${al.id}">${ic('shuf')} Shuffle</button>
   <button class="ib press" data-love="${al.id}" title="Love">${ic('heart')}</button><button class="ib press" data-more-al="${al.id}" title="More">${ic('dots')}</button></div></div></div>
   ${sectionTracks(trs,false)}
-  <div style="margin-top:22px;font:450 11.5px/1.5 var(--font);color:var(--t4)">℗ ${al.y} ${esc(al.a)} · ${al.local?'Files on this Mac':'Available on '+src.name}</div></div>`;}
+  <div style="margin-top:22px;font:450 11.5px/1.5 var(--font);color:var(--t4)">℗ ${al.y} ${esc(al.a)}${al.local?' · Files on this Mac':''}</div></div>`;}
 function vPlaylist(id){const p=PLAYLISTS[id];const trs=p.tr.map(track);
   const dur=trs.reduce((s,t)=>s+t.dur,0);
   const cv=p.cv==='mos'?`<div class="ring" style="border-radius:14px;overflow:hidden;display:grid;grid-template-columns:1fr 1fr;width:212px;height:212px">${p.mos.map(m=>`<img src="${C+ALBM[m].cv}" style="width:106px;height:106px;object-fit:cover">`).join('')}</div>`:`<img src="${C+p.cv}" class="ring" style="width:212px;height:212px;border-radius:14px;object-fit:cover">`;
@@ -955,12 +967,14 @@ function navFwd(){if(S.histI<S.hist.length-1){S.histI++;const[v,a]=S.hist[S.hist
 function setContext(tks,start,name){S.context={tracks:tks};S.ctxName=name;S.queue=tks.map(t=>({...t}));S.qi=start??0;loadTrack(S.queue[S.qi]);renderQueue();}
 function loadTrack(tk,autoplay=true){S.track=tk;S.t=0;S.dur=tk.dur;S.playing=autoplay;
   const al=ALBM[tk.alid];applyAccent(al);setAmbient(C+al.cv);
-  $('#pArt img').src=C+al.cv;$('#pTitle').textContent=tk.title;$('#pArtist').textContent=`${tk.artist} — ${al.t}`+(tk.src!==S.svc?` · via ${SVC[tk.src].name}`:'');
+  $('#pArt img').src=C+al.cv;$('#pTitle').textContent=tk.title;updMeta();
   const sd=SVC[tk.src];setTile('#pSrc',tk.src);
   $('#tEnd').textContent=fmt(tk.dur);$('#tCur').textContent='0:00';
   $('#pLove').classList.toggle('on',S.loved.has(tk.key));
   updateNP();markRows();updatePlayIcon();}
 function updatePlayIcon(){const p=S.playing;$('#playIc').style.display=p?'none':'';$('#pauseIc').style.display=p?'':'none';markRows();}
+function updMeta(){const tk=S.track;if(!tk)return;const al=ALBM[tk.alid];
+  $('#pArtist').textContent=tk.src!==S.svc?`via ${SVC[tk.src].name} · ${tk.artist} — ${al.t}`:`${tk.artist} — ${al.t}`;}
 function togglePlay(){if(!S.track)return;S.playing=!S.playing;updatePlayIcon();}
 function next(auto){if(!S.queue.length)return;
   if(S.repeat===2&&auto){S.t=0;return}
@@ -990,9 +1004,9 @@ function updateNP(){const tk=S.track;if(!tk)return;const al=ALBM[tk.alid];const 
   $('#npArt').src=C+al.cv;$('#npTitle').textContent=tk.title;$('#npArtist').textContent=tk.artist;$('#npAlbum').textContent=al.t;
   setTile('#npSrc',tk.src);
   $('#npFrom').textContent=al.local?'Playing from this Mac':'Playing from '+sd.name;
-  $('#npBadges').innerHTML=`<span class="tag">${al.q}</span><span class="tag">${al.g}</span>${S.loved.has(tk.key)?'<span class="tag" style="color:#ff6d8a">♥ Loved</span>':''}`;
-  const nx=S.queue[S.qi+1]||S.queue[0];
-  if(nx){$('#npNextT').textContent=nx.title;$('#npNextA').textContent=nx.artist;$('#npNextCv').src=C+ALBM[nx.alid].cv;}
+  $('#npBadges').innerHTML=`<span class="tag">${al.q}</span><span class="tag">${al.g}</span>`;
+  const up=[S.queue[S.qi+1],S.queue[S.qi+2],S.queue[S.qi+3]].filter(Boolean);
+  $('#npNext').innerHTML=up.map((t,i)=>`<button class="nxr" data-ni="${i}"><img src="${C+ALBM[t.alid].cv}"><span class="t"><b>${esc(t.title)}</b><small>${esc(t.artist)}</small></span>${i===0?'<span class="tag" style="margin-left:auto;flex:none">Next</span>':''}</button>`).join('');
   buildLyrics();}
 let lyrEls=[],lyrIdx=-1;
 function buildLyrics(){const box=$('#lyrBox');box.innerHTML='<div class="sp"></div>';
@@ -1009,13 +1023,19 @@ function updLyric(jump){if(!S.np||!S.track)return;
 /* =============== queue =============== */
 function renderQueue(){const q=$('#qList');q.innerHTML='';
   $('#qHead').textContent=S.queue.length?`Playing from ${S.ctxName||'queue'} · ${S.queue.length} tracks`:'Queue is empty';
+  const mixed=new Set(S.queue.map(t=>t.src)).size>1;
   S.queue.forEach((tk,i)=>{const al=ALBM[tk.alid];const cur=i===S.qi;const done=i<S.qi;
-    const r=el(`<div class="qr ${cur?'cur':''} ${done?'done':''}" data-i="${i}" draggable="false">
+    const r=el(`<div class="qr ${cur?'cur':''} ${done?'done':''}" data-i="${i}" draggable="false" tabindex="0" role="button" aria-label="Queue item: ${esc(tk.title)} by ${esc(tk.artist)}">
       <span class="grip">${ic('grip')}</span><img src="${C+al.cv}">
-      <div style="min-width:0;flex:1"><div class="tt ell">${esc(tk.title)}</div><div class="ts ell">${srcTile(tk.src)} ${esc(tk.artist)}</div></div>
+      <div style="min-width:0;flex:1"><div class="tt ell" style="display:flex;align-items:center;gap:7px">${cur?'<span class="eq" style="display:flex;margin:0;width:13px;height:12px"><i></i><i></i><i></i></span>':''}<span class="ell">${esc(tk.title)}</span></div><div class="ts ell">${mixed?srcTile(tk.src):''}${esc(tk.artist)}</div></div>
       <span class="du num">${fmt(tk.dur)}</span><button class="rm" title="Remove">${ic('x')}</button></div>`);
-    r.querySelector('.rm').onclick=e=>{e.stopPropagation();S.queue.splice(i,1);if(i<S.qi)S.qi--;if(i===S.qi){S.qi=Math.min(S.qi,S.queue.length-1)}renderQueue();};
+    r.querySelector('.rm').onclick=e=>{e.stopPropagation();S.queue.splice(i,1);if(i<S.qi)S.qi--;if(i===S.qi){S.qi=Math.min(S.qi,S.queue.length-1);if(S.queue.length)loadTrack(S.queue[S.qi])}renderQueue();};
     r.onclick=()=>{S.qi=i;loadTrack(tk);renderQueue();};
+    r.onkeydown=e=>{if(!e.altKey)return;const j=e.key==='ArrowUp'?i-1:e.key==='ArrowDown'?i+1:-1;
+      if(j<0||j>=S.queue.length)return;e.preventDefault();
+      const[m]=S.queue.splice(i,1);S.queue.splice(j,0,m);
+      if(S.qi===i)S.qi=j;else if(i<S.qi&&j>=S.qi)S.qi--;else if(i>S.qi&&j<=S.qi)S.qi++;
+      renderQueue();q.children[j].focus();};
     const grip=r.querySelector('.grip');
     grip.addEventListener('pointerdown',e=>startDrag(e,i,r));
     q.append(r);});
@@ -1033,12 +1053,12 @@ function startDrag(e,i,row){e.preventDefault();drag={i,row,ys:[...document.query
       if(drag.i===S.qi)S.qi=drag.over;else if(drag.i<S.qi&&drag.over>=S.qi)S.qi--;else if(drag.i>S.qi&&drag.over<=S.qi)S.qi++;}
     drag=null;renderQueue();};
   row.addEventListener('pointermove',mv);row.addEventListener('pointerup',up);row.addEventListener('pointercancel',up);}
-function toggleQueue(open){S.queueOpen=open??!S.queueOpen;$('#queue').classList.toggle('open',S.queueOpen);$('#pQueue').classList.toggle('on',S.queueOpen);$('#qDim').classList.toggle('on',S.queueOpen);if(S.queueOpen)renderQueue();}
+function toggleQueue(open){S.queueOpen=open??!S.queueOpen;$('#queue').classList.toggle('open',S.queueOpen);$('#pQueue').classList.toggle('on',S.queueOpen);$('#qDim').classList.toggle('on',S.queueOpen);document.body.classList.toggle('q-open',S.queueOpen);if(S.queueOpen)renderQueue();}
 
 /* =============== context menu =============== */
 const ctx=$('#ctx');let ctxData=null;
 function openCtx(x,y,items){ctxData=items;ctx.innerHTML=items.map(it=>it==='-'?'<div class="csep"></div>':
-  `<button class="cit ${it.d||''} ${it.on?'on':''}">${it.i?ic(it.i):'<span style="width:15px"></span>'}<span>${esc(it.t)}</span>${it.h?`<span class="hint">${it.h}</span>`:''}</button>`).join('');
+  `<button class="cit ${it.d||''} ${it.on?'on':''}">${it.i?ic(it.i):(it.d==='ctxhd'?'':'<span style="width:15px"></span>')}<span>${esc(it.t)}</span>${it.h?`<span class="hint">${it.h}</span>`:''}</button>`).join('');
   ctx.querySelectorAll('.cit').forEach((b,i)=>{const flat=items.filter(x=>x!=='-');const it=flat[i];if(it) b.onclick=()=>{closeCtx();it.fn&&it.fn()};});
   ctx.classList.add('open');ctx.style.transformOrigin=`${x}px ${y}px`;
   const r=ctx.getBoundingClientRect();
@@ -1048,7 +1068,7 @@ function markCtx(key){document.querySelectorAll('.ctx-target').forEach(e=>e.clas
 function ctxTrack(tk,x,y){const al=ALBM[tk.alid];
   markCtx(tk.key);
   openCtx(x,y,[
-    {t:`${tk.title}`,i:'note',h:tk.artist,d:'ctxhd',fn:()=>{}},'-',
+    {t:`${tk.title}`,h:tk.artist,d:'ctxhd',fn:()=>{}},'-',
     {t:'Play',i:'play',fn:()=>setContext([tk],0)},
     {t:'Play next',i:'arrowR',fn:()=>{S.queue.splice(S.qi+1,0,{...tk});renderQueue();toast('Will play next')}},
     {t:'Add to queue',i:'queue',fn:()=>{S.queue.push({...tk});renderQueue();toast('Added to queue')}},'-',
@@ -1074,19 +1094,16 @@ function playRef(key){const tk=track(key);const rest=S.queue.length?S.queue:ALBM
 /* =============== palette =============== */
 const palWrap=$('#palWrap'),palIn=$('#palIn'),palList=$('#palList');
 function palItems(q){q=(q||'').toLowerCase();const out=[];const s=SVC[S.svc];
-  const push=(g,t,icn,h,fn)=>{if(!q||t.toLowerCase().includes(q))out.push({g,t,icn,h,fn})};
-  push('Actions','Play / pause','play','Space',()=>togglePlay());
-  push('Actions','Next track','fwd','',()=>next());
-  push('Actions','Toggle shuffle','shuf','S',()=>$('#pShuf').click());
-  push('Actions','Toggle repeat','rep2','R',()=>$('#pRep').click());
-  push('Actions','Open Now Playing','mic','L',()=>openNP());
-  push('Actions','Open queue','queue','',()=>toggleQueue(true));
-  push('Switch platform','Switch to Apple Music','disc',SVC.apple.connected?'':'Not connected',()=>switchSvc('apple'));
-  push('Switch platform','Switch to Spotify','disc',SVC.spotify.connected?'':'Not connected',()=>switchSvc('spotify'));
-  push('Switch platform','Switch to YouTube Music','disc',SVC.ytm.connected?'':'Not connected',()=>switchSvc('ytm'));
-  push('Go to','Open Local files','folder','Always on',()=>go('localPeek'));
+  const push=(g,t,icn,h,fn,k,tile)=>{if(!q||t.toLowerCase().includes(q))out.push({g,t,icn,h,fn,k,tile})};
+  push('Actions','Play / pause','play','',()=>togglePlay(),'Space');
+  push('Actions','Next track','skip','',()=>next(),'Shift+→');
+  push('Actions','Toggle shuffle','shuf','',()=>$('#pShuf').click(),'S');
+  push('Actions','Toggle repeat','rep2','',()=>$('#pRep').click(),'R');
+  push('Actions','Open Now Playing','note','',()=>openNP(),'L');
+  push('Actions','Open queue','queue','',()=>toggleQueue(true),'Q');
   s.nav.forEach(([v,t,icn])=>push('Go to',(s.local?'Open ':'Go to ')+t,icn,'',()=>go(v)));
   push('Go to','Go to Local files','folder','FLAC',()=>go('localPeek'));
+  ['apple','spotify','ytm'].filter(x=>x!==S.svc).forEach(x=>push('Switch platform','Switch to '+SVC[x].name,'',SVC[x].connected?'':'Not connected',()=>switchSvc(x),'',x));
   albumsOf(S.svc).concat(ALB.filter(a=>a.local)).forEach(a=>push('Play',`Play ${a.t}`,'disc',a.a,()=>{closePal();go('album',a.id)}));
   return out;}
 function openPal(){palWrap.classList.add('open');palIn.value='';S.palSel=0;palList.scrollTop=0;
@@ -1094,7 +1111,7 @@ function openPal(){palWrap.classList.add('open');palIn.value='';S.palSel=0;palLi
 function closePal(){palWrap.classList.remove('open');palIn.blur();}
 function renderPal(q){S.palItems=palItems(q);
   let h='',g='';S.palItems.forEach((it,i)=>{if(it.g!==g){g=it.g;h+=`<div class="gl">${g}</div>`}
-    h+=`<button class="pit ${i===S.palSel?'sel':''}" data-i="${i}">${ic(it.icn)}<span class="ell">${esc(it.t)}</span>${it.h?`<span class="${it.h.length<=3?'kbd':'hint'}">${it.h}</span>`:''}</button>`;});
+    h+=`<button class="pit ${i===S.palSel?'sel':''}" data-i="${i}">${it.tile?srcTile(it.tile):ic(it.icn)}<span class="ell">${esc(it.t)}</span>${it.k?it.k.split('+').map(k=>`<span class="kbd">${k}</span>`).join(' '):''}${it.h?`<span class="hint">${it.h}</span>`:''}</button>`;});
   palList.innerHTML=h||`<div class="empty">No results for “${esc(q)}”</div>`;
   palList.querySelectorAll('.pit').forEach(b=>{b.onmouseenter=()=>{S.palSel=+b.dataset.i;syncPalSel()};b.onclick=()=>pick(+b.dataset.i);});}
 function syncPalSel(){palList.querySelectorAll('.pit').forEach(b=>b.classList.toggle('sel',+b.dataset.i===S.palSel));
@@ -1111,12 +1128,12 @@ function switchSvc(id){if(switching)return;const s=SVC[id];
   const chip=$('#swChip');chip.innerHTML=`${srcTile(id)}<span><b>${s.name}</b><small>${s.local?'Your local library':'Switched platform'}</small></span>`;
   $('#swV').classList.add('on');
   view.querySelector('.page')?.classList.add('swap');
-  setTimeout(()=>{renderNav();render();$('#swV').classList.remove('on');switching=false;},420);
+  setTimeout(()=>{renderNav();render();updMeta();$('#swV').classList.remove('on');switching=false;},420);
 }
 function openConnect(id){const s=SVC[id];const w=$('#connWrap'),c=$('#conn');
-  c.innerHTML=`<div class="cl"><span class="ring2"></span>${srcTile(id,'lg')}</div>
+  c.innerHTML=`<div class="cl">${srcTile(id,'lg')}</div>
   <h2>Connect ${s.name}</h2>
-  <p class="why">Cadence becomes a client for ${s.name}: your library, playlists and recommendations come with it. Only one platform is active at a time — switching is instant.</p>
+  <p class="why">Cadence plays your ${s.name} library, playlists and recommendations. Only one platform is active at a time — switching is instant.</p>
   <ul class="feats">${s.feats.map(f=>`<li>${ic('check')}<span>${f}</span></li>`).join('')}</ul>
   <button class="cta" id="connGo"><span class="spin"></span><span id="connLbl">Connect ${s.name}</span></button>
   <button class="later" id="connLater">Not now</button>
@@ -1171,7 +1188,7 @@ $('#pQueue').onclick=()=>toggleQueue();
 $('#pArt').onclick=()=>openNP();
 $('#pMeta').onclick=()=>S.track&&go('album',S.track.alid);
 $('#npClose').onclick=closeNP;
-$('#npNext').onclick=()=>{if(S.queue[S.qi+1])next()};
+$('#npNext').onclick=e=>{const b=e.target.closest('[data-ni]');if(b){const j=+b.dataset.ni;for(let k=0;k<=j;k++)next();}};
 $('#qClose').onclick=()=>toggleQueue(false);
 $('#qDim').onclick=()=>toggleQueue(false);
 $('#qClear').onclick=()=>{S.queue=[];S.qi=-1;renderQueue();toast('Queue cleared','x')};
@@ -1212,6 +1229,7 @@ addEventListener('keydown',e=>{
   else if(e.key==='ArrowUp'){e.preventDefault();S.vol=Math.min(1,S.vol+.05);$('#volFill').style.transform=`scaleX(${S.vol})`;document.querySelector('#vol .knob').style.left=(S.vol*100)+'%'}
   else if(e.key==='ArrowDown'){e.preventDefault();S.vol=Math.max(0,S.vol-.05);$('#volFill').style.transform=`scaleX(${S.vol})`;document.querySelector('#vol .knob').style.left=(S.vol*100)+'%'}
   else if(e.key.toLowerCase()==='l'){S.np?closeNP():openNP()}
+  else if(e.key.toLowerCase()==='q'){toggleQueue()}
 });
 /* click outside ctx / queue */
 addEventListener('mousedown',e=>{if(!ctx.contains(e.target))closeCtx()});
