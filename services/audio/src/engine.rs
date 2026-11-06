@@ -2725,13 +2725,15 @@ impl Engine {
         // out — queued because a fast user load can END a successor
         // before the predecessor's drain finishes; each entry carries
         // its own rate-scaled deadline.
-        // (queue_id, instance, parked_at, deadline_ms, drain_issued)
+        // (queue_id, instance, parked_at, deadline_ms, drain baseline
+        //  — Some(n) once a drain was requested; completion = a drained
+        //  event newer than n, keyed per-request)
         let mut pending_ends: std::collections::VecDeque<(
             String,
             u64,
             std::time::Instant,
             u64,
-            bool,
+            Option<u64>,
         )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
@@ -2859,7 +2861,7 @@ impl Engine {
                             instance,
                             std::time::Instant::now(),
                             deadline_ms,
-                            false,
+                            None,
                         ));
                     }
                 }
@@ -2883,20 +2885,21 @@ impl Engine {
                         && st.current_instance == inst
                 };
                 if !owned {
-                    if !issued {
+                    let Some(base) = issued else {
                         // Never touched the sink — drop outright.
                         self.handle_track_end(qid, inst);
                         continue;
-                    }
+                    };
                     // Its drain IS in flight on the reused stream: when
-                    // it lands, the stream deactivates — so wait for
-                    // the `drained` event, then reactivate, or the new
-                    // track plays silence (bounded by the deadline).
+                    // it lands, the stream deactivates — so wait for a
+                    // drain event newer than THIS request's baseline,
+                    // then reactivate (a completion can't satisfy a
+                    // later request by accident).
                     let done = {
                         let g = self.sink.lock().unwrap();
                         let d = g
                             .as_ref()
-                            .map(|s| s.downstream_drained())
+                            .map(|s| s.drained_since(base))
                             .unwrap_or(true);
                         if d
                             || since.elapsed()
@@ -2937,47 +2940,54 @@ impl Engine {
                 // never issued a flush (request_drain clears it).
                 let paused =
                     self.state.lock().unwrap().state == PlayState::Paused;
+                let mut drain_base = issued;
                 let gate = {
                     let g = self.sink.lock().unwrap();
                     match g.as_ref() {
                         _ if paused => Gate::Paused,
                         None => Gate::Drained,
                         Some(s) if s.staged_frames() > 0 => Gate::Playing,
-                        Some(s) if !issued => {
+                        Some(s) if issued.is_none() => {
                             // Hold `state` THROUGH the flush: a load's
                             // queue_id/instance mutation can't interleave
                             // between our ownership check and the drain.
-                            let still_owned = {
+                            let issued_b = {
                                 let st = self.state.lock().unwrap();
                                 let owned = st.queue_id.as_deref()
                                     == Some(qid.as_str())
                                     && st.current_instance == inst;
-                                owned
-                                    && if owned {
-                                        s.request_drain()
-                                    } else {
-                                        false
-                                    }
-                            };
-                            if still_owned {
-                                Gate::DrainIssued
-                            } else {
-                                // Lost ownership OR the backend can't
-                                // drain — the next tick's stale check
-                                // sorts out which.
-                                let owned2 = {
-                                    let st = self.state.lock().unwrap();
-                                    st.queue_id.as_deref() == Some(qid.as_str())
-                                        && st.current_instance == inst
-                                };
-                                if owned2 {
-                                    Gate::DrainUnsupported
+                                if owned {
+                                    s.request_drain()
                                 } else {
-                                    Gate::Playing
+                                    None
+                                }
+                            };
+                            match issued_b {
+                                Some(b) => {
+                                    drain_base = Some(b);
+                                    Gate::DrainIssued
+                                }
+                                None => {
+                                    // Lost ownership OR the backend
+                                    // can't drain — the next tick's
+                                    // stale check sorts out which.
+                                    let owned2 = {
+                                        let st = self.state.lock().unwrap();
+                                        st.queue_id.as_deref()
+                                            == Some(qid.as_str())
+                                            && st.current_instance == inst
+                                    };
+                                    if owned2 {
+                                        Gate::DrainUnsupported
+                                    } else {
+                                        Gate::Playing
+                                    }
                                 }
                             }
                         }
-                        Some(s) if s.downstream_drained() => Gate::Drained,
+                        Some(s) if s.drained_since(issued.unwrap()) => {
+                            Gate::Drained
+                        }
                         Some(_) => Gate::Playing,
                     }
                 };
@@ -2999,7 +3009,7 @@ impl Engine {
                             inst,
                             since,
                             deadline_ms,
-                            true,
+                            drain_base,
                         ));
                         break;
                     }
@@ -3023,13 +3033,13 @@ impl Engine {
                             // !owned+issued path below waits for the
                             // event and resumes so a late drain can't
                             // deactivate the reused stream.
-                            if issued {
+                            if issued.is_some() {
                                 pending_ends.push_back((
                                     qid.clone(),
                                     inst,
                                     std::time::Instant::now(),
                                     2000,
-                                    true,
+                                    issued,
                                 ));
                             }
                             self.handle_track_end(qid, inst);

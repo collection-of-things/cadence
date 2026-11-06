@@ -258,13 +258,14 @@ pub trait Sink: Send {
     fn device_delay_frames(&self) -> u64 {
         0
     }
-    /// Ask the backend to drain its downstream queue; returns false if
-    /// unsupported. Used at end-of-track so the tail plays out fully.
-    fn request_drain(&self) -> bool {
-        false
+    /// Ask the backend to drain its downstream queue; returns a
+    /// completion baseline (see drained_since) or None if unsupported.
+    /// Used at end-of-track so the tail plays out fully.
+    fn request_drain(&self) -> Option<u64> {
+        None
     }
-    /// True once a request_drain() has completed downstream.
-    fn downstream_drained(&self) -> bool {
+    /// True once a drain event newer than `baseline` has completed.
+    fn drained_since(&self, _baseline: u64) -> bool {
         true
     }
     /// Reactivate a stream that was drained or suspended — PipeWire

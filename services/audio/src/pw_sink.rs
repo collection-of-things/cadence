@@ -460,10 +460,11 @@ struct StreamErr {
     dead: Arc<AtomicBool>,
     state: Arc<std::sync::atomic::AtomicU8>,
     suppress: Arc<AtomicBool>,
-    /// set by the `drained` stream event after a flush(true) — the
-    /// engine's end-of-track drain waits on this instead of guessing
-    /// at graph queueing (mpv flushes the same way).
-    drained: Arc<AtomicBool>,
+    /// incremented by the `drained` stream event — entries wait on a
+    /// baseline captured at request time, so one completion can never
+    /// be mistaken for a LATER request's (and completions are stream-
+    /// state events, valid for every pending drain).
+    drained_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PipeWireCaps {
@@ -500,7 +501,7 @@ impl PipeWireCaps {
         let dead = Arc::new(AtomicBool::new(false));
         let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let suppress = Arc::new(AtomicBool::new(false));
-        let drained = Arc::new(AtomicBool::new(false));
+        let drained_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         // Spawn before the thread loop; FeedGuard::drop stops+joins on
         // every subsequent failure path.
         let (cons, feed) = spawn_feed(
@@ -555,7 +556,7 @@ impl PipeWireCaps {
                     dead: Arc::clone(&dead),
                     state: Arc::clone(&state),
                     suppress: Arc::clone(&suppress),
-                    drained: Arc::clone(&drained),
+                    drained_seq: Arc::clone(&drained_seq),
                 })
                 .state_changed(|_s, ud, old, new| {
                     if ud.suppress.load(Ordering::Relaxed) {
@@ -592,7 +593,7 @@ impl PipeWireCaps {
                     }
                 })
                 .drained(|_s, ud| {
-                    ud.drained.store(true, Ordering::Relaxed);
+                    ud.drained_seq.fetch_add(1, Ordering::Relaxed);
                 })
                 .register()?;
             let process_listener = stream
@@ -709,7 +710,7 @@ impl PipeWireCaps {
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
             state,
-            drained,
+            drained_seq,
             wd_paused: AtomicBool::new(paused_flag),
         }))
     }
@@ -847,10 +848,10 @@ pub struct PipeWireSink {
     /// reseeds the grace window so a resume can't false-trip on a
     /// timestamp that went stale DURING the pause.
     wd_paused: AtomicBool,
-    /// Set by the `drained` event after request_drain() flushes the
-    /// downstream queue — the stream event's own signal that the tail
-    /// has actually played out (mpv's pw_stream_flush model).
-    drained: Arc<AtomicBool>,
+    /// Monotonic counter bumped by each `drained` event — entries
+    /// wait for a count greater than their request baseline (mpv's
+    /// pw_stream_flush model, keyed per-request).
+    drained_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -945,32 +946,33 @@ impl Sink for PipeWireSink {
             .unwrap_or(self.device_delay_frames)
     }
 
-    fn request_drain(&self) -> bool {
+    fn request_drain(&self) -> Option<u64> {
         // flush(drain=true) → the `drained` event fires once the
-        // downstream queue has played out. Reset the flag first so a
-        // stale event can't short the wait.
-        self.drained.store(false, Ordering::Relaxed);
+        // downstream queue has played out. The baseline is the event
+        // counter BEFORE the flush: any later event is this request's
+        // completion (or a superset of it — a drained stream is
+        // drained regardless of which request prompted it).
+        let baseline = self.drained_seq.load(Ordering::Acquire);
         let _g = self.tl.lock();
-        self.stream.flush(true).is_ok()
+        self.stream.flush(true).ok().map(|_| baseline)
     }
 
-    fn downstream_drained(&self) -> bool {
-        self.drained.load(Ordering::Relaxed)
+    fn drained_since(&self, baseline: u64) -> bool {
+        self.drained_seq.load(Ordering::Acquire) > baseline
     }
 
     fn resume(&self) {
         // A drain leaves the stream deactivated AND stops the process
-        // callback for good (PipeWire only clears `drained` in
-        // set_active) — reactivate or the next track is silent and the
-        // watchdog false-trips 2.5s later. Reseed the watchdog anchor
-        // so its grace restarts from resume.
+        // callback for good — pw_stream_set_active clears BOTH the
+        // `draining` and `drained` states, which also CANCELS any
+        // pending drain, so no completion can arrive after this call.
+        // Reactivate + reseed the watchdog anchor.
         {
             let _g = self.tl.lock();
             let _ = self.stream.set_active(true);
         }
         self.last_process_ms
             .store(self.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
-        self.drained.store(false, Ordering::Relaxed);
     }
 }
 
