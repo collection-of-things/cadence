@@ -218,6 +218,19 @@ pub struct OutputCore {
     dump: Option<Dump>,
     /// reusable f32 scratch for pull_s16 (preallocated, grows once)
     scratch16: Vec<f32>,
+    /// Bumped on control changes that invalidate already-pulled PCM
+    /// (pause/seek/clear). Device callbacks poll it and flush their
+    /// staging rings so stale samples can't play past the control point.
+    pub clear_epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl OutputCore {
+    /// Invalidate staged PCM: every staging ring fed from this core
+    /// drops its queued samples on the next callback.
+    pub fn flush_output(&self) {
+        self.clear_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl OutputCore {
@@ -473,6 +486,7 @@ impl OutputCore {
         self.frames_played = 0;
         self.stalled = false;
         self.underrun = false;
+        self.flush_output();
     }
 
     fn position_ms(&self) -> u64 {
@@ -756,6 +770,7 @@ impl Engine {
                 fft_tap: tap_p.clone(),
                 dump,
                 scratch16: Vec::new(),
+                clear_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             })),
             tap_p,
             tap_c,
@@ -2058,6 +2073,8 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = false;
+            // Drop the silence staged while paused so resume is instant.
+            core.flush_output();
             st.state = PlayState::Playing;
         }
         self.emit_state(None);
@@ -2070,6 +2087,8 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = true;
+            // Drop staged PCM so nothing keeps sounding after the pause.
+            core.flush_output();
             st.state = PlayState::Paused;
         }
         self.emit_state(None);
@@ -2149,6 +2168,8 @@ impl Engine {
                 bail!("track boundary landed during seek — retry");
             }
             core.set_active(reader);
+            // Staged PCM still holds the pre-seek position — drop it.
+            core.flush_output();
             st.current_instance = seek_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
@@ -3151,11 +3172,13 @@ impl RemixSample for f32 {
     }
 }
 impl RemixSample for i32 {
+    // Power-of-two scale, same convention as pull_s32/pull_s16:
+    // i32::MIN <-> exactly -1.0.
     fn to_f64(self) -> f64 {
-        self as f64 / i32::MAX as f64
+        self as f64 / 2147483648.0
     }
     fn from_f64(v: f64) -> Self {
-        (v * i32::MAX as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        (v * 2147483648.0).clamp(i32::MIN as f64, i32::MAX as f64) as i32
     }
 }
 

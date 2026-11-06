@@ -2,6 +2,7 @@ pub mod decode;
 pub mod dsp;
 pub mod engine;
 pub mod fft;
+#[cfg(target_os = "linux")]
 pub mod pw_sink;
 pub mod resample;
 pub mod ringbuf;

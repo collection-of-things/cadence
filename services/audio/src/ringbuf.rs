@@ -121,6 +121,15 @@ impl<T: Copy + Default> Consumer<T> {
     pub fn abort(&self) {
         self.s.abort.store(true, Ordering::Release);
     }
+
+    /// Discard everything currently queued — e.g. after a pause/seek the
+    /// staged PCM is stale and must not reach the device. Safe next to a
+    /// concurrent write: the producer either lands before the flush (and
+    /// gets dropped) or after (and stays), never torn.
+    pub fn clear(&self) {
+        let tail = self.s.tail.load(Ordering::Acquire);
+        self.s.head.store(tail, Ordering::Release);
+    }
 }
 
 impl<T> Drop for Consumer<T> {

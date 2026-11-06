@@ -462,10 +462,19 @@ def main():
         "cadence-tap", src_rate, 2
     )
     tap = (sink_id, monitor)
-    subprocess.run(
+    prev_force = subprocess.run(
+        ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+        capture_output=True, text=True,
+    ).stdout
+    prev_force = prev_force.split("value:")[-1].strip().strip("'").split()[0] \
+        if "value:" in prev_force else "0"
+    r = subprocess.run(
         ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(src_rate)],
         capture_output=True,
     )
+    if r.returncode != 0:
+        print("WARNING: could not force the graph clock — the tap adapter "
+              "may rate-match, inflating residuals vs ffmpeg")
 
     # ---- cadence ----
     print("[cadence] starting playback into tap")
@@ -513,7 +522,7 @@ def main():
         print(f"[mpv] node={mpv_node} stream={mpv_fmt}@{mpv_rate}")
     finally:
         subprocess.run(
-            ["pw-metadata", "-n", "settings", "0", "clock.force-rate", "0"],
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate", prev_force],
             capture_output=True,
         )
         subprocess.run(["pactl", "set-default-sink", prev_sink],
@@ -532,12 +541,21 @@ def main():
     if same_rate:
         ok_c, _ = compare("cadence", cad, ref, ch, "cadence vs ffmpeg")
         ok_m, _ = compare("mpv", mcap, ref, ch, "mpv     vs ffmpeg")
+        results["cadence_vs_ffmpeg_exact"] = ok_c
+        results["mpv_vs_ffmpeg_exact"] = ok_m
         # The app-level bar: the captured streams must null against each
         # other — i.e. cadence's delivered PCM is indistinguishable from
-        # mpv's. Align by cross-correlation; resampler-rate drift between
-        # independent captures is bounded to each app's own window.
+        # mpv's. Guard against the degenerate "both captured silence"
+        # false-PASS: both captures must carry real energy.
         res = null_residual(cad, mcap)
-        if res.size:
+        silent = (
+            np.abs(cad).max() < 1e-4 or np.abs(mcap).max() < 1e-4
+            or not res.size
+        )
+        if silent:
+            print("  cadence vs mpv    : FAILED — a capture is silent/empty")
+            results["cadence_vs_mpv_exact"] = False
+        else:
             mx = float(np.abs(res).max())
             rms = float(np.sqrt((res ** 2).mean()))
             db = 20 * np.log10(max(rms, 1e-20))
@@ -551,7 +569,9 @@ def main():
         print("  stream rates differ — app-level bit comparison skipped")
         results["cadence_vs_mpv_exact"] = False
 
-    verdict = all(v for k, v in results.items() if k.endswith("exact"))
+    verdict = bool(results) and all(
+        v for k, v in results.items() if k.endswith("exact")
+    )
     print("VERDICT:", "PASS" if verdict else "FAIL")
     if args.keep:
         print("kept:", workdir)
