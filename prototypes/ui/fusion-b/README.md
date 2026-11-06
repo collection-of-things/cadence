@@ -49,11 +49,16 @@ Three seats reviewed real headless-Chromium screenshots at 1440×900 and
 1280×800 across ~16 states each round (home, hover, album, now playing,
 palette + empty, context menu, queue, connect, all three platforms, local).
 
-| Seat | Model | Round 1 | Round 2 |
-| --- | --- | --- | --- |
-| Terra | `codex/gpt-6.1-terra` (high) | 7/10 | TBD |
-| SWE 2 | `devin/swe-2-high` | 7/10 | TBD |
-| Fusion | `devin/fusion-claude-opus-5-5-medium-sidekick-swe-2-medium` | 7/10 | TBD |
+| Seat | Model | R1 | R2 | R3 | Final |
+| --- | --- | --- | --- | --- | --- |
+| Terra | `codex/gpt-6.1-terra` (high) | 7/10 | 8.5/10 | 9/10 | pending |
+| SWE 2 | `devin/swe-2-high` | 7/10 | 8/10 | 9/10 | pending |
+| Fusion | `devin/fusion-claude-opus-5-5-medium-sidekick-swe-2-medium` | 7/10 | 8/10 | 8.6/10 | pending |
+
+Fusion model note: the requested `fusion-claude-opus-5-5-high-sidekick-swe-2-medium`
+is not delegatable; the seat ran on `fusion-claude-opus-5-5-medium-sidekick-swe-2-medium`
+(Claude Opus 5.5 + SWE-2 sidekick). An earlier run on standalone `claude-opus-5-5-medium`
+was cancelled and re-scored per Nirvaan's model rule.
 
 ### Last critiques (round 1 → round 2 fixes)
 
