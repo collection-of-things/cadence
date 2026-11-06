@@ -1471,13 +1471,13 @@ impl Engine {
                 core.negotiated.rate.max(1) as u64,
             )
         };
-        let staged = self
+        let (staged, delay) = self
             .sink
             .lock()
             .unwrap()
             .as_ref()
-            .map(|sk| sk.staged_frames())
-            .unwrap_or(0);
+            .map(|sk| (sk.staged_frames(), sk.device_delay_frames()))
+            .unwrap_or((0, 0));
         let (pos, expected) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
@@ -1499,7 +1499,7 @@ impl Engine {
                 bail!("track boundary in flight — retry device change");
             }
             (
-                pos_pre.saturating_sub(staged * 1000 / rate_pre),
+                pos_pre.saturating_sub((staged + delay) * 1000 / rate_pre),
                 Some((core.boundary_seq, st.generation)),
             )
         };
@@ -1589,14 +1589,14 @@ impl Engine {
                 core.negotiated.rate.max(1) as u64,
             )
         };
-        let staged = self
+        let (staged, delay) = self
             .sink
             .lock()
             .unwrap()
             .as_ref()
-            .map(|s| s.staged_frames())
-            .unwrap_or(0);
-        pull.saturating_sub(staged * 1000 / rate)
+            .map(|s| (s.staged_frames(), s.device_delay_frames()))
+            .unwrap_or((0, 0));
+        pull.saturating_sub((staged + delay) * 1000 / rate)
     }
 
     fn respawn_pipelines_inner(&self, position_ms: u64, follow_prefetch: bool) {
@@ -2491,14 +2491,14 @@ impl Engine {
                 st.generation,
             )
         };
-        let staged = self
+        let (staged, delay) = self
             .sink
             .lock()
             .unwrap()
             .as_ref()
-            .map(|s| s.staged_frames())
-            .unwrap_or(0);
-        let pos = pull.saturating_sub(staged * 1000 / rate);
+            .map(|s| (s.staged_frames(), s.device_delay_frames()))
+            .unwrap_or((0, 0));
+        let pos = pull.saturating_sub((staged + delay) * 1000 / rate);
         self.emit(
             "event.position",
             json!({

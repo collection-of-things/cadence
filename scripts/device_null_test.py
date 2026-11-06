@@ -389,11 +389,14 @@ def best_align(cap, seg):
     return min(good)
 
 
-def zero_runs(body, ch, min_frames=8):
-    """Count runs of consecutive zero frames inside the aligned body —
-    mid-signal zero runs are dropouts (underrun / try_lock zero-fill)."""
-    frames = body[: len(body) - (len(body) % ch)].reshape(-1, ch)
-    z = np.all(frames == 0.0, axis=1)
+def zero_runs(body, ref, ch, min_frames=8):
+    """Count runs of consecutive zero frames inside the aligned body
+    WHERE THE REFERENCE HAS CONTENT — a zero run over genuinely silent
+    source material is the source, not a dropout."""
+    n = min(len(body), len(ref))
+    frames = body[: n - (n % ch)].reshape(-1, ch)
+    rframes = ref[: n - (n % ch)].reshape(-1, ch)
+    z = np.all(frames == 0.0, axis=1) & np.any(np.abs(rframes) > 1e-6, axis=1)
     runs, cur = [], 0
     for v in z:
         if v:
@@ -470,7 +473,7 @@ def compare(name, cap, ref, ch, label):
     mx = float(np.abs(res).max())
     rms = float(np.sqrt((res ** 2).mean()))
     db = 20 * np.log10(max(rms, 1e-20))
-    zr = zero_runs(b, ch)
+    zr = zero_runs(b, a, ch)
     # The tap captures f32 while the apps deliver s16/s32 — the tap's
     # int→f32 conversion and ffmpeg's own decode→f32 can differ by one
     # ULP (~1.19e-7) at an extreme-magnitude sample. That is conversion

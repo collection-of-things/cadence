@@ -696,6 +696,7 @@ impl PipeWireCaps {
             processed_once,
             t0,
             staged,
+            device_delay_frames: latency as u64,
             error: Arc::clone(&self.error),
             state,
             wd_paused: AtomicBool::new(paused_flag),
@@ -814,6 +815,9 @@ pub struct PipeWireSink {
     /// Frames staged but not yet delivered — respawn subtracts it so a
     /// rebuild doesn't skip the tail.
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Negotiated latency quantum — the device-side delay not included
+    /// in `staged` (samples already handed to the graph).
+    device_delay_frames: u64,
     /// Caps' shared error cell — the watchdog writes here (not just the
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
@@ -897,6 +901,10 @@ impl Sink for PipeWireSink {
 
     fn staged_frames(&self) -> u64 {
         (self.staged)()
+    }
+
+    fn device_delay_frames(&self) -> u64 {
+        self.device_delay_frames
     }
 }
 

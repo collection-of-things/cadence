@@ -243,6 +243,12 @@ pub trait Sink: Send {
     fn staged_frames(&self) -> u64 {
         0
     }
+    /// Frames already handed to the device but not yet audible — the
+    /// negotiated quantum/device buffer. Position reporting subtracts
+    /// this too (like mpv's audio-pts accounting for device delay).
+    fn device_delay_frames(&self) -> u64 {
+        0
+    }
 }
 
 // ------------------------------- null device -------------------------------
