@@ -181,11 +181,14 @@ pub struct Negotiated {
     pub channels: u32,
     pub kind: PcmKind,
     pub device_name: String,
-    /// ffmpeg channel-order layout name when the source declares one —
-    /// the decoder emits samples in THIS order; stream positions must
-    /// label it, not a same-count guess. None on the device-default
-    /// fallback (channels there are the device's, not the source's).
-    pub layout: Option<String>,
+    /// Resolved spa channel positions for the source's declared layout
+    /// (or the ffmpeg count default). Stored resolved — NOT the layout
+    /// name — so Negotiated equality compares what the stream actually
+    /// does: "stereo" and None both resolve to FL/FR (equal, no
+    /// spurious rebuild) while "5.1" and "5.1(side)" resolve to
+    /// different positions (correctly unequal). None when the channel
+    /// count is the device's, not the source's.
+    pub positions: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,6 +239,128 @@ pub trait DeviceCaps: Send + Sync {
     fn has_explicit_target(&self) -> bool {
         false
     }
+}
+
+
+/// spa_audio_channel ordinals (spa/param/audio/raw.h) for stream
+/// position maps.
+pub(crate) mod chan {
+    pub const MONO: u32 = 2;
+    pub const FL: u32 = 3;
+    pub const FR: u32 = 4;
+    pub const FC: u32 = 5;
+    pub const LFE: u32 = 6;
+    pub const SL: u32 = 7;
+    pub const SR: u32 = 8;
+    pub const FLC: u32 = 9;
+    pub const FRC: u32 = 10;
+    pub const RC: u32 = 11;
+    pub const RL: u32 = 12;
+    pub const RR: u32 = 13;
+    pub const TFL: u32 = 15;
+    pub const TFC: u32 = 16;
+    pub const TFR: u32 = 17;
+    // ffmpeg "top back" ↔ spa "top rear" (TRL/TRC/TRR).
+    pub const TRL: u32 = 18;
+    pub const TRC: u32 = 19;
+    pub const TRR: u32 = 20;
+    // ffmpeg WL/WR ↔ spa FLW/FRW.
+    pub const FLW: u32 = 23;
+    pub const FRW: u32 = 24;
+    pub const LFE2: u32 = 25;
+    pub const TSL: u32 = 31;
+    pub const TSR: u32 = 32;
+}
+
+/// Positions for an ffmpeg channel-order layout name — the decoder
+/// emits samples in the file's declared order, so the positions must
+/// label that order exactly. `mono` maps to spa MONO, not FC: an FC
+/// source is mixed to a stereo sink at SQRT1_2 (-3 dB) while MONO is
+/// copied at unity (channelmix-ops).
+pub(crate) fn layout_named(name: &str) -> Option<Vec<u32>> {
+    use chan::*;
+    Some(match name {
+        "mono" => vec![MONO],
+        "stereo" => vec![FL, FR],
+        "2.1" => vec![FL, FR, LFE],
+        "3.0" => vec![FL, FR, FC],
+        "3.0(back)" => vec![FL, FR, RC],
+        "3.1" => vec![FL, FR, FC, LFE],
+        "3.1.2" => vec![FL, FR, FC, LFE, TFL, TFR],
+        "4.0" => vec![FL, FR, FC, RC],
+        "4.1" => vec![FL, FR, FC, LFE, RC],
+        "quad" => vec![FL, FR, RL, RR],
+        "quad(side)" => vec![FL, FR, SL, SR],
+        // ffmpeg truth: bare 5.0/5.1 use BACK pairs (BL/BR → spa RL/RR);
+        // only (side) variants use SL/SR.
+        "5.0" => vec![FL, FR, FC, RL, RR],
+        "5.0(side)" => vec![FL, FR, FC, SL, SR],
+        "5.1" => vec![FL, FR, FC, LFE, RL, RR],
+        "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
+        "6.0" => vec![FL, FR, FC, RC, SL, SR],
+        "6.0(front)" => vec![FL, FR, FLC, FRC, SL, SR],
+        "6.1" => vec![FL, FR, FC, LFE, RC, SL, SR],
+        "6.1(back)" => vec![FL, FR, FC, LFE, RL, RR, RC],
+        "6.1(front)" => vec![FL, FR, LFE, FLC, FRC, SL, SR],
+        "7.0" => vec![FL, FR, FC, RL, RR, SL, SR],
+        "7.0(front)" => vec![FL, FR, FC, FLC, FRC, SL, SR],
+        "7.1" => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
+        "7.1(wide)" => vec![FL, FR, FC, LFE, RL, RR, FLC, FRC],
+        "7.1(wide-side)" => vec![FL, FR, FC, LFE, FLC, FRC, SL, SR],
+        "5.1.2" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR],
+        "5.1.2(back)" => vec![FL, FR, FC, LFE, RL, RR, TFL, TFR],
+        "5.1.4" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR, TRL, TRR],
+        "7.1.2" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR],
+        "7.1.4" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRL, TRR],
+        "7.2.3" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRC, LFE2],
+        "hexagonal" => vec![FL, FR, FC, RL, RR, RC],
+        "octagonal" => vec![FL, FR, FC, RL, RR, RC, SL, SR],
+        "cube" => vec![FL, FR, RL, RR, TFL, TFR, TRL, TRR],
+        "9.1.4" => vec![
+            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
+        ],
+        "9.1.6" => vec![
+            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
+            TSL, TSR,
+        ],
+        "hexadecagonal" => vec![
+            FL, FR, FC, RL, RR, RC, SL, SR, TFL, TFC, TFR, TRL, TRC, TRR,
+            FLW, FRW,
+        ],
+        _ => return None,
+    })
+}
+
+/// Resolve the source's declared layout (or the count fallback) to spa
+/// positions. A declared name that mismatches the channel count is
+/// ignored; ffmpeg's per-count defaults (av_get_default_channel_layout)
+/// cover the rest.
+pub(crate) fn resolve_positions(
+    layout: Option<&str>,
+    channels: u32,
+) -> Option<Vec<u32>> {
+    use chan::*;
+    if let Some(name) = layout {
+        if let Some(p) = layout_named(name) {
+            if p.len() as u32 == channels {
+                return Some(p);
+            }
+        }
+    }
+    let p = match channels {
+        1 => vec![MONO],
+        2 => vec![FL, FR],
+        3 => vec![FL, FR, FC],
+        // ffmpeg's per-count defaults: 4=quad, 5=5.0-back, 6=5.1-back,
+        // 7=6.1, 8=7.1.
+        4 => vec![FL, FR, RL, RR],
+        5 => vec![FL, FR, FC, RL, RR],
+        6 => vec![FL, FR, FC, LFE, RL, RR],
+        7 => vec![FL, FR, FC, LFE, RC, SL, SR],
+        8 => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
+        _ => return None,
+    };
+    Some(p)
 }
 
 pub trait Sink: Send {
@@ -485,7 +610,7 @@ impl CpalCaps {
             channels: d.channels() as u32,
             kind: Self::kind_of(d.sample_format()),
             device_name: self.name(),
-            layout: None,
+            positions: None,
         }
     }
 

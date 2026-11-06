@@ -85,4 +85,8 @@ ffmpeg -hide_banner -loglevel error -y \
   -metadata album="Fixture Album" -metadata track="1" -metadata date="2026" \
   -disposition:v attached_pic "$OUT/tagged.flac"
 
+# Mono — regression for the FC-vs-MONO position bug (an FC source is
+# mixed to a stereo sink at -3 dB; MONO copies at unity).
+ffmpeg -hide_banner -loglevel error -y   -f lavfi -i "sine=frequency=523:sample_rate=44100:duration=2"   -ac 1 -sample_fmt s16 "$OUT/mono-44k1-16.flac"
+
 echo "Fixtures in $OUT:"; ls -la "$OUT"

@@ -189,7 +189,7 @@ fn serve(cli: Cli) -> Result<i32> {
         channels: caps.default_channels(),
         kind: caps.default_kind(),
         device_name: caps.name(),
-        layout: None,
+        positions: None,
     };
     let (core, _tap, fft_cons) = Engine::make_core(initial_neg.clone(), cfg.null_dump.clone());
     // Open the output stream up front. If it fails (no usable device), the

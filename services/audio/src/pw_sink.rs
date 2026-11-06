@@ -53,130 +53,7 @@ fn spa_format(kind: PcmKind) -> spa::param::audio::AudioFormat {
 
 /// Channel ordinals from `spa_audio_channel` (spa/param/audio/raw.h) —
 /// libspa doesn't re-export a typed constant for them.
-mod pos {
-    // spa_audio_channel ordinals (spa/param/audio/raw.h).
-    pub const MONO: u32 = 2;
-    pub const FL: u32 = 3;
-    pub const FR: u32 = 4;
-    pub const FC: u32 = 5;
-    pub const LFE: u32 = 6;
-    pub const SL: u32 = 7;
-    pub const SR: u32 = 8;
-    pub const FLC: u32 = 9;
-    pub const FRC: u32 = 10;
-    pub const RC: u32 = 11;
-    pub const RL: u32 = 12;
-    pub const RR: u32 = 13;
-    pub const TFL: u32 = 15;
-    pub const TFC: u32 = 16;
-    pub const TFR: u32 = 17;
-    // ffmpeg "top back" ↔ spa "top rear" (TRL/TRC/TRR).
-    pub const TRL: u32 = 18;
-    pub const TRC: u32 = 19;
-    pub const TRR: u32 = 20;
-    // ffmpeg WL/WR ↔ spa FLW/FRW.
-    pub const FLW: u32 = 23;
-    pub const FRW: u32 = 24;
-    pub const LFE2: u32 = 25;
-    pub const TSL: u32 = 31;
-    pub const TSR: u32 = 32;
-}
 
-/// Speaker positions for an ffmpeg channel-order layout — the decoder
-/// emits samples in the file's layout order, so the positions must
-/// label that order exactly (a 6.1 file is FL FR FC LFE BC SL SR, NOT
-/// a rear-pair+rear-center guess).
-fn layout_named(name: &str) -> Option<Vec<u32>> {
-    use pos::*;
-    Some(match name {
-        "mono" => vec![FC],
-        "stereo" => vec![FL, FR],
-        "2.1" => vec![FL, FR, LFE],
-        "3.0" => vec![FL, FR, FC],
-        "3.0(back)" => vec![FL, FR, RC],
-        "3.1" => vec![FL, FR, FC, LFE],
-        "3.1.2" => vec![FL, FR, FC, LFE, TFL, TFR],
-        "4.0" => vec![FL, FR, FC, RC],
-        "4.1" => vec![FL, FR, FC, LFE, RC],
-        "quad" => vec![FL, FR, RL, RR],
-        // ffmpeg truth (`ffmpeg -layouts`): bare 5.0/5.1 use BACK
-        // channels (BL/BR → spa RL/RR); only the (side) variants use
-        // SL/SR. BL/BR and RL/RR are the same physical positions.
-        "5.0" => vec![FL, FR, FC, RL, RR],
-        "5.0(side)" => vec![FL, FR, FC, SL, SR],
-        "5.1" => vec![FL, FR, FC, LFE, RL, RR],
-        "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
-        "6.0" => vec![FL, FR, FC, RC, SL, SR],
-        "6.0(front)" => vec![FL, FR, FLC, FRC, SL, SR],
-        "6.1" => vec![FL, FR, FC, LFE, RC, SL, SR],
-        "6.1(back)" => vec![FL, FR, FC, LFE, RL, RR, RC],
-        "6.1(front)" => vec![FL, FR, LFE, FLC, FRC, SL, SR],
-        "quad(side)" => vec![FL, FR, SL, SR],
-        "7.0" => vec![FL, FR, FC, RL, RR, SL, SR],
-        "7.0(front)" => vec![FL, FR, FC, FLC, FRC, SL, SR],
-        "7.1" => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
-        "7.1(wide)" => vec![FL, FR, FC, LFE, RL, RR, FLC, FRC],
-        "7.1(wide-side)" => vec![FL, FR, FC, LFE, FLC, FRC, SL, SR],
-        "5.1.2" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR],
-        "5.1.2(back)" => vec![FL, FR, FC, LFE, RL, RR, TFL, TFR],
-        "5.1.4" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR, TRL, TRR],
-        "7.1.2" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR],
-        "7.1.4" => {
-            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRL, TRR]
-        }
-        "7.2.3" => {
-            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRC, LFE2]
-        }
-        "hexagonal" => vec![FL, FR, FC, RL, RR, RC],
-        "octagonal" => vec![FL, FR, FC, RL, RR, RC, SL, SR],
-        "cube" => vec![FL, FR, RL, RR, TFL, TFR, TRL, TRR],
-        "9.1.4" => vec![
-            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
-        ],
-        "9.1.6" => vec![
-            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
-            TSL, TSR,
-        ],
-        "hexadecagonal" => vec![
-            FL, FR, FC, RL, RR, RC, SL, SR, TFL, TFC, TFR, TRL, TRC, TRR,
-            FLW, FRW,
-        ],
-        _ => return None,
-    })
-}
-
-/// Speaker positions for the negotiated stream: prefer the source
-/// file's declared layout (correct order); else ffmpeg's per-count
-/// DEFAULT order — not a guess at a different layout with the same
-/// count. None -> leave UNPOSITIONED and let the graph infer.
-fn positions_for(neg: &Negotiated) -> Option<[u32; 64]> {
-    use pos::*;
-    let by_name = neg
-        .layout
-        .as_deref()
-        .and_then(layout_named)
-        .filter(|v| v.len() == neg.channels as usize);
-    let by_count = || match neg.channels {
-        1 => Some(vec![MONO]),
-        2 => Some(vec![FL, FR]),
-        // 3ch content is more often 3.0 (FL/FR/FC) than 2.1 — channel
-        // count alone can't distinguish, so prefer the layout the vast
-        // majority of 3ch sources carry.
-        3 => Some(vec![FL, FR, FC]),
-        // ffmpeg's per-count defaults (av_get_default_channel_layout):
-        // 4=quad, 5=5.0-back, 6=5.1-back, 7=6.1, 8=7.1.
-        4 => Some(vec![FL, FR, RL, RR]),
-        5 => Some(vec![FL, FR, FC, RL, RR]),
-        6 => Some(vec![FL, FR, FC, LFE, RL, RR]),
-        7 => Some(vec![FL, FR, FC, LFE, RC, SL, SR]),
-        8 => Some(vec![FL, FR, FC, LFE, RL, RR, SL, SR]),
-        _ => None,
-    };
-    let layout = by_name.or_else(by_count)?;
-    let mut p = [0u32; 64];
-    p[..layout.len()].copy_from_slice(&layout);
-    Some(p)
-}
 
 pub struct PipeWireCaps {
     /// Node id of an explicitly chosen sink (set_device) — passed to
@@ -714,8 +591,12 @@ impl PipeWireCaps {
             info.set_channels(neg.channels);
             // Standard layouts for common channel counts; UNPOSITIONED
             // otherwise (the graph infers from the count).
-            if let Some(p) = positions_for(neg) {
-                info.set_position(p);
+            if let Some(p) = &neg.positions {
+                let mut map = [0u32; 64];
+                for (i, v) in p.iter().take(64).enumerate() {
+                    map[i] = *v;
+                }
+                info.set_position(map);
             }
             let pod_bytes = spa::pod::serialize::PodSerializer::serialize(
                 std::io::Cursor::new(Vec::new()),
@@ -1266,6 +1147,10 @@ impl Drop for PipeWireSink {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+    
+    fn resolve_positions_ref(neg: &Negotiated) -> Vec<u32> {
+        neg.positions.clone().unwrap()
+    }
 
     fn neg(ch: u32, layout: Option<&str>) -> Negotiated {
         Negotiated {
@@ -1273,7 +1158,7 @@ mod layout_tests {
             channels: ch,
             kind: crate::decode::PcmKind::F32,
             device_name: "t".into(),
-            layout: layout.map(str::to_string),
+            positions: crate::sink::resolve_positions(layout, ch),
         }
     }
 
@@ -1282,10 +1167,10 @@ mod layout_tests {
     /// rear PAIR in slots 5-6 and RC last, routing sides to rears.
     #[test]
     fn layout_61_labels_bc_then_sides() {
-        let p = positions_for(&neg(7, Some("6.1"))).unwrap();
+        let p = resolve_positions_ref(&neg(7, Some("6.1")));
         assert_eq!(
             &p[..7],
-            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RC, pos::SL, pos::SR]
+            &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::FC, crate::sink::chan::LFE, crate::sink::chan::RC, crate::sink::chan::SL, crate::sink::chan::SR]
         );
     }
 
@@ -1293,34 +1178,44 @@ mod layout_tests {
     /// defaults — same positions for 7ch.
     #[test]
     fn layout_count_fallback_uses_ffmpeg_defaults() {
-        let p = positions_for(&neg(7, None)).unwrap();
+        let p = resolve_positions_ref(&neg(7, None));
         assert_eq!(
             &p[..7],
-            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RC, pos::SL, pos::SR]
+            &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::FC, crate::sink::chan::LFE, crate::sink::chan::RC, crate::sink::chan::SL, crate::sink::chan::SR]
         );
         // ffmpeg 5.1 uses BACK pairs; only "5.1(side)" uses SL/SR.
-        let s51 = positions_for(&neg(6, Some("5.1"))).unwrap();
+        let s51 = resolve_positions_ref(&neg(6, Some("5.1")));
         assert_eq!(
             &s51[..6],
-            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::RL, pos::RR]
+            &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::FC, crate::sink::chan::LFE, crate::sink::chan::RL, crate::sink::chan::RR]
         );
-        let s51s = positions_for(&neg(6, Some("5.1(side)"))).unwrap();
+        let s51s = resolve_positions_ref(&neg(6, Some("5.1(side)")));
         assert_eq!(
             &s51s[..6],
-            &[pos::FL, pos::FR, pos::FC, pos::LFE, pos::SL, pos::SR]
+            &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::FC, crate::sink::chan::LFE, crate::sink::chan::SL, crate::sink::chan::SR]
         );
         // 4.0 declared (FL FR FC BC) beats the quad count guess.
-        let q = positions_for(&neg(4, Some("4.0"))).unwrap();
-        assert_eq!(&q[..4], &[pos::FL, pos::FR, pos::FC, pos::RC]);
-        let quad = positions_for(&neg(4, None)).unwrap();
-        assert_eq!(&quad[..4], &[pos::FL, pos::FR, pos::RL, pos::RR]);
+        let q = resolve_positions_ref(&neg(4, Some("4.0")));
+        assert_eq!(&q[..4], &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::FC, crate::sink::chan::RC]);
+        let quad = resolve_positions_ref(&neg(4, None));
+        assert_eq!(&quad[..4], &[crate::sink::chan::FL, crate::sink::chan::FR, crate::sink::chan::RL, crate::sink::chan::RR]);
+    }
+
+    /// Fusion V1: mono must label MONO, not FC — an FC source is mixed
+    /// to a stereo sink at SQRT1_2 (-3 dB); MONO copies at unity.
+    #[test]
+    fn mono_maps_to_spa_mono_not_fc() {
+        let p = resolve_positions_ref(&neg(1, Some("mono")));
+        assert_eq!(p[0], crate::sink::chan::MONO);
+        let d = resolve_positions_ref(&neg(1, None));
+        assert_eq!(d[0], crate::sink::chan::MONO);
     }
 
     /// A layout name whose channel count mismatches is ignored rather
     /// than mislabeling the stream.
     #[test]
     fn layout_name_mismatch_falls_back() {
-        let p = positions_for(&neg(2, Some("6.1"))).unwrap();
-        assert_eq!(&p[..2], &[pos::FL, pos::FR]);
+        let p = resolve_positions_ref(&neg(2, Some("6.1")));
+        assert_eq!(&p[..2], &[crate::sink::chan::FL, crate::sink::chan::FR]);
     }
 }

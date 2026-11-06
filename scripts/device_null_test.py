@@ -288,13 +288,30 @@ def read_f32(path):
     return np.fromfile(path, dtype="<f4")
 
 
-def ffmpeg_ref(path):
+def ffprobe_channels(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
+        capture_output=True, check=True, text=True).stdout.strip()
+    return int(out)
+
+
+def ffmpeg_ref(path, tap_channels):
+    """Reference in the tap's channel count. A mono source played into a
+    stereo tap at MONO labeling is duplicated at unity — NOT ffmpeg -ac 2,
+    which applies the -3 dB center matrix."""
     out = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-"],
-        capture_output=True,
-        check=True,
+        capture_output=True, check=True,
     ).stdout
-    return np.frombuffer(out, dtype="<f4")
+    a = np.frombuffer(out, dtype="<f4")
+    src_ch = ffprobe_channels(path)
+    if src_ch == tap_channels:
+        return a
+    if src_ch == 1:
+        # Unity duplication — what MONO-labeled mono produces.
+        return np.repeat(a, tap_channels)
+    raise RuntimeError(f"source has {src_ch}ch; tap is {tap_channels}ch")
 
 
 def ffprobe_rate(path):
@@ -669,7 +686,7 @@ def main():
     args = ap.parse_args()
 
     src = Path(args.file).resolve()
-    ref = ffmpeg_ref(src)
+    ref = ffmpeg_ref(src, 2)
     src_rate = ffprobe_rate(src)
     dur = ffprobe_duration(src)
     workdir = tempfile.mkdtemp(prefix="cadence-devnull-")
@@ -833,9 +850,19 @@ def main():
         ok_c, zc, x_c = compare(
             "cadence", cad, ref, ch, "cadence vs ffmpeg",
             min_cov=cov_floor)
-        ok_m, zm, x_m = compare(
-            "mpv", mcap, ref, ch, "mpv     vs ffmpeg",
-            min_cov=mpv_floor)
+        mono = ffprobe_channels(src) == 1
+        if mono:
+            # mpv's mono->stereo upmix follows its own channelmap, not
+            # the MONO unity copy the graph applies to a labeled stream
+            # — not an apples-to-apples row. cadence-vs-ref (which IS
+            # MONO semantics) stays the gate.
+            print("  mpv     vs ffmpeg: skipped (mono: mpv uses its own "
+                  "upmix, not MONO unity-dup)")
+            ok_m, zm, x_m = True, 0, True
+        else:
+            ok_m, zm, x_m = compare(
+                "mpv", mcap, ref, ch, "mpv     vs ffmpeg",
+                min_cov=mpv_floor)
         results["cadence_vs_ffmpeg_ok"] = ok_c
         results["mpv_vs_ffmpeg_ok"] = ok_m
         # `*_exact` requires literally zero diffs (Sol: a 32-diff
@@ -853,20 +880,30 @@ def main():
         # and the skew differs between captures, so a single interleaved
         # alignment can never fit both. Align/compare each channel.
         ch = 2
-        cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
-        mcap_f = mcap[: len(mcap) - len(mcap) % ch].reshape(-1, ch)
-        res = np.concatenate(
-            [null_residual(cad_f[:, c], mcap_f[:, c]) for c in range(ch)]
-        )
-        silent = (
+        if mono:
+            print("  cadence vs mpv    : skipped (mono: mpv uses its own "
+                  "upmix, not MONO unity-dup)")
+            results["cadence_vs_mpv_ok"] = True
+            results["cadence_vs_mpv_exact"] = True
+            silent = False
+            res = np.zeros(0, dtype="<f4")
+            cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
+            mcap_f = mcap[: len(mcap) - len(mcap) % ch].reshape(-1, ch)
+        else:
+            cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
+            mcap_f = mcap[: len(mcap) - len(mcap) % ch].reshape(-1, ch)
+            res = np.concatenate(
+                [null_residual(cad_f[:, c], mcap_f[:, c]) for c in range(ch)]
+            )
+        silent = mono is False and (
             np.abs(cad).max() < 1e-4 or np.abs(mcap).max() < 1e-4
             or not res.size
         )
-        if silent:
+        if not mono and silent:
             print("  cadence vs mpv    : FAILED — a capture is silent/empty")
             results["cadence_vs_mpv_ok"] = False
             results["cadence_vs_mpv_exact"] = False
-        else:
+        elif not mono:
             mx = float(np.abs(res).max())
             rms = float(np.sqrt((res ** 2).mean()))
             db = 20 * np.log10(max(rms, 1e-20))

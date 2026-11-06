@@ -943,8 +943,11 @@ impl Engine {
                         kind,
                         device_name: caps.name(),
                         // Native path: the stream carries the source's
-                        // channel order — label it.
-                        layout: src_layout.map(str::to_string),
+                        // channel order — resolved positions, not the
+                        // name, so Negotiated equality compares what
+                        // the stream actually does.
+                        positions: crate::sink::resolve_positions(
+                            src_layout, src_channels),
                     },
                     true,
                 );
@@ -966,7 +969,8 @@ impl Engine {
                         channels: src_channels,
                         kind,
                         device_name: caps.name(),
-                        layout: src_layout.map(str::to_string),
+                        positions: crate::sink::resolve_positions(
+                            src_layout, src_channels),
                     };
                     // Skip a format this device recently failed to open.
                     const NATIVE_RETRY_BACKOFF: std::time::Duration =
@@ -992,7 +996,7 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
-                layout: None,
+                positions: None,
             },
             false,
         )
@@ -1047,7 +1051,7 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
-                layout: None,
+                positions: None,
             };
             // Only the non-fidelity preference falls back to the device
             // default — strict fidelity stays honest about what it took.
@@ -1573,7 +1577,7 @@ impl Engine {
             channels: new_caps.default_channels(),
             kind: new_caps.default_kind(),
             device_name: new_caps.name(),
-            layout: None,
+            positions: None,
         };
         // Rebuild under the new caps BEFORE committing them — a rejected
         // rebuild leaves the old device caps and stream intact.
@@ -3905,7 +3909,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::F32,
             device_name: "test".into(),
-            layout: None,
+            positions: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         let mut c = core.lock().unwrap();
@@ -3923,7 +3927,7 @@ mod tests {
                 channels: 2,
                 kind: PcmKind::F32,
                 device_name: "test".into(),
-            layout: None,
+            positions: None,
             },
             ready: Arc::new(AtomicBool::new(true)),
         });
@@ -3949,7 +3953,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::S16,
             device_name: "test".into(),
-            layout: None,
+            positions: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         let vals = [
@@ -3978,7 +3982,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::F32,
                     device_name: "test".into(),
-            layout: None,
+            positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });
@@ -3998,7 +4002,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::S32,
             device_name: "test".into(),
-            layout: None,
+            positions: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         // s32 pipe: bit-exact passthrough (bypass path)
@@ -4020,7 +4024,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::S32,
                     device_name: "test".into(),
-            layout: None,
+            positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });
@@ -4048,7 +4052,7 @@ mod tests {
                     channels: 2,
                     kind: PcmKind::F32,
                     device_name: "test".into(),
-            layout: None,
+            positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
             });
