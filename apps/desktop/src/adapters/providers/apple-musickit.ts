@@ -96,6 +96,16 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private installBackoffUntil = 0;
 
   async prepare(): Promise<void> {
+    // Teardown owns the session — nothing may boot a view while clearData
+    // is pending, and a signed-out route must not rewarm on cached cookies.
+    await this.signOutInFlight?.catch(() => {});
+    if (this.signedOut) {
+      throw new Error("Apple Music is signed out — sign in to use it");
+    }
+    await this.prepareInner();
+  }
+
+  private async prepareInner(): Promise<void> {
     await this.session.prepare();
     if (this.installed) return;
     if (Date.now() < this.installBackoffUntil) {
@@ -583,6 +593,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private signOutInFlight: Promise<void> | null = null;
 
   async signOut(): Promise<void> {
+    // Invalidate before joining — a sign-in queued behind an in-flight
+    // teardown must not proceed when a LATER sign-out lands.
+    this.signedOut = true; // suppress lazy warm-up before/after clearing
+    this.signInCleanup?.();
+    this.signInCleanup = null;
     if (this.signOutInFlight) return this.signOutInFlight;
     const run = this.doSignOut().finally(() => {
       if (this.signOutInFlight === run) this.signOutInFlight = null;
@@ -592,14 +607,12 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   private async doSignOut(): Promise<void> {
-    this.signedOut = true; // suppress lazy warm-up before/after clearing
-    this.signInCleanup?.();
-    this.signInCleanup = null;
     // Skip unauthorize when the view was never loaded — signing out cold
-    // must not boot the window.
+    // must not boot the window. The raw eval bypasses prepare(), which
+    // correctly refuses work while signedOut is set.
     if (this.installed) {
       try {
-        await this.evalCtl(`unauthorize()`);
+        await this.session.eval(`window.__cadenceCtl.unauthorize()`);
       } catch {
         /* unauthorize may not exist on this build — session clear covers it */
       }

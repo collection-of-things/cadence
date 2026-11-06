@@ -504,4 +504,43 @@ describe("apple adapter page events", () => {
     expect((adapter as any).signInPending).toBe(false);
     (sess as any).eval = orig;
   });
+
+  it("catalog() during sign-out teardown can't boot a fresh view", async () => {
+    (adapter as any).installed = true;
+    const origClear = sess.clearData.bind(sess);
+    let releaseClear: (() => void) | null = null;
+    (sess as any).clearData = () => new Promise<void>((res) => (releaseClear = res));
+    const out = adapter.signOut();
+    await new Promise((r) => setTimeout(r, 20));
+    const evalsBefore = sess.evals.length;
+    const c = adapter.catalog({ kind: "search", text: "x" } as any).catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sess.evals.length).toBe(evalsBefore); // no view boot mid-teardown
+    releaseClear!();
+    await out;
+    await c; // signed-out → prepare rejects, catalog errors out
+    (sess as any).clearData = origClear;
+  });
+
+  it("a second signOut cancels a signIn queued behind the first teardown", async () => {
+    (adapter as any).installed = true;
+    const origEval = sess.eval.bind(sess);
+    let releaseUnauth: ((v: boolean) => void) | null = null;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr === "window.__cadenceCtl.unauthorize()"
+        ? new Promise<boolean>((res) => (releaseUnauth = res))
+        : Promise.resolve(true);
+    };
+    const out1 = adapter.signOut(); // hangs in unauthorize()
+    await new Promise((r) => setTimeout(r, 10));
+    const p = adapter.signIn(); // queued behind teardown
+    await new Promise((r) => setTimeout(r, 10));
+    const out2 = adapter.signOut(); // joins, but must still invalidate the queue
+    releaseUnauth!(true);
+    await Promise.all([out1, out2]);
+    await p;
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(false);
+    (sess as any).eval = origEval;
+  });
 });
