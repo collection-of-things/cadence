@@ -245,35 +245,40 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.session.setAudioMuted(false);
     this.generation = lease.generationId;
     this.installBackoffUntil = 0; // a real play request waits for install
-    // A pending mirror op must land before the new queue replaces it — else a
-    // stale playLater appends the OLD successor into the NEW provider queue.
-    await this.mirrorChain.catch(() => {});
-    this.mirrored = [];
-    await this.prepare();
-    const spec = specFor(item.track);
-    try {
-      // Fast path: the coordinator's "next" lands on the mirrored successor —
-      // skip inside MusicKit's own queue instead of reloading the stream.
-      if ((opts.positionMs ?? 0) === 0 && this.mirrored.some((m) => m.queueId === item.queueId)) {
+    if (this.signedOut) throw new Error("Apple Music is signed out");
+    // Run on the mirror chain — a pending playLater must land before the new
+    // queue, and a prefetch queued during this play must wait for it.
+    return this.enqueueMirror(async () => {
+      const spec = specFor(item.track);
+      // Read the mirror BEFORE clearing — the fast path skips inside
+      // MusicKit's own queue when the coordinator's next lands on the
+      // prefetched successor, instead of reloading the stream.
+      const wasMirrored =
+        (opts.positionMs ?? 0) === 0 &&
+        this.mirrored.some((m) => m.queueId === item.queueId);
+      this.mirrored = [];
+      this.unknownNpId = null;
+      this.tailStuckSince = 0;
+      await this.prepare();
+      try {
         this.current = { queueId: item.queueId, providerId: spec.id, station: spec.type === "station" };
-        this.mirrored = [];
-        await this.evalCtl(`skipTo(${JSON.stringify(spec)})`);
-      } else {
-        this.current = { queueId: item.queueId, providerId: spec.id, station: spec.type === "station" };
-        this.mirrored = [];
-        await this.evalCtl(
-          `play(${JSON.stringify(spec)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`,
-        );
+        if (wasMirrored) {
+          await this.evalCtl(`skipTo(${JSON.stringify(spec)})`);
+        } else {
+          await this.evalCtl(
+            `play(${JSON.stringify(spec)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`,
+          );
+        }
+        this.emit({
+          kind: "started",
+          generationId: lease.generationId,
+          durationMs: item.track.durationMs,
+        });
+      } catch (e) {
+        this.error(`Apple Music play failed: ${(e as Error).message}`, true);
+        throw e;
       }
-      this.emit({
-        kind: "started",
-        generationId: lease.generationId,
-        durationMs: item.track.durationMs,
-      });
-    } catch (e) {
-      this.error(`Apple Music play failed: ${(e as Error).message}`, true);
-      throw e;
-    }
+    });
   }
 
   /** Mirror operations are serialized — an in-flight playLater must not
@@ -483,7 +488,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       !this.current.station &&
       s.state === "playing" &&
       s.durationMs > 0 &&
-      s.positionMs >= s.durationMs - 500
+      s.positionMs >= s.durationMs - 500 &&
+      (s.nowPlayingId === null || s.nowPlayingId === this.current.providerId)
     ) {
       if (this.tailStuckSince === 0) {
         this.tailStuckSince = Date.now();
@@ -562,7 +568,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
               if (np.id === id) this.onNowPlaying(id);
               else if (this.unknownNpId === id) this.unknownNpId = null;
             })
-            .catch(() => {});
+            .catch(() => {
+              if (this.unknownNpId === id) this.unknownNpId = null;
+            });
         }, 1500);
       }
       return;
@@ -579,6 +587,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private promoteMirror(hit: number): void {
     if (this.current === null) return;
     this.unknownNpId = null;
+    this.tailStuckSince = 0;
     const promoted = this.mirrored[hit]!;
     this.mirrored = this.mirrored.slice(hit + 1);
     const previous = this.current;
