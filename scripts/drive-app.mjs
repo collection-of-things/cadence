@@ -61,7 +61,8 @@ const result = await new Promise((res) => {
   });
   ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: expr, awaitPromise: true, returnByValue: true } }));
 });
-console.log(JSON.stringify(result.result?.value ?? result, null, 2));
+// A thrown probe must fail the run, not print as a result.
+console.log(JSON.stringify(result.exceptionDetails ? result : result.result?.value ?? result, null, 2));
 // SHOT=<png path>: grab the real screen (native window controls included).
 if (process.env.SHOT) {
   const ps = [
@@ -78,4 +79,4 @@ ws.close();
 app.kill();
 await sleep(500);
 console.log('--- app log ---\n' + log.split('\n').slice(-40).join('\n'));
-process.exit(0);
+process.exit(result.exceptionDetails ? 1 : 0);

@@ -24,7 +24,12 @@ function load(): CollectionState {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<CollectionState>;
-      return { pins: parsed.pins ?? [], favorites: parsed.favorites ?? [], recent: parsed.recent ?? [] };
+      // Corrupt or hand-edited storage must not crash startup: non-arrays reset.
+      return {
+        pins: Array.isArray(parsed.pins) ? parsed.pins : [],
+        favorites: Array.isArray(parsed.favorites) ? parsed.favorites : [],
+        recent: Array.isArray(parsed.recent) ? parsed.recent : [],
+      };
     }
   } catch {
     // Storage blocked or corrupt — start empty.

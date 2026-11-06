@@ -41,7 +41,8 @@ function findVcvars() {
 
 // Windows captures the first attempt so a link failure that the vcvars retry
 // fixes stays quiet; any other failure prints cargo's own diagnostics.
-const first = run('cargo', args, { stdio: process.platform === 'win32' ? 'pipe' : 'inherit', encoding: 'utf8' });
+// maxBuffer: a full cold build's output must not trip Node's 1 MiB default.
+const first = run('cargo', args, { stdio: process.platform === 'win32' ? 'pipe' : 'inherit', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 let status = first.status ?? 1;
 const replay = () => { process.stdout.write(first.stdout ?? ''); process.stderr.write(first.stderr ?? ''); };
 if (status !== 0 && process.platform === 'win32' && first.error) process.exit(1);

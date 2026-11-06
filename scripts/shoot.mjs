@@ -21,13 +21,18 @@ let exited = false;
 preview.on('exit', () => (exited = true));
 let up = false;
 for (let i = 0; i < 80 && !up && !exited; i++) {
-  try { up = (await fetch(`http://localhost:${port}/`)).ok; } catch { await new Promise((r) => setTimeout(r, 250)); }
+  try {
+    up = (await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })).ok;
+  } catch {
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 if (!up) {
   console.error(`vite preview did not start on port ${port}`);
   preview.kill();
   process.exit(1);
 }
+let failures = 0;
 try {
   for (const shot of shots) {
     const eq = shot.indexOf('=');
@@ -43,9 +48,14 @@ try {
     if (js) args.push(`--eval=${js}`);
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
     const r = spawnSync(electron, args, { env, encoding: 'utf8', timeout: 60000 });
-    console.log(name, (r.stdout || '').trim(), (r.stderr || '').split('\n').filter((l) => /eval failed/.test(l)).join(' '));
+    console.log(name, (r.stdout || '').trim(), (r.stderr || '').split('\n').filter((l) => /fail/.test(l)).join(' '));
+    if (r.status !== 0) failures += 1;
   }
 } finally {
   if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(preview.pid), '/T', '/F']);
   else preview.kill();
+}
+if (failures) {
+  console.error(`${failures} capture(s) failed`);
+  process.exit(1);
 }

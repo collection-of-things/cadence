@@ -33,8 +33,14 @@ async function main() {
   await new Promise((r) => setTimeout(r, wait));
   if (evalJs) {
     console.log('eval:', evalJs);
-    await win.webContents.executeJavaScript(evalJs, true).then((v) => console.log('eval result:', String(v)))
-      .catch((e) => console.warn('eval failed:', e.message));
+    // A failed eval means the requested state never happened: no screenshot.
+    try {
+      console.log('eval result:', String(await win.webContents.executeJavaScript(evalJs, true)));
+    } catch (e) {
+      console.error('eval failed:', e.message);
+      app.exit(1);
+      return;
+    }
     await new Promise((r) => setTimeout(r, 1200));
   }
   const img = await win.webContents.capturePage();
