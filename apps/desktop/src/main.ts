@@ -268,7 +268,7 @@ async function main(): Promise<void> {
   // Close-to-tray: the window hides, playback continues — per the v3 design
   // provider playback must survive the main window closing. Explicit Quit
   // only from the tray menu (or app.quit() paths like single-instance);
-  // before-quit arms the guard so every quit path still closes the window.
+  // before-quit arms the guard so programmatic quit paths can still close.
   let tray: Tray | null = null;
   const win = createWindow();
   const { requestQuit } = wireCloseToTray({

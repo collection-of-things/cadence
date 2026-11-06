@@ -3,10 +3,11 @@
  *
  * A user closing the window hides it — provider playback must survive the
  * window per the v3 design. A real quit must still close it, and quit can
- * arrive over several paths: the tray Quit item, app.quit(), Cmd+Q, or an
- * OS session end. `before-quit` fires for every quit path, so it arms the
- * guard together with the explicit tray item; the window `close` handler
- * only hides while the guard is unarmed.
+ * arrive over several paths: the tray Quit item, app.quit(), or Cmd+Q.
+ * `before-quit` fires for each of those, so it arms the guard together
+ * with the explicit tray item; the window `close` handler only hides
+ * while the guard is unarmed. (Electron does not emit `before-quit` for
+ * a Windows shutdown/restart/logout — the OS closes the app without it.)
  *
  * The latch is one-way: once armed, closes always proceed. That is right
  * for quit — it is irrevocable once before-quit has fired. A future
