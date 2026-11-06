@@ -19,7 +19,7 @@ thiserror = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 # Native pw_stream output: required for bit-transparent playback on
 # PipeWire systems (the pipewire-alsa plugin path is not transparent).
-pipewire = { version = "0.10.1", features = ["v0_3_49"] }
+pipewire = { version = "0.10.1", features = ["v0_3_50"] }
 
 [[bin]]
 name = "cadence-audio"

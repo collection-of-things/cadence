@@ -697,6 +697,8 @@ impl PipeWireCaps {
             t0,
             staged,
             device_delay_frames: latency as u64,
+            frame_bytes: (T::BYTES * neg.channels.max(1) as usize) as u64,
+            rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
             state,
             wd_paused: AtomicBool::new(paused_flag),
@@ -818,6 +820,11 @@ pub struct PipeWireSink {
     /// Negotiated latency quantum — the device-side delay not included
     /// in `staged` (samples already handed to the graph).
     device_delay_frames: u64,
+    /// Bytes per frame — pw_time.queued counts bytes, not frames.
+    frame_bytes: u64,
+    /// Negotiated rate — pw_time.delay is in `rate` ticks, converted
+    /// back to frames at the stream's own rate.
+    rate_hz: u64,
     /// Caps' shared error cell — the watchdog writes here (not just the
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
@@ -904,13 +911,22 @@ impl Sink for PipeWireSink {
     }
 
     fn device_delay_frames(&self) -> u64 {
-        // Real graph-side queueing, not the negotiated estimate: pw_time's
-        // `queued` counts samples the graph is holding right now. Fall
-        // back to the latency quantum if the query fails.
+        // Real graph-side queueing, not the negotiated estimate:
+        // pw_time.queued is BYTES in the stream, buffered adds the
+        // converter-level backlog (frames), and delay is the remaining
+        // downstream graph/device latency in `rate` ticks (usually
+        // 1/samplerate — the docs' formula is delay*num/denom seconds).
+        // Fall back to the negotiated quantum if the query fails.
         let _g = self.tl.lock();
         self.stream
             .time()
-            .map(|t| t.queued())
+            .map(|t| {
+                let rate = t.rate();
+                let delay_secs =
+                    t.delay().max(0) as f64 * rate.num as f64 / rate.denom.max(1) as f64;
+                let delay_frames = (delay_secs * self.rate_hz as f64).round() as u64;
+                t.queued() / self.frame_bytes.max(1) + t.buffered() + delay_frames
+            })
             .unwrap_or(self.device_delay_frames)
     }
 }

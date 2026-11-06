@@ -2848,16 +2848,16 @@ impl Engine {
             // tail to drain (bounded by its own deadline); while paused
             // the deadline doesn't tick — the tail belongs to the user.
             while let Some((qid, inst, since, deadline_ms)) = pending_ends.pop_front() {
-                let (staged, paused_now) = {
-                    let staged = self
+                let (drained, paused_now) = {
+                    let d = self
                         .sink
                         .lock()
                         .unwrap()
                         .as_ref()
-                        .map(|s| s.staged_frames())
+                        .map(|s| s.staged_frames() + s.device_delay_frames())
                         .unwrap_or(0);
                     let paused = self.state.lock().unwrap().state == PlayState::Paused;
-                    (staged, paused)
+                    (d, paused)
                 };
                 if paused_now {
                     // Reset the deadline base so the pause doesn't eat it.
@@ -2869,7 +2869,10 @@ impl Engine {
                     ));
                     break;
                 }
-                if staged == 0
+                // staged==0 alone only means the callback COPIED the
+                // tail into a PipeWire buffer — device_delay_frames
+                // covers what's still queued downstream of it.
+                if drained == 0
                     || since.elapsed()
                         > std::time::Duration::from_millis(deadline_ms)
                 {
