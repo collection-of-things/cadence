@@ -159,6 +159,16 @@ function realRig(): Real {
   return real;
 }
 
+/** Push a command promise and count it in-flight until it settles. */
+function track(r: Real, p: Promise<void>): void {
+  r.commandsInFlight += 1;
+  r.pending.push(
+    p.finally(() => {
+      r.commandsInFlight -= 1;
+    }),
+  );
+}
+
 /** The spec's invariants, checked on the real snapshot with the same
  * scoping the model uses: SingleAudible tolerates routes with a stop
  * call in flight or a reported teardown failure; PlayingLeaseSound is
@@ -218,7 +228,8 @@ class SetQueueCmd implements fc.AsyncCommand<Model, Real> {
     const items = Array.from({ length: this.items }, (_, i) =>
       fakeItem(`f${i}`, this.crossRoute && i % 3 === 2 ? "youtube-music" : "local"),
     );
-    r.pending.push(
+    track(
+      r,
       r.coordinator
         .handleCommand({ kind: "setQueue", items, startIndex: 0, autoplay: this.autoplay })
         .then(() => undefined, () => undefined),
@@ -240,7 +251,8 @@ class PlayIndexCmd implements fc.AsyncCommand<Model, Real> {
   async run(m: Model, r: Real): Promise<void> {
     const item = r.coordinator.getQueue().items[this.index % m.queueLen];
     if (item === undefined) return;
-    r.pending.push(
+    track(
+      r,
       r.coordinator.handleCommand({ kind: "play", queueId: item.queueId }).then(
         () => undefined,
         () => undefined,
@@ -363,7 +375,8 @@ class MiscCmd implements fc.AsyncCommand<Model, Real> {
       this.what === "setMuted"
         ? { kind: "setMuted" as const, muted: this.pick % 2 === 0 }
         : { kind: this.what };
-    r.pending.push(
+    track(
+      r,
       r.coordinator.handleCommand(cmd).then(
         () => undefined,
         () => undefined,
