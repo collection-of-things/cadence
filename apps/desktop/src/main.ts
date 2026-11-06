@@ -40,18 +40,21 @@ if (process.env.CADENCE_USER_DATA) {
   app.setPath("userData", process.env.CADENCE_USER_DATA);
 }
 // CADENCE_E2E_CDP_PORT: expose Chrome DevTools Protocol for headless driving.
-if (process.env.CADENCE_E2E_CDP_PORT) {
+// Dev-only surface — never in packaged builds (a local process could drive a
+// signed-in provider session through it).
+if (process.env.CADENCE_E2E_CDP_PORT && !app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", process.env.CADENCE_E2E_CDP_PORT);
 }
-// --no-zygote: zygote-based child spawn fails on kernels without user
-// namespaces; direct spawn is a bit slower but always works. Linux only.
-if (process.platform === "linux") {
-  app.commandLine.appendSwitch("no-zygote");
-}
 // CADENCE_DISABLE_SANDBOX=1: boxes without kernel user-namespace support
-// cannot start the Chromium sandbox at all.
-if (process.env.CADENCE_DISABLE_SANDBOX === "1" || process.env.ELECTRON_DISABLE_SANDBOX === "1") {
+// cannot start the Chromium sandbox at all. --no-zygote is then required on
+// Linux (zygote-based child spawn fails); Chromium rejects it with sandbox on.
+const sandboxDisabled =
+  process.env.CADENCE_DISABLE_SANDBOX === "1" || process.env.ELECTRON_DISABLE_SANDBOX === "1";
+if (sandboxDisabled) {
   app.commandLine.appendSwitch("no-sandbox");
+  if (process.platform === "linux") {
+    app.commandLine.appendSwitch("no-zygote");
+  }
 }
 app.setName("cadence");
 

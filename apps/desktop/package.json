@@ -25,13 +25,13 @@
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
-    "@types/ws": "^8.18.2",
+    "@types/ws": "8.18.2",
     "electron": "github:castlabs/electron-releases#v45.2.1+wvcus",
     "electron-builder": "^26.0.0",
     "tsup": "9.0.0",
     "typescript": "^5.9.3",
     "vite": "8.3.5",
     "vitest": "5.0.5",
-    "ws": "^8.22.1"
+    "ws": "8.22.1"
   }
 }

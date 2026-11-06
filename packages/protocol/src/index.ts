@@ -82,7 +82,7 @@ export interface ArtworkRef {
 
 export type TrackSource =
   | { kind: "file"; path: string; format?: string }
-  | { kind: "provider"; providerItemId: string; uri?: string };
+  | { kind: "provider"; providerItemId: string; uri?: string; catalogId?: string };
 
 export interface TrackRef {
   /** Globally unique: `${route}:${providerItemId-or-path-hash}`. */

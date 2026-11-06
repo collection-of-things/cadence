@@ -107,7 +107,12 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     try {
       return await this.session.eval<T>(`window.__cadenceCtl.${call}`);
     } catch (e) {
-      if (!/undefined|__cadenceCtl|not a function/i.test((e as Error).message)) throw e;
+      // Retry only when the controller is actually missing — never on a call
+      // that merely failed (a retried addToLibrary POST would run twice).
+      const present = await this.session
+        .eval<string>(`typeof window.__cadenceCtl`)
+        .catch(() => "missing");
+      if (present === "object" || present === "function") throw e;
       await new Promise((r) => setTimeout(r, 800));
       this.installed = false;
       await this.prepare();
@@ -146,19 +151,29 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     return tracks;
   }
 
+  private warming = false;
+
   async capabilities(): Promise<RouteCapabilities> {
+    // capabilities() must not boot the hidden view — the UI asks on every
+    // launch. Report the last-known state; when the partition holds session
+    // cookies, warm the view in the background so the real auth state
+    // arrives via capabilitiesChanged shortly after.
     if (!this.installed) {
-      try {
-        await this.prepare();
-      } catch (e) {
-        console.error('[apple] prepare failed:', e);
-        return this.baseCapabilities({
-          route: this.route,
-          state: "unavailable",
-          stateDetail: "Could not load music.apple.com in the provider view.",
-          notes: ["music.apple.com unreachable or MusicKit missing — check network."],
-        });
+      if (!this.warming) {
+        this.warming = true;
+        void this.session
+          .hasSessionCookies()
+          .then((has) => (has ? this.prepare() : undefined))
+          .catch(() => undefined)
+          .finally(() => {
+            this.warming = false;
+          });
       }
+      return this.baseCapabilities({
+        route: this.route,
+        state: "unauthenticated",
+        stateDetail: "Session not loaded yet — it activates on first use.",
+      });
     }
     return this.baseCapabilities({
       route: this.route,
@@ -179,16 +194,19 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         exclusiveOutput: "no",
       },
       audio: {
-        pcmAccess: "unknown",
-        eq: "unknown",
+        // EME-encrypted streams are not exposed to WebAudio — PCM/EQ is
+        // structurally impossible on this route, not merely unverified.
+        pcmAccess: "no",
+        eq: "no",
         replayGain: "no",
-        qualityCeiling: "provider-selected AAC/ALAC per account settings",
+        qualityCeiling: "AAC per MusicKit web (no lossless/Atmos on web)",
       },
       visuals: { kind: "ambient" },
       notes: [
         "MusicKit JS in a music.apple.com ECS view (Sidra-style).",
         "Uses the site's own developer token — no paid Apple key.",
         "Full-track playback needs an Apple Music subscription.",
+        "Radio stations can't seek or scrub — seek is ignored on stations.",
         "PCM/EQ/lossless access not established — do not assume.",
       ],
     });
@@ -265,6 +283,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
 
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {
     if (lease.generationId !== this.generation) return;
+    if (this.current?.station) return; // stations stream — nothing to seek
     await this.session.eval(`window.__cadenceCtl.seek(${Math.round(positionMs)})`).catch(() => {});
   }
 
@@ -339,7 +358,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       this.emit({ kind: "capabilitiesChanged" });
     }
     // The engine ended the current track (queue exhausted or state 'ended').
-    if (s.ended || s.state === "ended" || s.state === "stopped") {
+    // Transient 'stopped' (mid-setQueue, unauthorize, stalls) is NOT an end —
+    // only trust MusicKit's terminal states and its explicit ended flag.
+    if (s.ended || s.state === "ended" || s.state === "completed") {
       if (this.current !== null) {
         this.emit({ kind: "ended", generationId, queueId: this.current.queueId });
       } else {
@@ -371,8 +392,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (hit === -1) {
       // Something else started inside the provider queue (leftover state,
       // external edit). Report the current item ended so the coordinator's
-      // fallback drives the real successor instead of drifting.
+      // fallback drives the real successor instead of drifting — and pause
+      // the page so an unrecognized item can never play phantom audio.
       this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
+      void this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
       return;
     }
     const promoted = this.mirrored[hit]!;

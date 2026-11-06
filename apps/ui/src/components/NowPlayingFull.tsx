@@ -18,7 +18,8 @@ function useTrackLyrics(track: TrackRef | undefined): string | undefined {
     setLyrics(undefined);
     if (!track || track.lyrics || !api.catalog) return;
     if (track.source.kind !== 'provider' || !track.source.providerItemId) return;
-    const id = track.source.providerItemId;
+    // Library items carry their catalog twin for lookups keyed by catalog id.
+    const id = track.source.catalogId ?? track.source.providerItemId;
     api.catalog
       .query(track.route, { kind: 'lyrics', songId: id })
       .then((page) => {

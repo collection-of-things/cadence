@@ -152,11 +152,13 @@ try {
   await attach();
 
   // --- 1. sign-in persisted --------------------------------------------------
+  // The route reports 'unauthenticated' while it warms in the background;
+  // a persisted session flips it to 'ready' once MusicKit reports auth.
   const cap = await waitFor(async () => {
     const list = await ev('window.cadence.getCapabilities()');
     const am = list?.find?.((c) => c.route === 'apple-musickit');
-    return am && am.state !== 'unavailable' ? am : null;
-  }, 'apple-musickit capability', 90_000);
+    return am && am.state === 'ready' ? am : null;
+  }, 'apple-musickit capability ready', 90_000);
   record('apple route reports capability', true, `state=${cap.state}`);
   record('sign-in persisted (route ready)', cap.state === 'ready', cap.stateDetail ?? '');
 
@@ -302,6 +304,37 @@ try {
       record('queue remove', (q?.items?.length ?? 0) === playTracks.length, `${q?.items?.length} items`);
     }
 
+    // --- stations --------------------------------------------------------------
+    // A station streams indefinitely; constituent-song nowPlaying changes
+    // must not end the queue item or stall tracking.
+    const radioPage = await ev(
+      `window.cadence.catalog.query('apple-musickit', {kind:'radio'})`, 40_000);
+    const st = (radioPage?.sections ?? []).flatMap((s) => s.entries).find((e) => e.kind === 'station')?.station;
+    if (st) {
+      const stationTrack = {
+        id: `apple-musickit:station:${st.id}`,
+        route: 'apple-musickit',
+        provider: 'apple',
+        title: st.name,
+        artists: [{ name: 'Radio' }],
+        durationMs: 0,
+        source: { kind: 'provider', providerItemId: st.id, uri: `am:station:${st.id}` },
+        availability: 'available',
+      };
+      await ev(`window.cadence.sendCommand({kind:'setQueue', items:[{queueId:'e2e-station', track:${JSON.stringify(stationTrack)}}], startIndex:0, autoplay:true})`, 30_000);
+      const stSnap = await waitFor(async () => {
+        const s = await ev('window.cadence.getSnapshot()');
+        return s?.status === 'playing' ? s : null;
+      }, 'station playing', 60_000);
+      await sleep(10_000);
+      const stSnap2 = await ev('window.cadence.getSnapshot()');
+      record('station keeps playing through stream changes', stSnap2?.status === 'playing',
+        `"${st.name}" status=${stSnap2?.status}`);
+      await ev(`window.cadence.sendCommand({kind:'stop'})`).catch(() => {});
+    } else {
+      record('station test', false, 'no station found in radio page');
+    }
+
     // --- lyrics ----------------------------------------------------------------
     const lyricsPage = await ev(
       `window.cadence.catalog.query('apple-musickit', {kind:'lyrics', songId:${JSON.stringify(String(nextSnap.current?.track?.source?.providerItemId ?? ''))}})`, 30_000)
@@ -322,8 +355,8 @@ try {
   const cap2 = await waitFor(async () => {
     const list = await ev('window.cadence.getCapabilities()');
     const am = list?.find?.((c) => c.route === 'apple-musickit');
-    return am && am.state !== 'unavailable' ? am : null;
-  }, 'capability after restart', 90_000);
+    return am && am.state === 'ready' ? am : null;
+  }, 'capability ready after restart', 90_000);
   record('session survives app restart', cap2.state === 'ready', `state=${cap2.state}`);
   const restored = await ev('window.cadence.getSnapshot()');
   const queue = await ev('window.cadence.getQueue()');

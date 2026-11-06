@@ -96,9 +96,12 @@ export class ProviderSession {
         },
       });
 
-      // Route provider events posted through the preload bridge.
-      win.webContents.on("ipc-message", (_e, channel, name, data) => {
+      // Route provider events posted through the preload bridge — only from
+      // frames inside the provider's own host family.
+      win.webContents.on("ipc-message", (e, channel, name, data) => {
         if (channel !== "cadence:provider-event") return;
+        const frameUrl = e.senderFrame?.url ?? "";
+        if (frameUrl && !hostAllowed(frameUrl)) return;
         const evt = { name: String(name), data };
         for (const l of this.listeners) l(evt);
       });
@@ -176,13 +179,21 @@ export class ProviderSession {
   async eval<T = unknown>(expression: string, timeoutMs = 10_000): Promise<T> {
     if (!this.alive) throw new Error(`provider session ${this.partition} is not alive`);
     // A wedged provider page must not stall the coordinator chain.
-    const result = await Promise.race([
-      this.win!.webContents.executeJavaScript(expression, true),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`provider eval timed out on ${this.partition}`)), timeoutMs),
-      ),
-    ]);
-    return result as T;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        this.win!.webContents.executeJavaScript(expression, true),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(
+            () => rej(new Error(`provider eval timed out on ${this.partition}`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+      return result as T;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -214,6 +225,18 @@ export class ProviderSession {
       return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     } catch {
       return undefined;
+    }
+  }
+
+  /** Cheap signal that the partition likely holds a signed-in session —
+   * cookies can be read without booting the hidden view. */
+  async hasSessionCookies(): Promise<boolean> {
+    try {
+      const ses = session.fromPartition(this.partition);
+      const cookies = await ses.cookies.get({ url: this.opts.url });
+      return cookies.length > 0;
+    } catch {
+      return false;
     }
   }
 

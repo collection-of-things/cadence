@@ -114,7 +114,13 @@ export function songToTrack(r: AmResource): TrackRef {
   const catalogId = pp?.catalogId;
   const playId = catalogId ?? pp?.id ?? r.id;
   const source = library
-    ? { kind: "provider" as const, providerItemId: pp?.id ?? r.id, uri: `am:library-song:${pp?.id ?? r.id}` }
+    ? {
+        kind: "provider" as const,
+        providerItemId: pp?.id ?? r.id,
+        uri: `am:library-song:${pp?.id ?? r.id}`,
+        // The catalog twin — lyrics and catalog lookups key off this id.
+        ...(catalogId ? { catalogId } : {}),
+      }
     : { kind: "provider" as const, providerItemId: playId, uri: `am:song:${playId}` };
   const artistId = r.relationships?.artists?.data?.[0]?.id;
   const track: TrackRef = {
@@ -412,8 +418,9 @@ export class AppleMusicCatalog {
           });
         }
       }
-    } catch (e) {
-      if (!(e instanceof CatalogError && e.needsAuth)) throw e;
+    } catch {
+      // Personalized sections are best-effort — a transient failure or
+      // missing auth must not sink the whole page.
     }
     // Recently played — also needs auth, but degrade silently.
     try {
@@ -424,8 +431,8 @@ export class AppleMusicCatalog {
       if (entries.length) {
         sections.push({ id: "recently-played", title: "Recently Played", entries });
       }
-    } catch (e) {
-      if (!(e instanceof CatalogError && e.needsAuth)) throw e;
+    } catch {
+      /* degrade */
     }
     if (sections.length === 0) return this.browse("Listen Now");
     return { title: "Listen Now", sections };
@@ -583,16 +590,22 @@ export class AppleMusicCatalog {
       ["top-playlists", "Playlists"],
       ["similar-artists", "Similar Artists"],
     ];
-    for (const [view, title] of views) {
-      try {
-        const v = (await this.amp(`/v1/catalog/${sf}/artists/${id}/view/${view}`, { limit: "10" })) as {
-          data?: AmResource[];
-        };
-        const entries = entriesOf(v.data);
-        if (entries.length) sections_push(page, `artist-${view}`, title, entries);
-      } catch {
-        /* a missing view just drops */
-      }
+    // Five view calls in parallel — the IPC bound is 20s total.
+    const fetched = await Promise.all(
+      views.map(async ([view, title]) => {
+        try {
+          const v = (await this.amp(`/v1/catalog/${sf}/artists/${id}/view/${view}`, { limit: "10" })) as {
+            data?: AmResource[];
+          };
+          const entries = entriesOf(v.data);
+          return entries.length ? { view, title, entries } : null;
+        } catch {
+          return null; // a missing view just drops
+        }
+      }),
+    );
+    for (const v of fetched) {
+      if (v) sections_push(page, `artist-${v.view}`, v.title, v.entries);
     }
     return page;
   }
