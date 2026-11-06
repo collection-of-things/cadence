@@ -532,10 +532,12 @@ struct Feed<T> {
     /// Negotiated latency quantum in frames — the fill ceiling when the
     /// graph doesn't state a request (mpv caps the same way).
     latency_frames: usize,
-    /// Frames pulled from staging into THIS cycle's buffer but not yet
-    /// handed to the driver — position snapshots must count them or a
-    /// rebuild can skip unheard audio. Written only by the process
-    /// callback; read by the monitor.
+    /// Frames pulled from staging into the most recent cycle buffer —
+    /// HELD, not cleared on hand-back: a queued-but-unprocessed buffer
+    /// is unheard but invisible to `pw_time.delay` (and `queued` is
+    /// unreachable — pipewire-rs exposes no pw_buffer.size setter).
+    /// Keeping the last pull counted errs toward replay on a rebuild,
+    /// never a skip. Written only by the process callback.
     inflight: Arc<AtomicU64>,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
@@ -909,11 +911,10 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as _;
     *chunk.size_mut() = size as _;
-    // Hand the buffer back to the driver BEFORE clearing the in-flight
-    // count: the frames then sit inside `delay`, and the µs of double
-    // counting errs toward replay rather than a skipped tail.
+    // Hand the buffer back to the driver. `inflight` stays set — the
+    // queued frames are unheard but may not yet be inside `delay` —
+    // the next fill overwrites it with ITS pull anyway.
     drop(buffer);
-    feed.inflight.store(0, Ordering::Release);
 }
 
 /// Ordering barrier for drain requests. `drained` events post to the
@@ -1164,13 +1165,15 @@ impl Sink for PipeWireSink {
                 // would let a rebuild skip them. Zero outside process.
                 // (pw_time.queued is NOT usable here: it sums
                 // pw_buffer.size, which the dequeue/fill cycle never
-                // sets — it stays 0. Once handed back, the buffer
-                // belongs to the driver and is inside `delay`.)
+                // sets — it stays 0. Handed-back frames keep counting
+                // via `inflight` until the next pull instead.)
                 (delay_secs * self.rate_hz as f64).round() as u64
                     + t.buffered()
                     + self.inflight.load(Ordering::Acquire)
             })
-            .unwrap_or(self.device_delay_frames)
+            // The fallback must still bound in-flight frames — a pull
+            // can exceed the negotiated quantum.
+            .unwrap_or(self.device_delay_frames + self.inflight.load(Ordering::Acquire))
     }
 
     fn request_drain(&self) -> Option<u64> {
