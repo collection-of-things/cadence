@@ -462,12 +462,11 @@ def compare(name, cap, ref, ch, label):
     # shortfall means real audio was lost, not an attach race. A
     # period-aliased alignment can't deflate this: the content span is
     # measured on the raw capture, not the aligned window.
-    cap_nz = np.flatnonzero(np.abs(cap) > 1e-6)
-    if len(cap_nz):
-        # Both are interleaved sample counts — channels cancel out.
-        coverage = (int(cap_nz[-1]) - int(cap_nz[0]) + 1) / len(ref)
-    else:
-        coverage = 0.0
+    cap_nz = np.count_nonzero(np.abs(cap) > 1e-6)
+    ref_nz = max(1, int(np.count_nonzero(np.abs(ref) > 1e-6)))
+    # Dense nonzero fraction vs the reference's — a truncated or
+    # mostly-silent capture can't be inflated by a sparse noise tail.
+    coverage = cap_nz / ref_nz
     cov_ok = coverage >= 0.85
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
