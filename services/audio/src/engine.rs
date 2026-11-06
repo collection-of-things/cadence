@@ -1648,31 +1648,35 @@ impl Engine {
     /// format-mismatched successor stays armed for the boundary reopen;
     /// only a probe failure refuses to claim readiness.
     fn respawn_prefetch(&self, qid: String, src: SourceSpec, rg: Option<f64>) {
-        // The armed successor may already be promoted pull-side — its
-        // adoption lags the boundary, and installing it as `next` would
-        // drop as stale. Respawn it as the ACTIVE track instead.
-        let promoted = {
-            let core = self.core.lock().unwrap();
-            core.active.as_ref().is_some_and(|r| r.queue_id == qid)
+        // Promotion check + retire + capture in ONE section — a promotion
+        // can't slip between them and leave the live track stale.
+        let step = {
+            let mut core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core
+                .active
+                .as_ref()
+                .is_some_and(|r| r.queue_id == qid)
+            {
+                Some(None)
+            } else if st.prefetch.as_ref().map(|p| p.queue_id.as_str())
+                != Some(qid.as_str())
+            {
+                None
+            } else {
+                if let Some(old) = core.next.take() {
+                    old.pipe.abort();
+                }
+                Some(Some((core.boundary_seq, st.generation)))
+            }
         };
-        if promoted {
+        let Some(step) = step else { return };
+        let Some((seq, gen)) = step else {
+            // Already promoted pull-side — respawn it as the ACTIVE track
+            // rather than dropping the install below.
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
             return;
-        }
-        // Retire the armed reader only while the slot still describes THIS
-        // successor — a boundary or a newer prefetch may have claimed it
-        // since the caller's snapshot.
-        let (seq, gen) = {
-            let mut core = self.core.lock().unwrap();
-            let st = self.state.lock().unwrap();
-            if st.prefetch.as_ref().map(|p| p.queue_id.as_str()) != Some(qid.as_str()) {
-                return;
-            }
-            if let Some(old) = core.next.take() {
-                old.pipe.abort();
-            }
-            (core.boundary_seq, st.generation)
         };
         *self.prefetch_producer.lock().unwrap() = None;
         // Re-arm only when the prefetch slot still describes THIS
@@ -1715,10 +1719,21 @@ impl Engine {
                                 .as_ref()
                                 .is_some_and(|r| r.queue_id == qid);
                         if stale {
+                            let promoted = core
+                                .active
+                                .as_ref()
+                                .is_some_and(|r| r.queue_id == qid);
                             drop(st);
                             drop(core);
                             reader.pipe.abort();
                             drop(handle);
+                            if promoted {
+                                // The successor is already live — respawn
+                                // it as the active track so the new DSP
+                                // settings actually apply.
+                                let pos = self.core.lock().unwrap().position_ms();
+                                self.respawn_pipelines(pos);
+                            }
                             return;
                         }
                         core.set_next(reader);
@@ -2142,7 +2157,11 @@ impl Engine {
         self.settle_boundary();
         // Pipelines read EQ at construction, so restart the current pipeline
         // at its position to apply changes immediately. Skipped on bypass.
-        let bypass = self.state.lock().unwrap().fidelity_bypass;
+        let (bypass, seq) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            (st.fidelity_bypass, core.boundary_seq)
+        };
         if !bypass {
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
@@ -2158,6 +2177,12 @@ impl Engine {
             };
             if let Some((qid, src, rg)) = pf {
                 self.respawn_prefetch(qid, src, rg);
+            }
+            // A boundary landing between the snapshot and the respawn may
+            // have promoted a non-bypass successor — converge it here.
+            if self.core.lock().unwrap().boundary_seq != seq {
+                let pos = self.core.lock().unwrap().position_ms();
+                self.respawn_pipelines(pos);
             }
         }
         Ok(json!({ "ok": true }))
@@ -2195,6 +2220,20 @@ impl Engine {
             self.respawn_pipelines(pos);
         } else if let Some((qid, src, rg)) = pf_tagged {
             self.respawn_prefetch(qid, src, rg);
+            // A boundary may have promoted the tagged successor while we
+            // respawned it — converge any track that crossed the boundary.
+            if self.core.lock().unwrap().ended_pending
+                || {
+                    let core = self.core.lock().unwrap();
+                    let st = self.state.lock().unwrap();
+                    core.active.as_ref().is_some_and(|r| {
+                        Some(r.instance) != Some(st.current_instance)
+                    })
+                }
+            {
+                let pos = self.core.lock().unwrap().position_ms();
+                self.respawn_pipelines(pos);
+            }
         }
         Ok(json!({ "ok": true }))
     }
