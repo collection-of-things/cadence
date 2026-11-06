@@ -33,7 +33,7 @@ export class Pw {
    * @param {string} [o.runtimeDir] adopt an existing private core (attach/stop)
    * @param {string} [o.logPath]    daemon log file
    */
-  constructor({ mode = "private", runtimeDir = null, logPath = null, persistent = false }) {
+  constructor({ mode = "private", runtimeDir = null, logPath = null, persistent = false, aborted = null }) {
     if (mode !== "private") {
       // fail closed BEFORE anything is spawned — never touch the user's
       // audio session, even when asked politely with a flag.
@@ -47,6 +47,7 @@ export class Pw {
     this.daemon = null;
     this.sm = null;
     this.logPath = logPath;
+    this.aborted = aborted; // optional predicate — abort mid-start, never spawn after it
   }
 
   /** Kill every private-core daemon process carrying this core's runtime
@@ -85,6 +86,11 @@ export class Pw {
   }
 
   async start() {
+    const chk = () => {
+      if (this.aborted?.()) throw new Error("private PipeWire start aborted");
+    };
+    const waitOpts = { aborted: () => this.aborted?.() ?? false };
+    chk();
     this.runtimeDir = mkdtempSync(join(tmpdir(), "cadence-pw-"));
     this.stateDir = mkdtempSync(join(tmpdir(), "cadence-wp-"));
     const log = this.logPath ? createWriteStream(this.logPath, { flags: "a" }) : null;
@@ -96,12 +102,14 @@ export class Pw {
     else { this.daemon.stdout.resume(); this.daemon.stderr.resume(); }
     const sock = join(this.runtimeDir, "pipewire-0");
     await waitFor(() => existsSync(sock) || null, {
-      timeout: 10_000, what: `private pipewire socket ${sock}`,
+      timeout: 10_000, what: `private pipewire socket ${sock}`, ...waitOpts,
     });
+    chk(); // an abort during the socket wait must not reach the SM spawn
     await waitFor(() => {
       const r = this.runPw("pw-dump", []);
       return r.code === 0 ? true : null;
-    }, { timeout: 10_000, what: "private pipewire answering pw-dump" });
+    }, { timeout: 10_000, what: "private pipewire answering pw-dump", ...waitOpts });
+    chk();
     // policy-only WirePlumber: session management (activation, port
     // configs, auto-link to the only endpoint) with NO hardware
     // monitors — it can never grab a real device into this graph.
@@ -121,10 +129,10 @@ export class Pw {
     // tap sink exists from daemon config; the SM activates it → ports.
     // WP's no-media-session probe makes first connect slow — be generous.
     await waitFor(() => (this.tapPorts()?.inPorts.length ?? 0) >= 1 || null, {
-      timeout: 30_000, every: 250, what: `${TAP_NAME} playback ports`,
+      timeout: 30_000, every: 250, what: `${TAP_NAME} playback ports`, ...waitOpts,
     });
     await waitFor(() => (this.tapPorts()?.monitorPorts.length ?? 0) >= 1 || null, {
-      timeout: 15_000, every: 250, what: `${TAP_NAME} monitor ports`,
+      timeout: 15_000, every: 250, what: `${TAP_NAME} monitor ports`, ...waitOpts,
     });
     if (!this.sinkExists()) {
       throw new Error(`private core has no ${TAP_NAME} sink (bad pipewire-verify.conf?)`);
@@ -333,17 +341,23 @@ export class Pw {
     };
   }
 
-  /** Everything this scope created goes away. Evidence never does. */
+  /** Everything this scope created goes away. Evidence never does.
+   * Awaits actual exits — teardown must not finish while a daemon is
+   * still shutting down (a lingerer looks exactly like a leak). */
   async stop() {
+    const targets = [this.sm, this.daemon].filter(Boolean);
     try { this.sm?.kill("SIGTERM"); } catch {}
     try { this.daemon?.kill("SIGTERM"); } catch {}
     // pipewire re-forks — the spawn pid is often a dead parent; the
     // runtime dir marks the real survivors (exact env match, daemons only)
     this.killByRuntimeDir();
-    await sleep(300);
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && targets.some((p) => p.exitCode === null)) await sleep(50);
     try { this.sm?.kill("SIGKILL"); } catch {}
     try { this.daemon?.kill("SIGKILL"); } catch {}
     this.killByRuntimeDir();
+    const kdeadline = Date.now() + 1_000;
+    while (Date.now() < kdeadline && targets.some((p) => p.exitCode === null)) await sleep(50);
   }
 
   /** Temp dirs this scope owns — safe to delete once the core is down. */

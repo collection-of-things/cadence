@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,44 +60,84 @@ test("teardownActiveLaunches tolerates empty + already-dead state", async () => 
   assert.equal(activeLaunches.size, 0);
 });
 
-test("SIGTERM while Xvfb is still coming up reaps it (real signal-at-spawn)", async () => {
-  // Reproduces the reviewer finding: signal lands inside startXvfb's
-  // readiness wait — before this fix the spawned Xvfb was orphaned.
-  const slug = `sigx-${Date.now()}`;
-  const cli = spawn(process.execPath, [CLI, "run", "smoke", "--slug", slug], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let out = "";
-  cli.stdout.on("data", (d) => { out += d; });
-  cli.stderr.on("data", (d) => { out += d; });
+const HARNESS_COMMS = new Set(["Xvfb", "pipewire", "wireplumber", "pw-cat", "electron", "cadence", "cadence-audio"]);
 
-  // poll fast for the Xvfb child of the CLI, then signal IMMEDIATELY —
-  // racing its readiness window is the point
-  let xvfbPid = null;
-  const deadline = Date.now() + 60_000;
-  while (!xvfbPid && Date.now() < deadline && cli.exitCode === null) {
-    xvfbPid = childCommPids(cli.pid, "Xvfb")[0] ?? null;
-    if (!xvfbPid) await sleep(5);
-  }
-  assert.ok(xvfbPid, `never observed an Xvfb child of cli pid ${cli.pid}:\n${out.slice(-800)}`);
-
-  process.kill(cli.pid, "SIGTERM");
-  const code = await new Promise((res) => {
-    cli.on("exit", (c) => res(c));
-    setTimeout(() => res(-1), 30_000);
-  });
-  assert.equal(code, 143, `expected exit 143 from signal teardown, got ${code}`);
-  await sleep(500);
-  assert.equal(procAlive(xvfbPid), false, `Xvfb pid ${xvfbPid} leaked`);
-  // no harness daemons left behind either
+/** Pids of `pid`'s direct children that look like harness resources. */
+function harnessChildren(pid) {
+  const out = [];
   for (const d of readdirSync("/proc")) {
     if (!/^\d+$/.test(d)) continue;
     const ids = procIds(Number(d));
-    if (ids?.ppid === cli.pid) {
-      assert.fail(`stray child ${d} (${procComm(Number(d))}) survived signal teardown`);
+    const comm = procComm(Number(d));
+    if (ids?.ppid === pid && comm && HARNESS_COMMS.has(comm)) out.push(Number(d));
+  }
+  return out;
+}
+
+/** Spawn a CLI command, watch for its first harness child, SIGTERM at the
+ * worst moment (mid-bringup), then prove every observed child is dead —
+ * including any spawned between the signal and the CLI's exit. */
+async function signalAtSpawn(cliArgs, { iterations = 1, timeout = 120_000 } = {}) {
+  for (let i = 0; i < iterations; i++) {
+    const slug = `sigx-${cliArgs[0]}-${Date.now()}-${i}`;
+    const cli = spawn(process.execPath, [CLI, ...cliArgs, "--slug", slug], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    cli.stdout.on("data", (d) => { out += d; });
+    cli.stderr.on("data", (d) => { out += d; });
+    const observed = new Map(); // pid -> comm, everything we ever saw spawn
+    const seen = new Set();
+    let signaled = false;
+    const deadline = Date.now() + timeout;
+    const exited = new Promise((res) => cli.on("exit", (c) => res(c)));
+    // poll CONTINUOUSLY until the cli exits — children spawned between the
+    // signal and the exit are exactly the respawn-leak this guards
+    while (Date.now() < deadline && cli.exitCode === null) {
+      for (const p of harnessChildren(cli.pid)) {
+        if (!seen.has(p)) { seen.add(p); observed.set(p, procComm(p)); }
+      }
+      if (!signaled && seen.size > 0) {
+        process.kill(cli.pid, "SIGTERM");
+        signaled = true;
+      }
+      await sleep(4);
+    }
+    if (!signaled) {
+      try { cli.kill("SIGKILL"); } catch {}
+      assert.fail(`iteration ${i}: never observed a harness child of cli pid ${cli.pid}:\n${out.slice(-800)}`);
+    }
+    const code = await Promise.race([exited, sleep(45_000).then(() => {
+      try { cli.kill("SIGKILL"); } catch {}
+      return -1;
+    })]);
+    assert.equal(code, 143, `iteration ${i}: expected exit 143 from signal teardown, got ${code}\n${out.slice(-800)}`);
+    await sleep(400);
+    for (const [p, comm] of observed) {
+      // a zombie is dead-but-unreaped — count only a live process as a leak
+      const stat = existsSync(`/proc/${p}`) ? readFileSync(`/proc/${p}/stat`, "utf8") : null;
+      const state = stat?.split(") ")[1]?.[0];
+      assert.ok(stat === null || state === "Z",
+        `iteration ${i}: leaked ${comm} pid ${p} (spawned mid-launch, survived teardown)`);
+    }
+    // nothing else left hanging under a (now dead) cli
+    for (const d of readdirSync("/proc")) {
+      if (!/^\d+$/.test(d)) continue;
+      const ids = procIds(Number(d));
+      if (ids?.ppid === cli.pid) {
+        assert.fail(`iteration ${i}: stray child ${d} (${procComm(Number(d))}) survived signal teardown`);
+      }
     }
   }
-}, { timeout: 120_000 });
+}
+
+test("SIGTERM mid-bringup reaps every spawned resource (run, repeated)", async () => {
+  await signalAtSpawn(["run", "smoke"], { iterations: 3 });
+}, { timeout: 300_000 });
+
+test("SIGTERM mid-bringup reaps every spawned resource (launch, repeated)", async () => {
+  await signalAtSpawn(["launch"], { iterations: 2 });
+}, { timeout: 300_000 });
 
 test("recorded teardown never escalates after an ownership check fails", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cadence-stop-test-"));

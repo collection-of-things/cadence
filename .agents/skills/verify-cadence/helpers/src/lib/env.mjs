@@ -89,16 +89,27 @@ export function writeJson(path, obj) {
   writeFileSync(path, JSON.stringify(obj, null, 2));
 }
 
-/** Wait until fn() returns truthy; throws with `what` after timeout. */
-export async function waitFor(fn, { timeout = 15_000, every = 250, what = "condition" } = {}) {
+export class AbortedError extends Error {
+  constructor(what) { super(`aborted while waiting for ${what}`); this.name = "AbortedError"; }
+}
+
+/** Wait until fn() returns truthy; throws with `what` after timeout.
+ * `aborted` (optional predicate) throws AbortedError promptly — callers
+ * interrupted mid-wait must not keep going and spawn more resources. */
+export async function waitFor(fn, { timeout = 15_000, every = 250, what = "condition", aborted = null } = {}) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
+    if (aborted?.()) throw new AbortedError(what);
     try {
       last = await fn();
       if (last) return last;
-    } catch (e) { last = e; }
+    } catch (e) {
+      if (e instanceof AbortedError) throw e;
+      last = e;
+    }
     await sleep(every);
   }
+  if (aborted?.()) throw new AbortedError(what);
   throw new Error(`timed out waiting for ${what} (${timeout}ms)`);
 }

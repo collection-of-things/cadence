@@ -92,7 +92,8 @@ function checkAborted() {
  * playwright's _electron.launch resolves only AFTER spawning. */
 export async function teardownActiveLaunches() {
   launchAborted = true; // pending launch steps bail at the next checkpoint
-  for (const r of [...activeLaunches]) {
+  const rs = [...activeLaunches];
+  for (const r of rs) {
     try { await releaseTracked(r); } catch {}
     activeLaunches.delete(r);
   }
@@ -103,6 +104,13 @@ export async function teardownActiveLaunches() {
     if (comm && /^(electron|cadence|cadence-audio|Xvfb|pipewire|wireplumber|pw-cat)$/.test(comm)) {
       try { process.kill(pid, "SIGKILL"); } catch {}
     }
+  }
+  // then WAIT (bounded) for each in-flight launch to settle — a launch may
+  // be inside playwright's spawn-before-resolve window; its own catch is
+  // what kills that late-arriving app handle, so give it time to run
+  const deadline = Date.now() + 5_000;
+  for (const r of rs) {
+    while (r.settled === false && Date.now() < deadline) await sleep(50);
   }
 }
 
@@ -127,12 +135,17 @@ async function releaseTracked(r, { removeOwnedDirs = true } = {}) {
       if (ids?.pgid === r.proc.pid) process.kill(-r.proc.pid, "SIGTERM");
       else r.proc.kill("SIGTERM");
     } catch { try { r.proc.kill("SIGTERM"); } catch {} }
-    await sleep(800);
+    const deadline = Date.now() + 3_000;
+    while (r.proc.exitCode === null && procAlive(r.proc.pid) && Date.now() < deadline) await sleep(50);
     try { r.proc.kill("SIGKILL"); } catch {}
+    const kdeadline = Date.now() + 1_000;
+    while (r.proc.exitCode === null && procAlive(r.proc.pid) && Date.now() < kdeadline) await sleep(50);
   }
   try { await r.browser?.close(); } catch {}
   try { await r.pw?.stop(); } catch {}
-  try { r.xvfb?.stop(); } catch {}
+  // xvfb.stop() is async — AWAIT it: a teardown that exits while the X
+  // server is still dying looks exactly like a leaked Xvfb
+  try { await r.xvfb?.stop(); } catch {}
   if (removeOwnedDirs) {
     try { r.pw?.removeOwnedDirs(); } catch {}
     // the owned profile is as much temp state as the graph dirs — a
@@ -204,12 +217,16 @@ export async function launchManaged({ flavor = "dev", userData = null, runDir } 
   });
   const r = tracked();
   r.ud = ud;
+  r.settled = false; // flipped in finally — signal teardown waits for it
   activeLaunches.add(r); // mid-launch SIGTERM can reap these too
   const logStream = createWriteStream(join(runDir, "logs", "electron.log"), { flags: "a" });
   try {
-    r.xvfb = await startXvfb({ onProc: (h) => { r.xvfb = h; } });
+    r.xvfb = await startXvfb({ onProc: (h) => { r.xvfb = h; }, aborted: () => launchAborted });
     checkAborted();
-    r.pw = new Pw({ mode: "private", logPath: join(runDir, "logs", "pipewire.log") });
+    r.pw = new Pw({
+      mode: "private", logPath: join(runDir, "logs", "pipewire.log"),
+      aborted: () => launchAborted,
+    });
     // assigned BEFORE start() resolves — a rejection still leaves the
     // half-up daemon reachable by releaseTracked
     await r.pw.start();
@@ -245,6 +262,8 @@ export async function launchManaged({ flavor = "dev", userData = null, runDir } 
     activeLaunches.delete(r);
     await releaseTracked(r);
     throw e;
+  } finally {
+    r.settled = true;
   }
 }
 
@@ -255,15 +274,17 @@ export async function launchInteractive({ flavor = "dev", userData = null, runDi
   cdpPort = prep.cdpPort;
   const r = tracked();
   r.ud = ud;
+  r.settled = false;
   activeLaunches.add(r);
   // the process outlives this CLI call — send its output to a real file
   // descriptor, not a pipe that dies with us
   const logFd = openSync(join(runDir, "logs", "electron.log"), "a");
   try {
-    r.xvfb = await startXvfb({ persistent: true, onProc: (h) => { r.xvfb = h; } });
+    r.xvfb = await startXvfb({ persistent: true, onProc: (h) => { r.xvfb = h; }, aborted: () => launchAborted });
     checkAborted();
     r.pw = new Pw({
       mode: "private", logPath: join(runDir, "logs", "pipewire.log"), persistent: true,
+      aborted: () => launchAborted,
     });
     await r.pw.start();
     checkAborted();
@@ -311,6 +332,8 @@ export async function launchInteractive({ flavor = "dev", userData = null, runDi
     try { closeSync(logFd); } catch {}
     await releaseTracked(r);
     throw e;
+  } finally {
+    r.settled = true;
   }
 }
 

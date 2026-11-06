@@ -141,20 +141,30 @@ async function main() {
       let ctx = null;
       let failures = 0;
       let interrupted = false;
-      // CI kills: SIGTERM/SIGINT must still tear down and write a verdict
-      const onSignal = async (sig) => {
+      let signalDone = null;
+      // CI kills: SIGTERM/SIGINT must still tear down and write a verdict.
+      // The normal flow below races the abort: if the in-flight launch
+      // rejects fast, this body could exit(1) BEFORE teardown finished —
+      // losing both the signal code and the last kills. The main path
+      // therefore waits on signalDone instead of exiting on its own.
+      const onSignal = (sig) => {
         if (interrupted) return;
         interrupted = true;
-        ev.fail("run interrupted", `received ${sig} — teardown running`);
-        // reap in-flight launch resources FIRST (ctx may not exist yet),
-        // then the finished session if there is one
-        try { await teardownActiveLaunches(); } catch {}
-        try { if (ctx) await teardownRaw(ctx); } catch {}
-        try { ev.summary({ flows: names, flavor, interrupted: sig }); } catch {}
-        process.exit(sig === "SIGINT" ? 130 : 143);
+        signalDone = (async () => {
+          try {
+            ev.fail("run interrupted", `received ${sig} — teardown running`);
+            // reap in-flight launch resources FIRST (ctx may not exist yet),
+            // then the finished session if there is one
+            try { await teardownActiveLaunches(); } catch {}
+            try { if (ctx) await teardownRaw(ctx); } catch {}
+            try { ev.summary({ flows: names, flavor, interrupted: sig }); } catch {}
+          } finally {
+            process.exit(sig === "SIGINT" ? 130 : 143);
+          }
+        })();
       };
-      const sigint = () => void onSignal("SIGINT");
-      const sigterm = () => void onSignal("SIGTERM");
+      const sigint = () => onSignal("SIGINT");
+      const sigterm = () => onSignal("SIGTERM");
       process.on("SIGINT", sigint);
       process.on("SIGTERM", sigterm);
       try {
@@ -195,6 +205,10 @@ async function main() {
         }
         ev.dumpState("session", ctx?.meta ?? {});
       }
+      // a signal during launch/flows owns the exit: its teardown decides
+      // the code and writes the interrupted summary. Wait for it rather
+      // than racing an exit(1) through incomplete cleanup.
+      if (interrupted) { try { await signalDone; } catch {} return; }
       process.off("SIGINT", sigint);
       process.off("SIGTERM", sigterm);
       let verdict = "FAIL";
@@ -208,16 +222,27 @@ async function main() {
       const runDir = newRunDir(flags.slug ?? "interactive");
       linkLatest(runDir);
       // a signal during bringup must still reap the detached resources
-      // already acquired (Xvfb, private core, profile) — same as `run`
-      const onSignal = async (sig) => {
-        try { await teardownActiveLaunches(); } catch {}
-        const ev = new Evidence(runDir);
-        ev.fail("launch interrupted", `received ${sig}`);
-        try { ev.summary({ launch: true, flavor, interrupted: sig }); } catch {}
-        process.exit(sig === "SIGINT" ? 130 : 143);
+      // already acquired (Xvfb, private core, profile) — same as `run`.
+      // Same exit race as `run`: the aborted launch's catch path could
+      // die(1) before teardown completes — yield the exit to the handler.
+      let interrupted = false;
+      let signalDone = null;
+      const onSignal = (sig) => {
+        if (interrupted) return;
+        interrupted = true;
+        signalDone = (async () => {
+          try {
+            try { await teardownActiveLaunches(); } catch {}
+            const ev = new Evidence(runDir);
+            ev.fail("launch interrupted", `received ${sig}`);
+            try { ev.summary({ launch: true, flavor, interrupted: sig }); } catch {}
+          } finally {
+            process.exit(sig === "SIGINT" ? 130 : 143);
+          }
+        })();
       };
-      const sigint = () => void onSignal("SIGINT");
-      const sigterm = () => void onSignal("SIGTERM");
+      const sigint = () => onSignal("SIGINT");
+      const sigterm = () => onSignal("SIGTERM");
       process.on("SIGINT", sigint);
       process.on("SIGTERM", sigterm);
       try {
@@ -228,6 +253,7 @@ async function main() {
           flavor, userData: flags["user-data"], runDir,
           cdpPort: flags.cdp ? Number(flags.cdp) : null,
         });
+        if (interrupted) { try { await signalDone; } catch {} return; }
         process.off("SIGINT", sigint);
         process.off("SIGTERM", sigterm);
         console.log(`launched pid=${ctx.meta.pid} display=${ctx.xvfb.display} cdp=${ctx.meta.cdpPort}`);
@@ -237,6 +263,9 @@ async function main() {
         console.log(`stop:     cadence-verify stop --run-dir ${runDir}`);
         // leave running on purpose
       } catch (e) {
+        // if a signal is mid-teardown, it owns the exit — don't die(1)
+        // through incomplete cleanup
+        if (interrupted) { try { await signalDone; } catch {} return; }
         // a failed interactive launch still leaves a durable FAIL verdict
         const ev = new Evidence(runDir);
         ev.fail("launch", `${e.name}: ${e.message}`);
