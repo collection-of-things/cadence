@@ -1055,7 +1055,8 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
-                positions: None,
+                positions: crate::sink::resolve_positions(
+                    None, caps.default_channels()),
             };
             // Only the non-fidelity preference falls back to the device
             // default — strict fidelity stays honest about what it took.
@@ -1581,7 +1582,8 @@ impl Engine {
             channels: new_caps.default_channels(),
             kind: new_caps.default_kind(),
             device_name: new_caps.name(),
-            positions: None,
+            positions: crate::sink::resolve_positions(
+                None, new_caps.default_channels()),
         };
         // Rebuild under the new caps BEFORE committing them — a rejected
         // rebuild leaves the old device caps and stream intact.

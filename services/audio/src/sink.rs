@@ -335,7 +335,7 @@ pub(crate) fn layout_named(name: &str) -> Option<Vec<u32>> {
 /// positions. A declared name that mismatches the channel count is
 /// ignored; ffmpeg's per-count defaults (av_get_default_channel_layout)
 /// cover the rest.
-pub(crate) fn resolve_positions(
+pub fn resolve_positions(
     layout: Option<&str>,
     channels: u32,
 ) -> Option<Vec<u32>> {
@@ -610,7 +610,7 @@ impl CpalCaps {
             channels: d.channels() as u32,
             kind: Self::kind_of(d.sample_format()),
             device_name: self.name(),
-            positions: None,
+            positions: resolve_positions(None, d.channels() as u32),
         }
     }
 

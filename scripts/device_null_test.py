@@ -864,7 +864,8 @@ def main():
                 "mpv", mcap, ref, ch, "mpv     vs ffmpeg",
                 min_cov=mpv_floor)
         results["cadence_vs_ffmpeg_ok"] = ok_c
-        results["mpv_vs_ffmpeg_ok"] = ok_m
+        if not mono:
+            results["mpv_vs_ffmpeg_ok"] = ok_m
         # `*_exact` requires literally zero diffs (Sol: a 32-diff
         # tolerance must not wear the name).
         results["cadence_vs_ffmpeg_exact"] = x_c
@@ -872,7 +873,8 @@ def main():
             results["mpv_vs_ffmpeg_exact"] = x_m
         # Mid-signal zero runs are dropouts — gate them too.
         results["cadence_no_dropouts"] = zc == 0
-        results["mpv_no_dropouts"] = zm == 0
+        if not mono:
+            results["mpv_no_dropouts"] = zm == 0
         # The app-level bar: the captured streams must null against each
         # other — i.e. cadence's delivered PCM is indistinguishable from
         # mpv's. Guard against the degenerate "both captured silence"
@@ -884,7 +886,8 @@ def main():
         if mono:
             print("  cadence vs mpv    : skipped (mono: mpv uses its own "
                   "upmix, not MONO unity-dup)")
-            results["cadence_vs_mpv_ok"] = True
+            # skipped — no ok/exact keys: nothing is claimed that
+            # wasn't checked.
             silent = False
             res = np.zeros(0, dtype="<f4")
             cad_f = cad[: len(cad) - len(cad) % ch].reshape(-1, ch)
