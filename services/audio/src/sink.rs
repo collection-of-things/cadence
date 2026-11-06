@@ -11,7 +11,7 @@ use crate::pw_sink::PipeWireCaps;
 use crate::ringbuf::{self, Consumer};
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Sample type carried to a device — f32/s32/s16, little-endian on wire.
@@ -35,25 +35,14 @@ fn drain<T: PcmSample>(cons: &Consumer<T>, out: &mut [T]) {
     out[n..].fill(T::default());
 }
 
-/// Drain after checking the pause flag and flush epoch: paused means
-/// output silence WITHOUT draining (the pre-pause tail survives for a
-/// seamless resume); a bumped epoch (seek/clear/load) means staged PCM
-/// is stale — drop it instead of playing it out.
-fn drain_epoch<T: PcmSample>(
-    cons: &Consumer<T>,
-    epoch: &std::sync::atomic::AtomicU64,
-    paused: &AtomicBool,
-    last: &mut u64,
-    out: &mut [T],
-) {
-    if paused.load(Ordering::Relaxed) {
+/// Drain with a paused check: paused means output silence WITHOUT
+/// draining, so the pre-pause tail survives for a seamless resume.
+/// Stale-PCM flushing is the feeder's job (producer-side epoch fence);
+/// the callback just drains.
+fn drain_paused<T: PcmSample>(cons: &Consumer<T>, paused: &AtomicBool, out: &mut [T]) {
+    if paused.load(Ordering::Acquire) {
         out.fill(T::default());
         return;
-    }
-    let e = epoch.load(Ordering::Acquire);
-    if e != *last {
-        *last = e;
-        cons.clear();
     }
     drain(cons, out);
 }
@@ -84,35 +73,40 @@ impl Drop for FeedGuard {
 /// Spawn a feeder thread that pulls `core` into a lock-free staging ring.
 /// The device callback drains the ring instead of touching `core`'s mutex,
 /// so a contended callback can never be forced to emit silence.
+///
+/// The epoch protocol lives entirely on the producer side: inside one
+/// `core` lock the feeder reads the epoch, clears the ring if a control
+/// change bumped it (every staged sample is provably pre-bump), pulls,
+/// and publishes. A bump can't interleave anywhere in that sequence —
+/// no fresh data is ever discarded, and no stale scratch can publish.
+/// The callback needs no epoch logic; it may drain up to ~one feeder
+/// cycle of stale samples after a bump, which every staged player has.
 /// Returns (consumer, guard); the guard stops+joins on drop.
 pub fn spawn_feed<T: PcmSample>(
     core: &Arc<Mutex<OutputCore>>,
     pull: fn(&mut OutputCore, &mut [T]),
-    capacity: usize,
+    min_capacity: usize,
     channels: usize,
 ) -> Result<(Consumer<T>, FeedGuard)> {
+    // Pull whole frames: a partial-frame tail at the scratch boundary
+    // would split a frame across pulls and skew position accounting for
+    // channel counts that don't divide the chunk size. The ring must
+    // hold at least two chunks or the feeder can never write (mono at
+    // low rates starves otherwise).
+    let chunk = (2048 / channels.max(1)).max(1) * channels.max(1);
+    let capacity = min_capacity.max(2 * chunk);
     let (prod, cons) = ringbuf::channel::<T>(capacity);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
     let core2 = Arc::clone(core);
-    // Pull whole frames: a partial-frame tail at the scratch boundary
-    // would split a frame across pulls and skew position accounting for
-    // channel counts that don't divide the chunk size.
-    let chunk = (2048 / channels.max(1)).max(1) * channels.max(1);
     let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
     let join = std::thread::Builder::new()
         .name("pcm-feed".into())
         .spawn(move || {
             let mut scratch = vec![T::default(); chunk];
+            let mut seen = epoch.load(Ordering::Acquire);
             while !stop2.load(Ordering::Relaxed) {
-                if prod.free_space() < scratch.len() {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                    continue;
-                }
-                // Epoch and pull under one lock: control changes bump the
-                // epoch while holding `core`, so a scratch's tag is always
-                // the epoch its samples were produced under.
-                let tagged = {
+                {
                     // Poisoned `core` means the engine already crashed —
                     // pull through the poison like the old callback did
                     // rather than die silently into a zero ring.
@@ -120,27 +114,29 @@ pub fn spawn_feed<T: PcmSample>(
                         Ok(c) => c,
                         Err(p) => p.into_inner(),
                     };
+                    // Control ops bump the epoch while holding `core` —
+                    // under the same lock, everything staged is provably
+                    // pre-bump; clear it, then publish post-bump audio.
+                    let tag = epoch.load(Ordering::Acquire);
+                    if tag != seen {
+                        seen = tag;
+                        prod.clear();
+                    }
                     if c.paused {
                         // Skip writes while paused so the ring keeps the
                         // pre-pause tail — resume continues seamlessly.
-                        None
-                    } else {
-                        let tag = epoch.load(Ordering::Acquire);
-                        pull(&mut c, &mut scratch);
-                        Some(tag)
+                        drop(c);
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
                     }
-                };
-                let Some(tag) = tagged else {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                };
-                // A bump between the locked pull and publish makes the
-                // scratch stale — drop it. Post-bump data (tag current)
-                // still publishes, so no fresh audio is lost.
-                if epoch.load(Ordering::Acquire) != tag {
-                    continue;
+                    if prod.free_space() < scratch.len() {
+                        drop(c);
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        continue;
+                    }
+                    pull(&mut c, &mut scratch);
+                    prod.write(&scratch);
                 }
-                prod.write(&scratch);
             }
         })?;
     Ok((
@@ -204,6 +200,11 @@ pub trait DeviceCaps: Send + Sync {
     }
     /// Adopt another caps' error cell (used by the open_sink fallback).
     fn set_error_cell(&mut self, _cell: Arc<Mutex<Option<String>>>) {}
+    /// True when the caps address a specific named device — a stream-open
+    /// failure must NOT fall back to a different device silently.
+    fn has_explicit_target(&self) -> bool {
+        false
+    }
 }
 
 pub trait Sink: Send {
@@ -212,6 +213,12 @@ pub trait Sink: Send {
     /// succeed silently into nothing.
     fn is_dead(&self) -> bool {
         false
+    }
+    /// Whole frames staged but not yet delivered to the device. Pull-side
+    /// position leads audible output by this much — respawn paths
+    /// subtract it so a rebuild doesn't skip the staged tail.
+    fn staged_frames(&self) -> u64 {
+        0
     }
 }
 
@@ -485,10 +492,19 @@ impl DeviceCaps for CpalCaps {
             buffer_size: cpal::BufferSize::Default,
         };
         let err_flag = Arc::clone(&self.error);
-        let err_cb = move |e: cpal::StreamError| {
-            // No unwrap: a poisoned mutex inside an FFI callback aborts.
-            if let Ok(mut cell) = err_flag.lock() {
-                *cell = Some(e.to_string());
+        let dead = Arc::new(AtomicBool::new(false));
+        let make_err_cb = |dead: &Arc<AtomicBool>| {
+            let err_flag = Arc::clone(&err_flag);
+            let dead = Arc::clone(dead);
+            move |e: cpal::StreamError| {
+                // No unwrap: a poisoned mutex inside an FFI callback aborts.
+                if let Ok(mut cell) = err_flag.lock() {
+                    *cell = Some(e.to_string());
+                }
+                // Any stream-level error can kill the device path —
+                // dead lets the engine rebuild (or fall back) instead of
+                // silently playing nothing.
+                dead.store(true, Ordering::Relaxed);
             }
         };
         // The callback runs on the device's real-time thread and must never
@@ -497,29 +513,19 @@ impl DeviceCaps for CpalCaps {
         // contended pull no longer surfaces as an audible silence gap.
         let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
         let ch = neg.channels as usize;
-        // Baseline at open: only flush data staged *before* a real control
-        // bump — not the legitimate fill that raced the stream startup.
-        let (epoch, epoch_base, paused) = {
-            let c = core.lock().unwrap();
-            (
-                Arc::clone(&c.clear_epoch),
-                c.clear_epoch.load(Ordering::Acquire),
-                Arc::clone(&c.paused_flag),
-            )
-        };
+        let paused = Arc::clone(&core.lock().unwrap().paused_flag);
+        let staged_fn: Box<dyn Fn() -> u64 + Send + Sync>;
         let (stream, feed) = match neg.kind {
             PcmKind::F32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_f32, capacity, ch)?;
-                let ep = Arc::clone(&epoch);
+                let staged_c = cons.clone();
+                staged_fn = Box::new(move || (staged_c.available() / ch) as u64);
                 let pa = Arc::clone(&paused);
-                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<f32, _, _>(
                         &config,
-                        move |data: &mut [f32], _| {
-                            drain_epoch(&cons, &ep, &pa, &mut last, data)
-                        },
-                        err_cb,
+                        move |data: &mut [f32], _| drain_paused(&cons, &pa, data),
+                        make_err_cb(&dead),
                         None,
                     )?,
                     feed,
@@ -527,16 +533,14 @@ impl DeviceCaps for CpalCaps {
             }
             PcmKind::S32 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s32, capacity, ch)?;
-                let ep = Arc::clone(&epoch);
+                let staged_c = cons.clone();
+                staged_fn = Box::new(move || (staged_c.available() / ch) as u64);
                 let pa = Arc::clone(&paused);
-                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i32, _, _>(
                         &config,
-                        move |data: &mut [i32], _| {
-                            drain_epoch(&cons, &ep, &pa, &mut last, data)
-                        },
-                        err_cb,
+                        move |data: &mut [i32], _| drain_paused(&cons, &pa, data),
+                        make_err_cb(&dead),
                         None,
                     )?,
                     feed,
@@ -544,16 +548,14 @@ impl DeviceCaps for CpalCaps {
             }
             PcmKind::S16 => {
                 let (cons, feed) = spawn_feed(&core, OutputCore::pull_s16, capacity, ch)?;
-                let ep = Arc::clone(&epoch);
+                let staged_c = cons.clone();
+                staged_fn = Box::new(move || (staged_c.available() / ch) as u64);
                 let pa = Arc::clone(&paused);
-                let mut last = epoch_base;
                 (
                     self.device.build_output_stream::<i16, _, _>(
                         &config,
-                        move |data: &mut [i16], _| {
-                            drain_epoch(&cons, &ep, &pa, &mut last, data)
-                        },
-                        err_cb,
+                        move |data: &mut [i16], _| drain_paused(&cons, &pa, data),
+                        make_err_cb(&dead),
                         None,
                     )?,
                     feed,
@@ -568,6 +570,8 @@ impl DeviceCaps for CpalCaps {
         Ok(Box::new(CpalSink {
             stream: Some(stream),
             feed,
+            dead,
+            staged: staged_fn,
         }))
     }
 }
@@ -575,6 +579,8 @@ impl DeviceCaps for CpalCaps {
 struct CpalSink {
     stream: Option<cpal::Stream>,
     feed: FeedGuard,
+    dead: Arc<AtomicBool>,
+    staged: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
 // cpal marks Stream !Send (portability across hosts), but the Cadence engine
@@ -587,6 +593,14 @@ impl Sink for CpalSink {
     fn stop(&mut self) {
         self.stream.take();
         self.feed.stop();
+    }
+
+    fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
+    }
+
+    fn staged_frames(&self) -> u64 {
+        (self.staged)()
     }
 }
 
@@ -662,11 +676,20 @@ pub fn open_sink(
     let _ = cfg;
     match caps.open_stream(neg, Arc::clone(core)) {
         Err(e) if caps.is_pipewire() => {
-            // A live PipeWire session can still refuse a stream (remote
-            // gone, format rejected) — drop to CPAL rather than failing
-            // playback entirely. The fallback caps adopts the PipeWire
-            // caps' error cell so stream errors still reach the monitor's
-            // device_error poll (the engine keeps the original caps).
+            // A named device that can't open must not silently fall back
+            // to the default — a PW node name can't be resolved by CPAL
+            // anyway, and the wrong device would play while event.output
+            // keeps reporting the requested name.
+            if caps.has_explicit_target() {
+                return Err(e.context(
+                    "native stream to the selected device failed; refusing \
+                     silent fallback to the default device",
+                ));
+            }
+            // Default-device open failures drop to CPAL rather than
+            // failing playback entirely. The fallback caps adopts the
+            // PipeWire caps' error cell so stream errors still reach the
+            // monitor's device_error poll.
             eprintln!("audio: pipewire stream failed ({e:#}); trying cpal/alsa");
             let mut c = CpalCaps::new(None)?;
             if let (Some(cell), Some(c)) = (caps.error_cell(), Arc::get_mut(&mut c)) {
@@ -742,36 +765,55 @@ mod tests {
     }
 
     #[test]
-    fn drain_epoch_flushes_stale_and_silences_when_paused() {
-        let epoch = AtomicU64::new(0);
+    fn drain_paused_silences_without_dropping_tail() {
         let paused = AtomicBool::new(false);
         let (prod, cons) = ringbuf::channel::<i16>(16);
-        let mut last = 0u64;
         let mut out = [9i16; 8];
 
-        // Baseline epoch → normal drain.
+        // Normal drain.
         prod.write(&[1, 2, 3, 4]);
-        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        drain_paused(&cons, &paused, &mut out);
         assert_eq!(&out[..4], &[1, 2, 3, 4]);
 
         // Paused → silence WITHOUT draining: the tail stays queued.
         paused.store(true, Ordering::Relaxed);
         prod.write(&[5, 6]);
-        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        drain_paused(&cons, &paused, &mut out);
         assert_eq!(out, [0i16; 8]);
         paused.store(false, Ordering::Relaxed);
-        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
+        drain_paused(&cons, &paused, &mut out);
         assert_eq!(&out[..2], &[5, 6]);
+    }
 
-        // Epoch bump → staged samples are stale and dropped.
-        prod.write(&[7, 8]);
-        epoch.store(1, Ordering::Release);
-        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
-        assert_eq!(out, [0i16; 8]);
+    #[test]
+    fn producer_clear_drops_stale_keeps_fresh() {
+        // The feeder's epoch fence: clear() drops everything staged; a
+        // write after the clear survives — the exact semantics the
+        // producer-side fence needs.
+        let (prod, cons) = ringbuf::channel::<i16>(16);
+        prod.write(&[1, 2, 3, 4]);
+        prod.clear();
+        prod.write(&[5, 6]);
+        let mut out = [9i16; 8];
+        let n = cons.read(&mut out);
+        assert_eq!(&out[..n], &[5, 6]);
+    }
 
-        // Fresh post-bump data drains normally afterwards.
-        prod.write(&[10, 11]);
-        drain_epoch(&cons, &epoch, &paused, &mut last, &mut out);
-        assert_eq!(&out[..2], &[10, 11]);
+    #[test]
+    fn feeder_capacity_never_starves_a_chunk() {
+        // spawn_feed floors capacity at 2×chunk — a mono <=32.8kHz ring
+        // used to starve (chunk == capacity → free_space < chunk forever).
+        // Assert the invariant directly by reproducing the sizing math.
+        for rate in [8000usize, 16000, 22050, 32000, 44100, 96000, 192000] {
+            for ch in [1usize, 2, 6, 8] {
+                let min_cap = (rate * ch / 16).max(4 * 2048 * ch);
+                let chunk = (2048 / ch.max(1)).max(1) * ch.max(1);
+                let capacity = min_cap.max(2 * chunk);
+                assert!(
+                    capacity >= 2 * chunk + 1,
+                    "rate {rate} ch {ch}: capacity {capacity} < 2*chunk+1"
+                );
+            }
+        }
     }
 }

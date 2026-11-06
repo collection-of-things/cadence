@@ -31,6 +31,12 @@ pub struct Consumer<T> {
     s: Arc<Shared<T>>,
 }
 
+impl<T> Clone for Consumer<T> {
+    fn clone(&self) -> Self {
+        Consumer { s: Arc::clone(&self.s) }
+    }
+}
+
 pub fn channel<T: Copy + Default>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let s = Arc::new(Shared {
         buf: vec![T::default(); capacity],
@@ -90,6 +96,16 @@ impl<T: Copy + Default> Producer<T> {
         self.s.done.store(true, Ordering::Release);
     }
 
+    /// Discard everything currently queued — used by the staging feeder
+    /// when a control change bumps the epoch: every staged sample is
+    /// provably stale. Safe next to a concurrent consumer read: it may
+    /// finish reading at most one in-flight slice before the new head is
+    /// observed; it can never resurrect more than that.
+    pub fn clear(&self) {
+        let tail = self.s.tail.load(Ordering::Acquire);
+        self.s.head.store(tail, Ordering::Release);
+    }
+
     pub fn is_aborted(&self) -> bool {
         self.s.abort.load(Ordering::Acquire)
     }
@@ -101,6 +117,30 @@ impl<T: Copy + Default> Consumer<T> {
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
         let n = out.len().min(tail - head);
+        for i in 0..n {
+            out[i] = self.s.buf[(head + i) % self.s.cap];
+        }
+        self.s.head.store(head + n, Ordering::Release);
+        n
+    }
+
+    /// Like `read` but only consumes whole `frame`-sized groups — a
+    /// partial frame stays queued so the next read resumes aligned.
+    /// Required for interleaved PCM: a mid-frame boundary would rotate
+    /// channel assignment for the rest of the stream.
+    pub fn read_aligned(&self, out: &mut [T], frame: usize) -> usize {
+        if frame <= 1 {
+            return self.read(out);
+        }
+        let tail = self.s.tail.load(Ordering::Acquire);
+        let head = self.s.head.load(Ordering::Relaxed);
+        let avail = tail - head;
+        let mut n = out.len().min(avail) / frame * frame;
+        // End of stream: a trailing partial frame must still drain or
+        // the track can never finish (is_drained would stick false).
+        if n == 0 && self.s.done.load(Ordering::Acquire) {
+            n = out.len().min(avail);
+        }
         for i in 0..n {
             out[i] = self.s.buf[(head + i) % self.s.cap];
         }

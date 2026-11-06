@@ -73,7 +73,10 @@ fn layout_for(channels: u32) -> Option<[u32; 64]> {
     let layout: &[u32] = match channels {
         1 => &[MONO],
         2 => &[FL, FR],
-        3 => &[FL, FR, LFE],
+        // 3ch content is more often 3.0 (FL/FR/FC) than 2.1 — channel
+        // count alone can't distinguish, so prefer the layout the vast
+        // majority of 3ch sources carry.
+        3 => &[FL, FR, FC],
         4 => &[FL, FR, RL, RR],
         5 => &[FL, FR, FC, RL, RR],
         6 => &[FL, FR, FC, LFE, SL, SR],
@@ -110,9 +113,16 @@ impl PipeWireCaps {
                 // Cheap presence check: a real connect beats probing the
                 // socket file (stale sockets exist after daemon restarts).
                 with_core(|_| Ok(())).context("pipewire connect failed")?;
+                // Resolve the session default's real node name so
+                // `name()` — and event.output and the monitor's
+                // was_default check — report the actual sink.
+                let resolved = enumerate_sinks()
+                    .ok()
+                    .and_then(|(_, dn)| dn)
+                    .unwrap_or_else(|| "pipewire".into());
                 Ok(Arc::new(PipeWireCaps {
                     target: None,
-                    device_name: "pipewire".into(),
+                    device_name: resolved,
                     error: Arc::new(Mutex::new(None)),
                 }))
             }
@@ -163,8 +173,6 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
         pw::registry::RegistryRc,
         Box<dyn std::any::Any>,
         Box<dyn std::any::Any>,
-        Option<pw::metadata::Metadata>,
-        Option<Box<dyn std::any::Any>>,
     )> = None;
     let r: Result<i64> = {
         let _guard = tl.lock();
@@ -180,10 +188,16 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
             let f = Arc::clone(&found);
             let dn = Arc::clone(&default_name);
             let reg2 = reg.clone();
+            // The bound Metadata + its listener live inside the registry
+            // listener's captures. `MetaBind`'s field order drops the
+            // listener FIRST — it must unlink from the proxy's hook list
+            // before the proxy dies, or teardown writes into freed memory.
+            struct MetaBind {
+                _listener: pw::metadata::MetadataListener,
+                _proxy: pw::metadata::Metadata,
+            }
             let meta_slot: std::rc::Rc<
-                std::cell::RefCell<
-                    Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
-                >,
+                std::cell::RefCell<Option<MetaBind>>,
             > = std::rc::Rc::new(std::cell::RefCell::new(None));
             let ms = std::rc::Rc::clone(&meta_slot);
             let reg_listener = reg
@@ -229,7 +243,10 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
                                 0
                             })
                             .register();
-                        *ms.borrow_mut() = Some((md, lis));
+                        *ms.borrow_mut() = Some(MetaBind {
+                            _listener: lis,
+                            _proxy: md,
+                        });
                         return;
                     }
                     if obj.type_ != pw::types::ObjectType::Node {
@@ -249,16 +266,12 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
                 })
                 .register();
             let want = core.sync(0)?.seq() as i64;
-            let (md, mlis) = meta_slot.take().map(|(m, l)| (Some(m), Some(Box::new(l) as _)))
-                .unwrap_or((None, None));
             hold = Some((
                 ctx,
                 core,
                 reg,
                 Box::new(core_listener) as _,
                 Box::new(reg_listener) as _,
-                md,
-                mlis,
             ));
             Ok(want)
         })()
@@ -279,6 +292,30 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Second round-trip: metadata was bound *during* the first burst —
+    // its property events can land after the first done. A second sync
+    // after it makes the default-sink read deterministic.
+    if ok {
+        let want2 = {
+            let _guard = tl.lock();
+            hold.as_ref()
+                .and_then(|(_, core, ..)| core.sync(0).ok().map(|s| s.seq() as i64))
+                .unwrap_or(-1)
+        };
+        if want2 >= 0 {
+            let mut got = false;
+            for _ in 0..100 {
+                if synced.load(Ordering::Acquire) == want2 {
+                    got = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !got {
+                ok = false;
+            }
+        }
     }
     {
         let _guard = tl.lock();
@@ -353,6 +390,10 @@ impl DeviceCaps for PipeWireCaps {
         true
     }
 
+    fn has_explicit_target(&self) -> bool {
+        self.target.is_some()
+    }
+
     fn open_stream(&self, neg: &Negotiated, core: Arc<Mutex<OutputCore>>) -> Result<Box<dyn Sink>> {
         match neg.kind {
             PcmKind::F32 => self.open_typed::<f32>(neg, core, OutputCore::pull_f32),
@@ -368,12 +409,15 @@ impl DeviceCaps for PipeWireCaps {
 struct Feed<T> {
     cons: crate::ringbuf::Consumer<T>,
     channels: usize,
-    /// bumped by the engine on seek/clear/load — staged PCM is stale.
-    epoch: Arc<std::sync::atomic::AtomicU64>,
-    last_epoch: u64,
     /// atomic mirror of OutputCore::paused — silence without draining,
-    /// so the pre-pause tail survives for a seamless resume.
+    /// so the pre-pause tail survives for a seamless resume. Stale-PCM
+    /// flushing is the feeder's job (producer-side epoch fence).
     paused: Arc<AtomicBool>,
+    /// last process() time in coarse ms since `t0` — the sink's
+    /// is_dead() watchdog uses it to detect a stream that reaches
+    /// Paused but never runs.
+    last_process_ms: Arc<std::sync::atomic::AtomicU64>,
+    t0: std::time::Instant,
 }
 
 /// State-callback state: error reporting + dead flag + last state,
@@ -402,19 +446,20 @@ impl PipeWireCaps {
         }
         // ~60ms staging ring: decouples the RT callback from the core mutex
         // without adding audible latency to the graph.
-        // Ring ≈ 2x the latency we advertise, min ~186ms at any rate —
-        // comfortably covers callback + scheduler jitter.
-        let latency = 1024u32;
-        let capacity = (neg.rate as usize * neg.channels as usize / 16)
-            .max(latency as usize * 2 * neg.channels.max(1) as usize);
-        let (epoch, epoch_base, paused) = {
+        // Advertise the quantum we'd like; the ring covers 4× that plus
+        // a feeder-chunk floor (handled inside spawn_feed) so an
+        // unlucky graph quantum still can't starve a full cycle.
+        let latency = 2048u32;
+        let capacity = (neg.rate as usize * neg.channels as usize / 8)
+            .max(4 * latency as usize * neg.channels.max(1) as usize);
+        let (paused, last_process_ms) = {
             let c = core.lock().unwrap();
             (
-                Arc::clone(&c.clear_epoch),
-                c.clear_epoch.load(Ordering::Acquire),
                 Arc::clone(&c.paused_flag),
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
             )
         };
+        let t0 = std::time::Instant::now();
         let dead = Arc::new(AtomicBool::new(false));
         let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let suppress = Arc::new(AtomicBool::new(false));
@@ -426,6 +471,10 @@ impl PipeWireCaps {
             capacity,
             neg.channels as usize,
         )?;
+        let staged_c = cons.clone();
+        let staged_ch = neg.channels as usize;
+        let staged: Box<dyn Fn() -> u64 + Send + Sync> =
+            Box::new(move || (staged_c.available() / staged_ch) as u64);
 
         let tl = unsafe {
             // Safety: the loop lives for the sink's whole lifetime; all
@@ -437,7 +486,7 @@ impl PipeWireCaps {
             let _guard = tl.lock();
             let ctx = pw::context::ContextRc::new(&tl, None)?;
             let pw_core = ctx.connect_rc(None)?;
-            let mut props = properties! {
+            let props = properties! {
                 *pw::keys::MEDIA_TYPE => "Audio",
                 *pw::keys::MEDIA_ROLE => "Music",
                 *pw::keys::MEDIA_CATEGORY => "Playback",
@@ -451,7 +500,9 @@ impl PipeWireCaps {
                 // rate while we deliver `rate` buffers — the adapter then
                 // rate-matches (the same resampling we came here to kill).
                 *pw::keys::NODE_RATE => format!("1/{}", neg.rate),
-                *pw::keys::NODE_ALWAYS_PROCESS => "true",
+                // No NODE_ALWAYS_PROCESS — the node suspends when idle,
+                // like mpv's: a held-active driver would pin the graph
+                // rate and block device suspend for nothing.
                 *pw::keys::NODE_WANT_DRIVER => "true",
                 *pw::keys::STREAM_IS_LIVE => "true",
                 // Advertise the quantum we sized the staging ring for;
@@ -506,9 +557,9 @@ impl PipeWireCaps {
                 .add_local_listener_with_user_data(Feed {
                     cons,
                     channels: neg.channels as usize,
-                    epoch,
-                    last_epoch: epoch_base,
-                    paused,
+                    paused: paused.clone(),
+                    last_process_ms: Arc::clone(&last_process_ms),
+                    t0,
                 })
                 .process(|stream, feed| fill::<T>(stream, feed))
                 .register()?;
@@ -601,6 +652,10 @@ impl PipeWireCaps {
             feed,
             dead,
             suppress,
+            paused,
+            last_process_ms,
+            t0,
+            staged,
         }))
     }
 }
@@ -609,9 +664,11 @@ impl PipeWireCaps {
 /// the ring is SPSC wait-free; an underrun zero-pads the remainder so the
 /// stream keeps its timeline (same contract as the CPAL callback).
 fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
+    feed.last_process_ms
+        .store(feed.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
     // Paused: silence WITHOUT draining — the pre-pause tail stays queued
     // so resume picks up exactly where playback stopped.
-    if feed.paused.load(Ordering::Relaxed) {
+    if feed.paused.load(Ordering::Acquire) {
         let Some(mut buffer) = stream.dequeue_buffer() else {
             return;
         };
@@ -639,13 +696,6 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
         return;
-    }
-    // A control operation (seek/clear/load) made the staged PCM stale —
-    // drop it so nothing old plays past the control point.
-    let e = feed.epoch.load(Ordering::Acquire);
-    if e != feed.last_epoch {
-        feed.last_epoch = e;
-        feed.cons.clear();
     }
     let Some(mut buffer) = stream.dequeue_buffer() else {
         return;
@@ -707,6 +757,15 @@ pub struct PipeWireSink {
     /// would otherwise look like a lost remote node and poison the
     /// shared error cell.
     suppress: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    /// Coarse ms of the last process() call since `t0`. A stream that
+    /// reaches Paused but never runs (no remote node to link to) shows
+    /// no explicit error — the watchdog turns that into a dead flag.
+    last_process_ms: Arc<std::sync::atomic::AtomicU64>,
+    t0: std::time::Instant,
+    /// Frames staged but not yet delivered — respawn subtracts it so a
+    /// rebuild doesn't skip the tail.
+    staged: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -728,7 +787,22 @@ impl Sink for PipeWireSink {
     }
 
     fn is_dead(&self) -> bool {
-        self.dead.load(Ordering::Relaxed)
+        if self.dead.load(Ordering::Relaxed) {
+            return true;
+        }
+        // Watchdog: a stream that never processed while unpaused for
+        // 2.5s sits forever at Paused — the graph has nothing to link
+        // it to. That's a real failure, just not an explicit one.
+        if self.paused.load(Ordering::Relaxed) {
+            return false;
+        }
+        let last = self.last_process_ms.load(Ordering::Relaxed);
+        self.t0.elapsed().as_millis() as u64 - last > 2500
+            && self.t0.elapsed().as_millis() > 2500
+    }
+
+    fn staged_frames(&self) -> u64 {
+        (self.staged)()
     }
 }
 

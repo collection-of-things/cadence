@@ -363,9 +363,11 @@ def zero_runs(body, ch, min_frames=8):
     z = np.all(frames == 0.0, axis=1)
     runs, cur = [], 0
     for v in z:
-        cur = cur + 1 if v else 0
-        if not v and cur:
-            runs.append(cur)
+        if v:
+            cur += 1
+        else:
+            if cur:
+                runs.append(cur)
             cur = 0
     if cur:
         runs.append(cur)
@@ -419,16 +421,23 @@ def compare(name, cap, ref, ch, label):
     # int→f32 conversion and ffmpeg's own decode→f32 can differ by one
     # ULP (~1.19e-7) at an extreme-magnitude sample. That is conversion
     # noise, not an app difference — the delivered integers are proven
-    # identical by the app-vs-app null, which stays exact.
+    # identical by the app-vs-app null, which stays exact. Bound the
+    # exception: a systematic transform shows up at far more than a
+    # handful of samples.
     exact = mx == 0.0
-    ok = exact or mx <= float(np.finfo(np.float32).eps)
+    nz_res = int(np.count_nonzero(res))
+    ok = exact or (mx <= float(np.finfo(np.float32).eps) and nz_res <= 32)
+    # Coverage gate: a capture missing a large chunk of the source must
+    # not pass on a thin surviving slice.
+    coverage = (end - lo) / len(ref)
+    cov_ok = coverage >= 0.6
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
         f"bitexact={exact} ok={ok} zero-runs(>=8f)={len(zr)}"
         + (f" sizes={zr[:8]}" if zr else "")
-        + f" compared={(end - lo)//ch}f"
+        + f" compared={(end - lo)//ch}f coverage={coverage:.0%}"
     )
-    return ok, len(zr)
+    return ok and cov_ok, len(zr)
 
 
 def null_residual(a, b):
@@ -493,13 +502,22 @@ def unlink_port(port_id):
             )
 
 
-def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate):
+def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate,
+                       expect_name=None):
     """Record `tap`'s monitor while `pid` plays into it (the app targets
     the tap directly — its only link — so it is the tap's driver, a
     rate-matched, passthrough capture). Foreign apps never see the tap.
     Returns (path, rate, fmt, node_id, props)."""
     sink_id, monitor = tap
     node_id, app_out, props = find_stream(pid, "Stream/Output/Audio")
+    # Prove the node we found is the transport we claim: a fallback that
+    # produces a differently-named node must not pass as the real one.
+    name = props.get("node.name", "")
+    if expect_name and name != expect_name:
+        raise RuntimeError(
+            f"expected a {expect_name!r} stream node, found {name!r} — "
+            "the app did not take the expected backend"
+        )
     rate, fmt = stream_format(node_id, props)
     rec_path = os.path.join(workdir, f"cap-{tag}.f32le")
     rec = Recorder(rec_path, rate or expect_rate, 2)
@@ -602,7 +620,8 @@ def main():
             args.bin, src, device="cadence-tap")
         try:
             cap_path, cad_rate, cad_fmt, cad_node, _ = capture_app_stream(
-                cap_proc.pid, dur + 0.8, workdir, "cadence", tap, src_rate
+                cap_proc.pid, dur + 0.8, workdir, "cadence", tap, src_rate,
+                expect_name="cadence-audio",
             )
         except TimeoutError:
             print("stream nodes at timeout:")
@@ -637,7 +656,8 @@ def main():
             stderr=subprocess.DEVNULL,
         )
         mpv_path, mpv_rate, mpv_fmt, mpv_node, _ = capture_app_stream(
-            mpv.pid, dur + 0.8, workdir, "mpv", tap, src_rate
+            mpv.pid, dur + 0.8, workdir, "mpv", tap, src_rate,
+            expect_name="mpv",
         )
         mpv.wait(timeout=10)
         print(f"[mpv] node={mpv_node} stream={mpv_fmt}@{mpv_rate}")

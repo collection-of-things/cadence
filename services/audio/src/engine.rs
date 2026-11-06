@@ -259,13 +259,13 @@ impl OutputCore {
                 break;
             };
             let n = match &track.pipe {
-                PipeReader::F32(c) => c.read(&mut out[filled..]),
+                PipeReader::F32(c) => c.read_aligned(&mut out[filled..], ch as usize),
                 PipeReader::S32(c) => {
                     // Defensive: s32 pipe into f32 sink shouldn't happen
                     // (pipelines are built for the negotiated format).
                     let mut tmp = [0i32; 2048];
                     let want = (out.len() - filled).min(tmp.len());
-                    let got = c.read(&mut tmp[..want]);
+                    let got = c.read_aligned(&mut tmp[..want], ch as usize);
                     for i in 0..got {
                         out[filled + i] = tmp[i] as f32 / 2147483648.0f32;
                     }
@@ -322,11 +322,11 @@ impl OutputCore {
                 break;
             };
             let n = match &track.pipe {
-                PipeReader::S32(c) => c.read(&mut out[filled..]),
+                PipeReader::S32(c) => c.read_aligned(&mut out[filled..], ch as usize),
                 PipeReader::F32(c) => {
                     let mut tmp = [0f32; 2048];
                     let want = (out.len() - filled).min(tmp.len());
-                    let got = c.read(&mut tmp[..want]);
+                    let got = c.read_aligned(&mut tmp[..want], ch as usize);
                     for i in 0..got {
                         out[filled + i] = (tmp[i] as f64 * 2147483648.0)
                             .round()
@@ -373,7 +373,9 @@ impl OutputCore {
         let vol = self.volume;
         if (vol - 1.0).abs() > f32::EPSILON {
             for s in out.iter_mut() {
-                *s = (*s as f64 * vol as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+                *s = (*s as f64 * vol as f64)
+                    .round()
+                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
             }
         }
         if let Some(d) = &self.dump {
@@ -1456,7 +1458,18 @@ impl Engine {
                 bail!("track boundary in flight — retry device change");
             }
             (
-                core.position_ms(),
+                {
+                    let staged = self
+                        .sink
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|sk| sk.staged_frames())
+                        .unwrap_or(0);
+                    let rate = core.negotiated.rate.max(1) as u64;
+                    core.position_ms()
+                        .saturating_sub(staged * 1000 / rate)
+                },
                 Some((core.boundary_seq, st.generation)),
             )
         };
@@ -1528,6 +1541,26 @@ impl Engine {
     /// promoted-successor redirects pass false so the convergence can't
     /// recurse unboundedly (fatal on the monitor thread, which can't
     /// adopt a boundary while it's inside this function).
+    /// Pull position minus whatever the sink still holds staged — the
+    /// audible position. Respawn paths must resume from here or a rebuild
+    /// skips the staged tail (read BEFORE any flush: the staged value
+    /// disappears with the ring).
+    fn audible_position_ms(&self) -> u64 {
+        let pull = self.core.lock().unwrap().position_ms();
+        let (staged, rate) = {
+            let staged = self
+                .sink
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.staged_frames())
+                .unwrap_or(0);
+            let rate = self.core.lock().unwrap().negotiated.rate.max(1) as u64;
+            (staged, rate)
+        };
+        pull.saturating_sub(staged * 1000 / rate)
+    }
+
     fn respawn_pipelines_inner(&self, position_ms: u64, follow_prefetch: bool) {
         // Bounded loop: a gapless promotion can land while we spawn — a
         // stale install would overwrite the newly-active successor. A
@@ -1724,7 +1757,7 @@ impl Engine {
             // Already promoted pull-side — respawn it as the ACTIVE track
             // rather than dropping the install below. No prefetch tail —
             // that would recurse back here unboundedly.
-            let pos = self.core.lock().unwrap().position_ms();
+            let pos = self.audible_position_ms();
             self.respawn_pipelines_inner(pos, false);
             return;
         };
@@ -1782,7 +1815,7 @@ impl Engine {
                                 // it as the active track so the new DSP
                                 // settings actually apply. No prefetch
                                 // tail — bounded, non-recursive.
-                                let pos = self.core.lock().unwrap().position_ms();
+                                let pos = self.audible_position_ms();
                                 self.respawn_pipelines_inner(pos, false);
                             }
                             return;
@@ -1897,7 +1930,7 @@ impl Engine {
             }
             core.set_active(reader);
             core.paused = p.start_paused;
-            core.paused_flag.store(p.start_paused, Ordering::Relaxed);
+            core.paused_flag.store(p.start_paused, Ordering::Release);
             st.current_instance = load_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
@@ -2088,7 +2121,7 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = false;
-            core.paused_flag.store(false, Ordering::Relaxed);
+            core.paused_flag.store(false, Ordering::Release);
             st.state = PlayState::Playing;
         }
         self.emit_state(None);
@@ -2101,7 +2134,7 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             core.paused = true;
-            core.paused_flag.store(true, Ordering::Relaxed);
+            core.paused_flag.store(true, Ordering::Release);
             st.state = PlayState::Paused;
         }
         self.emit_state(None);
@@ -2120,7 +2153,7 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             core.clear_all();
             core.paused = true;
-            core.paused_flag.store(true, Ordering::Relaxed);
+            core.paused_flag.store(true, Ordering::Release);
             // The stopped event supersedes the un-adopted end.
             core.ended_pending = false;
             st.queue_id = None;
@@ -2152,13 +2185,21 @@ impl Engine {
                 bail!("track boundary in flight — retry seek");
             }
             match (&st.queue_id, &st.source) {
-                (Some(q), Some(s)) => (
-                    q.clone(),
-                    s.clone(),
-                    st.replay_gain_db,
-                    st.current_instance,
-                    core.boundary_seq,
-                ),
+                (Some(q), Some(s)) => {
+                    // A live pcm-stream can't seek — its byte source is
+                    // the original feed; respawning would drop buffered
+                    // bytes and report a lying position.
+                    if matches!(s, SourceSpec::PcmStream { .. }) {
+                        bail!("cannot seek a live pcm stream");
+                    }
+                    (
+                        q.clone(),
+                        s.clone(),
+                        st.replay_gain_db,
+                        st.current_instance,
+                        core.boundary_seq,
+                    )
+                }
                 _ => bail!("nothing loaded"),
             }
         };
@@ -2207,7 +2248,7 @@ impl Engine {
         // current/prefetch metadata in state.
         self.settle_boundary();
         // Rebuild current + prefetch pipelines under the new rules.
-        let pos = self.core.lock().unwrap().position_ms();
+        let pos = self.audible_position_ms();
         self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -2237,7 +2278,7 @@ impl Engine {
         // describing the ended track — converge through the respawn path
         // which waits for adoption and re-reads settled state.
         if torn || !bypass {
-            let pos = self.core.lock().unwrap().position_ms();
+            let pos = self.audible_position_ms();
             self.respawn_pipelines(pos);
         } else {
             // Bypass starves the current track's DSP anyway — but an armed
@@ -2255,7 +2296,7 @@ impl Engine {
             // A boundary landing between the snapshot and the respawn may
             // have promoted a non-bypass successor — converge it here.
             if self.core.lock().unwrap().boundary_seq != seq {
-                let pos = self.core.lock().unwrap().position_ms();
+                let pos = self.audible_position_ms();
                 self.respawn_pipelines(pos);
             }
         }
@@ -2296,7 +2337,7 @@ impl Engine {
         }
         if torn || (cur_tagged && !bypass && !live_stream) {
             // respawn_pipelines handles the prefetched successor too.
-            let pos = self.core.lock().unwrap().position_ms();
+            let pos = self.audible_position_ms();
             self.respawn_pipelines(pos);
         } else if let Some((qid, src, rg)) = pf_tagged {
             self.respawn_prefetch(qid, src, rg);
@@ -2311,7 +2352,7 @@ impl Engine {
                     })
                 }
             {
-                let pos = self.core.lock().unwrap().position_ms();
+                let pos = self.audible_position_ms();
                 self.respawn_pipelines(pos);
             }
         }
@@ -2612,7 +2653,7 @@ impl Engine {
                                         let paused = st.state == PlayState::Paused;
                                         core.set_active(reader);
                                         core.paused = paused;
-                                        core.paused_flag.store(paused, Ordering::Relaxed);
+                                        core.paused_flag.store(paused, Ordering::Release);
                                         st.current_instance = reopen_instance;
                                         st.queue_id = Some(pf.queue_id.clone());
                                         st.source = Some(pf.source.clone());
@@ -2881,7 +2922,7 @@ impl Engine {
                         } else {
                             core.clear_all();
                             core.paused = true;
-                            core.paused_flag.store(true, Ordering::Relaxed);
+                            core.paused_flag.store(true, Ordering::Release);
                             st.state = PlayState::Error;
                             true
                         }
