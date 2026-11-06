@@ -113,6 +113,9 @@ struct TrackReader {
     /// source-time offset this pipeline decodes from (for position math)
     seek_offset_ms: u64,
     pipe: PipeReader,
+    /// this reader's own fidelity-bypass flag — promotion must adopt it
+    /// (the successor may be non-bypass on the same stream format)
+    bypass: bool,
     /// set by producer once it has buffered data or finished
     ready: Arc<AtomicBool>,
 }
@@ -128,6 +131,8 @@ enum CoreEvent {
         started_instance: u64,
         started_duration_ms: u64,
         started_seek_offset_ms: u64,
+        /// the promoted reader's own fidelity-bypass flag
+        started_bypass: bool,
     },
     /// Active track drained with nothing behind it.
     Ended { queue_id: String, instance: u64 },
@@ -385,6 +390,7 @@ impl OutputCore {
                 started_instance: next.instance,
                 started_duration_ms: next.duration_ms,
                 started_seek_offset_ms: next.seek_offset_ms,
+                started_bypass: next.bypass,
             });
             self.frames_played = 0;
             self.active = Some(next);
@@ -1158,6 +1164,7 @@ impl Engine {
                         duration_ms,
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::F32(cons),
+                        bypass,
                         ready,
                     },
                     join,
@@ -1197,6 +1204,7 @@ impl Engine {
                         duration_ms,
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::S32(cons),
+                        bypass,
                         ready,
                     },
                     join,
@@ -1308,29 +1316,56 @@ impl Engine {
     /// and the prefetched successor from 0 (same device stream params
     /// permitting).
     fn respawn_pipelines(&self, position_ms: u64) {
-        let (cur, prefetch) = {
-            let st = self.state.lock().unwrap();
-            (
-                st.queue_id.clone().zip(st.source.clone()),
-                st.prefetch.as_ref().map(|p| {
-                    (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)
-                }),
-            )
-        };
-        if let Some((qid, src)) = cur {
+        // Bounded loop: a gapless promotion can land while we spawn — a
+        // stale install would overwrite the newly-active successor, so
+        // verify the world hasn't moved before installing and retry fresh.
+        for _ in 0..3 {
+            let (cur, gen, live_inst) = {
+                let st = self.state.lock().unwrap();
+                let live_inst = self
+                    .core
+                    .lock()
+                    .unwrap()
+                    .active
+                    .as_ref()
+                    .map(|r| r.instance);
+                (
+                    st.queue_id.clone().zip(st.source.clone()),
+                    st.generation,
+                    live_inst,
+                )
+            };
+            let Some((qid, src)) = cur else { break };
             // A live pcm-stream can't be respawned mid-flow — the byte source
             // belongs to the original load. Report and leave the stream dead.
             if matches!(src, SourceSpec::PcmStream { .. }) {
                 self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
-                return;
+                break;
             }
             let (pos, rg) = {
                 let st = self.state.lock().unwrap();
                 (position_ms, st.replay_gain_db)
             };
-            match self.spawn_pipeline(&qid, src, pos, rg, true) {
+            match self.spawn_pipeline(&qid, src.clone(), pos, rg, true) {
                 Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
+                    let stale = {
+                        let core = self.core.lock().unwrap();
+                        let st = self.state.lock().unwrap();
+                        // A promotion swaps core.active's instance; a load
+                        // bumps the generation. (active == None is fine —
+                        // our own rebuild may have just cleared it.)
+                        core.active
+                            .as_ref()
+                            .is_some_and(|r| Some(r.instance) != live_inst)
+                            || st.generation != gen
+                            || st.queue_id.as_deref() != Some(qid.as_str())
+                    };
+                    if stale {
+                        reader.pipe.abort();
+                        drop(handle);
+                        continue;
+                    }
                     self.core.lock().unwrap().set_active(reader);
                     *self.producer.lock().unwrap() = Some(handle);
                     let mut st = self.state.lock().unwrap();
@@ -1340,7 +1375,14 @@ impl Engine {
                 }
                 Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
             }
+            break;
         }
+        let prefetch = {
+            let st = self.state.lock().unwrap();
+            st.prefetch.as_ref().map(|p| {
+                (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)
+            })
+        };
         if let Some((qid, src, rg)) = prefetch {
             self.respawn_prefetch(qid, src, rg);
         }
@@ -1374,6 +1416,27 @@ impl Engine {
                 match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
                     Ok((reader, handle, _dur, _bypass, _info)) => {
                         let ready = reader.ready.clone();
+                        // A promotion may have consumed the armed slot while
+                        // we spawned — installing `next` for a consumed (or
+                        // already-active) successor would replay it. Verify
+                        // the slot still describes this successor.
+                        let stale = {
+                            let core = self.core.lock().unwrap();
+                            let st = self.state.lock().unwrap();
+                            st.prefetch
+                                .as_ref()
+                                .map(|p| p.queue_id.as_str())
+                                != Some(qid.as_str())
+                                || core
+                                    .active
+                                    .as_ref()
+                                    .is_some_and(|r| r.queue_id == qid)
+                        };
+                        if stale {
+                            reader.pipe.abort();
+                            drop(handle);
+                            return;
+                        }
                         self.core.lock().unwrap().set_next(reader);
                         *self.prefetch_producer.lock().unwrap() = Some(handle);
                         let mut st = self.state.lock().unwrap();
@@ -1818,6 +1881,7 @@ impl Engine {
                         started_instance,
                         started_duration_ms,
                         started_seek_offset_ms,
+                        started_bypass,
                     } => {
                         // A concurrent load may have landed while this event
                         // sat in the drain window — only adopt the promotion
@@ -1836,6 +1900,10 @@ impl Engine {
                             st.current_instance = started_instance;
                             st.queue_id = Some(started_queue_id.clone());
                             st.duration_ms = started_duration_ms;
+                            // The successor's own bypass flag — it may
+                            // differ from the ended track's on the same
+                            // stream format (e.g. Int(32) on F32).
+                            st.fidelity_bypass = started_bypass;
                             let _ = started_seek_offset_ms;
                             // promoted prefetch slot consumed — its source and
                             // ReplayGain become the CURRENT track's.
@@ -2460,6 +2528,7 @@ mod tests {
             duration_ms: 1_000,
             seek_offset_ms: 0,
             pipe: PipeReader::F32(cons),
+            bypass: false,
             ready: Arc::new(AtomicBool::new(true)),
         });
         assert!(!c.advance_track()); // nothing behind it -> Ended
@@ -2506,6 +2575,7 @@ mod tests {
                 duration_ms: 1_000,
                 seek_offset_ms: 0,
                 pipe: PipeReader::F32(cons),
+                bypass: false,
                 ready: Arc::new(AtomicBool::new(true)),
             });
             c.paused = false;
@@ -2539,6 +2609,7 @@ mod tests {
                 duration_ms: 1_000,
                 seek_offset_ms: 0,
                 pipe: PipeReader::S32(cons),
+                bypass: false,
                 ready: Arc::new(AtomicBool::new(true)),
             });
             c.paused = false;
@@ -2559,6 +2630,7 @@ mod tests {
                 duration_ms: 1_000,
                 seek_offset_ms: 0,
                 pipe: PipeReader::F32(consf),
+                bypass: false,
                 ready: Arc::new(AtomicBool::new(true)),
             });
             let mut out = [0i32; 5];
