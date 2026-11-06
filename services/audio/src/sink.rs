@@ -274,6 +274,13 @@ pub trait Sink: Send {
     fn drained_since(&self, _baseline: u64) -> bool {
         true
     }
+    /// Whether the request's ordering barrier has run — i.e. every
+    /// pre-request drain notification has been delivered, so a
+    /// re-issued drain's completion cannot be coalesced away. Used
+    /// to re-issue a drain whose event may have been suppressed.
+    fn drain_marker_ran(&self, _baseline: u64) -> bool {
+        true
+    }
     /// Reactivate a stream that was drained or suspended — PipeWire
     /// documents reactivation after a drain; no-op for backends that
     /// don't need it. Called whenever playback resumes on a reused sink.

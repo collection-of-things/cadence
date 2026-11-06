@@ -1060,6 +1060,10 @@ impl Sink for PipeWireSink {
                 > self.barrier.settled.load(Ordering::Acquire)
     }
 
+    fn drain_marker_ran(&self, baseline: u64) -> bool {
+        self.barrier.dispatched.load(Ordering::Acquire) >= baseline
+    }
+
     fn drain_fallback_ms(&self) -> u64 {
         // Measured graph-side delay → ms + a quantum of slack.
         let f = self.device_delay_frames();
