@@ -604,8 +604,10 @@ struct EngineState {
     replay_gain: bool,
     replay_gain_db: Option<f64>,
     /// A native-format stream that failed to open once on this device —
-    /// don't re-attempt it on every spawn/seek. Cleared on set_device.
-    native_failed: Option<Negotiated>,
+    /// plans skip it until the backoff expires (a transient failure
+    /// shouldn't downgrade the format for the whole session). Also
+    /// cleared on set_device and on a successful open at the same format.
+    native_failed: Option<(Negotiated, std::time::Instant)>,
     /// honesty flag for the current render track
     fidelity_bypass: bool,
     feeds: HashMap<String, Arc<Feed>>,
@@ -898,8 +900,19 @@ impl Engine {
                         kind,
                         device_name: caps.name(),
                     };
-                    // Skip a format this device already failed to open.
-                    if self.state.lock().unwrap().native_failed.as_ref() != Some(&neg) {
+                    // Skip a format this device recently failed to open.
+                    const NATIVE_RETRY_BACKOFF: std::time::Duration =
+                        std::time::Duration::from_secs(60);
+                    let failed = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .native_failed
+                        .as_ref()
+                        .is_some_and(|(f, t)| {
+                            *f == neg && t.elapsed() < NATIVE_RETRY_BACKOFF
+                        });
+                    if !failed {
                         return (neg, false);
                     }
                 }
@@ -1026,7 +1039,8 @@ impl Engine {
                 // (seeks, respawns, boundary reopens) go straight to the
                 // device default instead of a doomed open every time. A
                 // later successful open at the same format clears this.
-                self.state.lock().unwrap().native_failed = Some(attempted);
+                self.state.lock().unwrap().native_failed =
+                    Some((attempted, std::time::Instant::now()));
                 if !rebuild_ok {
                     return Err(e);
                 }
@@ -1094,7 +1108,7 @@ impl Engine {
                 // remembered native-open failure for it (transient
                 // contention shouldn't downgrade the format forever).
                 let mut st = self.state.lock().unwrap();
-                if st.native_failed.as_ref() == Some(&neg) {
+                if st.native_failed.as_ref().is_some_and(|(f, _)| *f == neg) {
                     st.native_failed = None;
                 }
                 drop(st);
@@ -1739,6 +1753,19 @@ impl Engine {
         if !bypass {
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
+        } else {
+            // Bypass starves the current track's DSP anyway — but an armed
+            // prefetch may be non-bypass on the same stream and would keep
+            // the old EQ through promotion.
+            let pf = {
+                let st = self.state.lock().unwrap();
+                st.prefetch
+                    .as_ref()
+                    .map(|p| (p.queue_id.clone(), p.source.clone(), p.replay_gain_db))
+            };
+            if let Some((qid, src, rg)) = pf {
+                self.respawn_prefetch(qid, src, rg);
+            }
         }
         Ok(json!({ "ok": true }))
     }
@@ -2214,9 +2241,11 @@ fn run_producer_f32(
     };
     let mut dsp = Dsp::new(&eq_bands, rg_db, src_rate, neg.channels as usize);
 
-    let mut inbuf = vec![0f32; 8192];
-    // whole frames only
-    let ch = neg.channels as usize;
+    // whole frames only — the buffer must be a multiple of the channel
+    // count or every full read truncates a partial frame and the leftover
+    // samples desync the channel order
+    let ch = neg.channels.max(1) as usize;
+    let mut inbuf = vec![0f32; (8192 / ch) * ch];
     let mut out: Vec<f32> = Vec::with_capacity(16384);
     let mut first = true;
 
@@ -2337,7 +2366,9 @@ fn run_producer_s32(
                 channels: Some(ch as u32),
                 info,
             })?;
-            let mut inbuf = vec![0i32; 8192];
+            // same reason as the f32 path — buffer sized to whole frames
+            let mut inbuf = vec![0i32; (8192 / neg.channels.max(1) as usize)
+                * neg.channels.max(1) as usize];
             loop {
                 let n = stream.read_s32(&mut inbuf)?;
                 if n == 0 {

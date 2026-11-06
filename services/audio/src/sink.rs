@@ -175,6 +175,10 @@ pub struct CpalCaps {
     device: cpal::Device,
     default_cfg: cpal::SupportedStreamConfig,
     error: Arc<Mutex<Option<String>>>,
+    /// `supported_output_configs` can fail with EBUSY on a direct `hw:`
+    /// device once a stream holds the PCM handle — query once per device
+    /// instance and reuse.
+    cfgs: std::sync::OnceLock<Option<Vec<cpal::SupportedStreamConfigRange>>>,
 }
 
 impl CpalCaps {
@@ -196,6 +200,7 @@ impl CpalCaps {
             device,
             default_cfg,
             error: Arc::new(Mutex::new(None)),
+            cfgs: std::sync::OnceLock::new(),
         }))
     }
 
@@ -225,7 +230,15 @@ impl DeviceCaps for CpalCaps {
 
     fn accepts(&self, rate: u32, channels: u32, depth: BitDepth) -> Option<PcmKind> {
         use cpal::traits::DeviceTrait;
-        let cfgs = self.device.supported_output_configs().ok()?;
+        let cfgs = self
+            .cfgs
+            .get_or_init(|| {
+                self.device
+                    .supported_output_configs()
+                    .ok()
+                    .map(|it| it.collect())
+            })
+            .as_ref()?;
         let mut fallback_f32 = false;
         let mut i16_ok = false;
         for c in cfgs {

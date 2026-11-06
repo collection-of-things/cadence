@@ -141,12 +141,15 @@ fn render_is_bit_exact_when_device_accepts_source() {
     // (file, source rate, device default rate — deliberately DIFFERENT from
     // the source rate so the test also proves the engine prefers the source
     // rate over the device default when the device accepts it)
-    let cases: [(&str, u32, u32); 3] = [
-        ("stereo-44k1-16.flac", 44100, 48000),
-        ("stereo-96k-24.flac", 96000, 48000),
-        ("stereo-192k-24.flac", 192000, 48000),
+    // (file, source rate, source channels) — 6ch guards the read-buffer
+    // frame-alignment bug: 8192 % 6 != 0 dropped partial frames per read.
+    let cases: [(&str, u32, u32, u32); 4] = [
+        ("stereo-44k1-16.flac", 44100, 48000, 2),
+        ("stereo-96k-24.flac", 96000, 48000, 2),
+        ("stereo-192k-24.flac", 192000, 48000, 2),
+        ("surround-44k1-16.flac", 44100, 48000, 6),
     ];
-    for (file, src_rate, dev_rate) in cases {
+    for (file, src_rate, dev_rate, src_ch) in cases {
         let path = dir.join(file);
         let dump = std::env::temp_dir().join(format!(
             "cadence-null-{}-{}.f32le",
@@ -173,7 +176,7 @@ fn render_is_bit_exact_when_device_accepts_source() {
                 Value::from(src_rate),
                 "{file}: stream did not open at source rate"
             );
-            assert_eq!(out["params"]["channels"], Value::from(2));
+            assert_eq!(out["params"]["channels"], Value::from(src_ch));
             assert_eq!(out["params"]["fidelityBypass"], Value::Bool(false));
         }
 
@@ -186,7 +189,7 @@ fn render_is_bit_exact_when_device_accepts_source() {
         engine.shutdown();
         std::thread::sleep(Duration::from_millis(100));
 
-        let (reference, _) = decode_all(&path, Some(2)).unwrap();
+        let (reference, _) = decode_all(&path, Some(src_ch)).unwrap();
         // The 24-bit fixtures must contain real sub-16-bit content —
         // otherwise bit-exactness can't prove depth was preserved.
         if src_rate > 44100 {

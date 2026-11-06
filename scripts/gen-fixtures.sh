@@ -49,6 +49,18 @@ stereo_24() { # file rate
 stereo_24 "$OUT/stereo-96k-24.flac" 96000
 stereo_24 "$OUT/stereo-192k-24.flac" 192000
 
+# 5.1 surround — six DIFFERENT tones so a channel-order desync (partial
+# frames dropped from an unaligned read buffer) shows as a large diff.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "aevalsrc=0.3*sin(440*2*PI*t):s=44100:d=2" \
+  -f lavfi -i "aevalsrc=0.3*sin(661*2*PI*t):s=44100:d=2" \
+  -f lavfi -i "aevalsrc=0.3*sin(883*2*PI*t):s=44100:d=2" \
+  -f lavfi -i "aevalsrc=0.2*sin(1109*2*PI*t):s=44100:d=2" \
+  -f lavfi -i "aevalsrc=0.25*sin(1321*2*PI*t):s=44100:d=2" \
+  -f lavfi -i "aevalsrc=0.28*sin(1543*2*PI*t):s=44100:d=2" \
+  -filter_complex "[0:a][1:a][2:a][3:a][4:a][5:a]amerge=inputs=6[a]" \
+  -map "[a]" -c:a flac -sample_fmt s16 "$OUT/surround-44k1-16.flac"
+
 # Gapless pair: one continuous 6s sweep split at exactly 3s.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=440:duration=6:sample_rate=44100" \
