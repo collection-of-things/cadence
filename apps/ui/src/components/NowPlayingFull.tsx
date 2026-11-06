@@ -35,11 +35,8 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (session.store.getState().queueOpen) {
-          event.stopImmediatePropagation();
-          session.setQueueOpen(false);
-          return;
-        }
+        // An open queue owns Escape (it closes and restores focus itself).
+        if (session.store.getState().queueOpen) return;
         onClose();
         return;
       }
