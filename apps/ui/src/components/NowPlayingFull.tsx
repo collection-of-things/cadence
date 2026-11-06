@@ -143,7 +143,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
           <SeekBar variant="line" />
         </div>
         <VolumeControl slider={false} />
-        <button className={`ctl-btn ${queueOpen ? 'is-on' : ''}`} aria-label="Queue" aria-pressed={queueOpen} title="Queue" onClick={() => session.setQueueOpen(!queueOpen)}>
+        <button className={`ctl-btn ${queueOpen ? 'is-on' : ''}`} aria-label="Queue" aria-pressed={queueOpen} title="Queue" data-queue-toggle onClick={() => session.setQueueOpen(!queueOpen)}>
           <QueueIcon size={19} />
         </button>
         <button

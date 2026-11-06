@@ -84,6 +84,7 @@ export function TopBar(props: TopBarProps) {
           aria-label={`Queue, ${queueCount} ${queueCount === 1 ? 'track' : 'tracks'}`}
           aria-pressed={queueOpen}
           title="Queue (Q)"
+          data-queue-toggle
           onClick={() => session.setQueueOpen(!queueOpen)}
         >
           <QueueIcon size={19} />

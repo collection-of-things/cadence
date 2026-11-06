@@ -12,6 +12,7 @@
 .app.sidebar-is-collapsed { --sidebar-w: 72px; }
 
 .stage {
+  container: stage / inline-size;
   position: relative;
   min-width: 0;
   min-height: 0;

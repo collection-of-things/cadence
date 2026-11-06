@@ -224,3 +224,14 @@
   .album-hero { grid-template-columns: 1fr; }
   .album-art { width: min(260px, 100%); }
 }
+
+/* an open row menu lifts its row above the rows painted after it */
+.track-row:has(.row-menu [aria-expanded='true']), .tr-row-wrap:has(.row-menu [aria-expanded='true']) { z-index: 5; }
+@container stage (max-width: 820px) {
+  .stage-scroll { padding-left: 24px; padding-right: 24px; }
+  .album-hero { grid-template-columns: 180px minmax(0, 1fr); gap: 20px; }
+  .album-actions { flex-wrap: wrap; }
+  .play-pill { min-width: 0; padding: 0 24px; }
+  .track-row-list, .track-head { grid-template-columns: 36px 40px minmax(0, 1fr) minmax(0, 0.8fr) 56px 40px; }
+  .track-row-list .tr-album, .track-head span:nth-child(5) { display: none; }
+}

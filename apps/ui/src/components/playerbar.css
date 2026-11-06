@@ -55,3 +55,15 @@
   .pb-fav, .pb-right .vol-input { display: none; }
   .pb-art { width: 52px; height: 52px; }
 }
+
+/* sized by the stage, not the window: the sidebar and lyrics rail take width */
+@container stage (max-width: 820px) {
+  .playerbar { grid-template-columns: minmax(0, 1fr) minmax(220px, 1.4fr) auto; gap: 10px; padding: 0 12px; }
+  .pb-fav, .pb-right .vol-input { display: none; }
+  .pb-right .vol { margin-right: 0; }
+  .pb-art { width: 52px; height: 52px; }
+}
+@container stage (max-width: 600px) {
+  .pb-meta { display: none; }
+  .playerbar { grid-template-columns: auto minmax(200px, 1fr) auto; }
+}

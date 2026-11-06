@@ -53,6 +53,7 @@ export function PlayerBar({ onOpenNowPlaying }: { onOpenNowPlaying(): void }) {
           aria-label="Queue"
           aria-pressed={queueOpen}
           title="Queue (Q)"
+          data-queue-toggle
           onClick={() => session.setQueueOpen(!queueOpen)}
         >
           <QueueIcon size={19} />

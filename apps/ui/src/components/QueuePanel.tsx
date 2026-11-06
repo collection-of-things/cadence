@@ -98,11 +98,14 @@ export function QueuePanel() {
   // Land on the playing row when the panel opens.
   useEffect(() => {
     if (!open) return;
+    // Escape hands focus back to whatever opened the queue.
+    const opener = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopImmediatePropagation();
         session.setQueueOpen(false);
-        document.querySelector<HTMLElement>('.q-toggle')?.focus();
+        const fallback = [...document.querySelectorAll<HTMLElement>('[data-queue-toggle]')].find((el) => el.getClientRects().length > 0);
+        (opener?.isConnected && opener !== document.body ? opener : fallback)?.focus();
       }
     };
     document.addEventListener('keydown', onKey);

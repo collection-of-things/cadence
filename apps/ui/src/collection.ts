@@ -59,9 +59,7 @@ export function toggleFavorite(track: TrackRef): void {
     collection.setState({ favorites: favorites.filter((t) => t.id !== track.id) });
     return;
   }
-  // Lyrics can be large and are re-read from the library when played.
-  const { lyrics: _lyrics, ...slim } = track;
-  collection.setState({ favorites: [slim, ...favorites] });
+  collection.setState({ favorites: [track, ...favorites] });
 }
 
 export function recordPlayed(track: TrackRef): void {
