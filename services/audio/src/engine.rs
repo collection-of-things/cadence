@@ -1452,9 +1452,14 @@ impl Engine {
     fn set_device_inner(&self, name: Option<&str>, owner_gen: Option<u64>) -> Result<Value> {
         // Don't probe or commit anything while a boundary is un-adopted —
         // the guarded rebuild would bail anyway and leave mixed state.
+        // Generation read at entry: a promotion racing the position
+        // read would otherwise apply the old track's position to its
+        // successor — even for owner_gen=None callers, require the
+        // generation to survive to the second lock.
         // Read position before staged — a publish landing between the
         // two reads inflates staged → over-subtract → repeat ≤1 chunk,
         // the safe direction. Locks never nest (see audible_position_ms).
+        let gen0 = self.state.lock().unwrap().generation;
         let (pos_pre, rate_pre) = {
             let core = self.core.lock().unwrap();
             (
@@ -1472,9 +1477,10 @@ impl Engine {
         let (pos, expected) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
-            // The caller's ownership token: a newer load supersedes the
+            // The caller's ownership token (or the entry generation for
+            // owner_gen=None): a newer load/promotion supersedes the
             // request entirely.
-            if owner_gen.is_some_and(|g| st.generation != g) {
+            if st.generation != owner_gen.unwrap_or(gen0) {
                 bail!("device change superseded by a newer load");
             }
             if core.ended_pending

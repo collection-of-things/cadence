@@ -3,12 +3,15 @@
 //! The decode/producer side pushes interleaved samples; the output callback
 //! pops them. All operations on the hot path are non-allocating and lock-free.
 //!
-//! Every slot is an atomic word: a `clear()` racing a consumer's in-flight
-//! copy lets a wrapping producer reuse the cleared region, and per-word
-//! relaxed load/stores keep that overlap within defined behaviour — the
-//! post-copy fence check then discards the stale slice entirely.
+//! Every slot is an atomic word stamped with the producer's clear
+//! generation: a `clear()` racing a consumer's in-flight copy lets a
+//! wrapping producer reuse the cleared region, and the generation tag
+//! makes that torn write detectable on ANY visibility order — the
+//! consumer doesn't have to rely on the fence being visible before the
+//! rechecking load. Stale-but-untouched slices are still caught by the
+//! post-copy fence check.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Sample types storable in a ring slot (one 32-bit word each).
@@ -51,7 +54,8 @@ impl RingWord for f32 {
 }
 
 struct Shared {
-    buf: Vec<AtomicU32>,
+    /// (clear generation << 32) | sample word.
+    buf: Vec<AtomicU64>,
     cap: usize,
     head: AtomicUsize, // read index
     tail: AtomicUsize, // write index
@@ -59,6 +63,12 @@ struct Shared {
     /// must never be delivered — set by Producer::clear (epoch flush).
     /// Unlike a head store, it can't be regressed by a stale reader.
     fence: AtomicUsize,
+    /// Clear generation — bumped by Producer::clear BEFORE the fence so
+    /// every post-clear slot write carries the new tag. A consumer
+    /// compares each copied slot's tag against the generation it read
+    /// up front: any mismatch means the slot was written after a clear
+    /// boundary — torn — regardless of fence visibility timing.
+    gen: AtomicU32,
     /// Producer finished (EOF); consumer may drain remaining then end track.
     done: AtomicBool,
     /// Consumer side dropped/aborted; producer should stop writing.
@@ -107,11 +117,12 @@ fn channel_hooked<T: RingWord>(
     #[cfg_attr(not(test), allow(unused_variables))] hook: Option<Box<dyn Fn() + Send + Sync>>,
 ) -> (Producer<T>, Consumer<T>) {
     let s = Arc::new(Shared {
-        buf: (0..capacity).map(|_| AtomicU32::new(0)).collect(),
+        buf: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
         cap: capacity,
         head: AtomicUsize::new(0),
         tail: AtomicUsize::new(0),
         fence: AtomicUsize::new(0),
+        gen: AtomicU32::new(0),
         done: AtomicBool::new(false),
         abort: AtomicBool::new(false),
         #[cfg(test)]
@@ -156,12 +167,15 @@ impl<T: RingWord> Producer<T> {
             .saturating_sub(tail.saturating_sub(head.max(fence)))
             .saturating_sub(1);
         let n = data.len().min(free);
+        let gen = self.s.gen.load(Ordering::Relaxed) as u64;
         for i in 0..n {
-            // Per-word atomic store: a just-cleared slot may still be
-            // inside a consumer's in-flight copy — the word-level write
-            // is defined behaviour; the consumer's post-copy fence check
-            // discards the slice.
-            self.s.buf[(tail + i) % self.s.cap].store(data[i].to_word(), Ordering::Relaxed);
+            // Per-word atomic store stamped with the clear generation:
+            // a just-cleared slot may still be inside a consumer's
+            // in-flight copy — the word-level write is defined
+            // behaviour, and the tag lets the consumer prove tornness
+            // without depending on fence visibility.
+            self.s.buf[(tail + i) % self.s.cap]
+                .store((gen << 32) | data[i].to_word() as u64, Ordering::Relaxed);
         }
         self.s.tail.store(tail + n, Ordering::Release);
         n
@@ -193,6 +207,10 @@ impl<T: RingWord> Producer<T> {
     /// provably stale. Monotonic via the fence: a stale head store from
     /// a preempted consumer read can never resurrect discarded data.
     pub fn clear(&self) {
+        // Bump the generation FIRST — every slot write from here on
+        // carries the new tag, so a consumer mid-copy sees the torn
+        // slots without needing fence visibility.
+        self.s.gen.fetch_add(1, Ordering::Relaxed);
         let tail = self.s.tail.load(Ordering::Acquire);
         self.s.fence.fetch_max(tail, Ordering::AcqRel);
         // Advance head too so free_space reflects the drop. Tail is
@@ -210,6 +228,7 @@ impl<T: RingWord> Producer<T> {
 impl<T: RingWord> Consumer<T> {
     /// Non-blocking read; returns elements read.
     pub fn read(&self, out: &mut [T]) -> usize {
+        let g0 = self.s.gen.load(Ordering::Relaxed);
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
         let fence = self.s.fence.load(Ordering::Acquire);
@@ -217,20 +236,27 @@ impl<T: RingWord> Consumer<T> {
         // us serve discarded data; start >= head keeps head monotonic.
         let start = head.max(fence);
         let n = out.len().min(tail.saturating_sub(start));
+        let mut torn = false;
         for i in 0..n {
-            out[i] = T::from_word(self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed));
+            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed);
+            // The slot's generation differs from the one at read start
+            // → a clear bumped it and the producer rewrote this slot
+            // while we were copying → the slice is torn.
+            torn |= (slot >> 32) as u32 != g0;
+            out[i] = T::from_word(slot as u32);
         }
         self.s.head.store(start + n, Ordering::Release);
         // A clear() landing mid-copy means what we just read was already
-        // stale (possibly torn by a wrapping producer): report the head
-        // advance but give the caller nothing usable. The explicit
-        // Acquire fence keeps the buf reads ordered before this check.
+        // stale — torn slots are caught by the generation tag, untouched
+        // stale slots by the fence re-check. Report the head advance but
+        // give the caller nothing usable. The explicit Acquire fence
+        // keeps the buf reads ordered before this check.
         std::sync::atomic::fence(Ordering::Acquire);
         #[cfg(test)]
         if let Some(h) = &self.s.post_copy_hook {
             h();
         }
-        if self.s.fence.load(Ordering::Acquire) > start {
+        if torn || self.s.fence.load(Ordering::Acquire) > start {
             return 0;
         }
         n
@@ -244,6 +270,7 @@ impl<T: RingWord> Consumer<T> {
         if frame <= 1 {
             return self.read(out);
         }
+        let g0 = self.s.gen.load(Ordering::Relaxed);
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
         let fence = self.s.fence.load(Ordering::Acquire);
@@ -260,17 +287,20 @@ impl<T: RingWord> Consumer<T> {
                 n = out.len().min(avail2);
             }
         }
+        let mut torn = false;
         for i in 0..n {
-            out[i] = T::from_word(self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed));
+            let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed);
+            torn |= (slot >> 32) as u32 != g0;
+            out[i] = T::from_word(slot as u32);
         }
         self.s.head.store(start + n, Ordering::Release);
-        // See read(): a mid-copy clear makes this slice stale.
+        // See read(): torn (generation tag) or stale (fence re-check).
         std::sync::atomic::fence(Ordering::Acquire);
         #[cfg(test)]
         if let Some(h) = &self.s.post_copy_hook {
             h();
         }
-        if self.s.fence.load(Ordering::Acquire) > start {
+        if torn || self.s.fence.load(Ordering::Acquire) > start {
             return 0;
         }
         n
