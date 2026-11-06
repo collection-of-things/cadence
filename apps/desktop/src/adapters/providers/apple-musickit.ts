@@ -247,8 +247,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.installBackoffUntil = 0; // a real play request waits for install
     if (this.signedOut) throw new Error("Apple Music is signed out");
     // Run on the mirror chain — a pending playLater must land before the new
-    // queue, and a prefetch queued during this play must wait for it.
+    // queue, and a prefetch queued during this play must wait for it. The
+    // signedOut check runs again at execution: a sign-out that lands while
+    // this play waits must cancel it, not reopen the session.
     return this.enqueueMirror(async () => {
+      if (this.signedOut) throw new Error("Apple Music is signed out");
       const spec = specFor(item.track);
       // Read the mirror BEFORE clearing — the fast path skips inside
       // MusicKit's own queue when the coordinator's next lands on the
@@ -399,14 +402,14 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // coordinator doesn't hold a dead lease.
     this.session.reset();
     this.installed = false;
-    if (this.current !== null) {
-      // 'stopped' — an unconditional teardown, not a queue-advance signal.
-      this.emit({ kind: "stopped", generationId: this.generation });
-      this.current = null;
-      this.mirrored = [];
-      this.unknownNpId = null;
-      this.tailStuckSince = 0;
-    }
+    // 'stopped' — an unconditional teardown, not a queue-advance signal.
+    // Emitted even with no adapter-side current item: the coordinator may
+    // still hold a lease while its start request sits queued on the chain.
+    this.emit({ kind: "stopped", generationId: this.generation });
+    this.current = null;
+    this.mirrored = [];
+    this.unknownNpId = null;
+    this.tailStuckSince = 0;
     let clearFailed = false;
     try {
       await this.session.clearData();
