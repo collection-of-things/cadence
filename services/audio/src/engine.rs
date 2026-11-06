@@ -2485,6 +2485,10 @@ impl Engine {
         let mut tap_buf = vec![0f32; 8192];
         let mut monitor_stalled = false;
         let mut deferred_device_error: Option<(String, u64)> = None;
+        // The dead flag is sticky — latch it so a terminally dead sink
+        // reports once per sink instance, not a probing/event storm
+        // every tick.
+        let mut sink_dead_reported: Option<usize> = None;
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2849,12 +2853,24 @@ impl Engine {
                     .lock()
                     .unwrap()
                     .device_error();
-                let sink_dead = self
-                    .sink
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|s| s.is_dead());
+                // Keyed by sink identity: a rebuild installs a new
+                // Box → a fresh dead report is allowed once.
+                let (sink_dead, sink_key) = {
+                    let g = self.sink.lock().unwrap();
+                    match g.as_ref() {
+                        Some(s) => {
+                            let key = &**s as *const dyn Sink as *const u8 as usize;
+                            (s.is_dead(), key)
+                        }
+                        None => (false, 0),
+                    }
+                };
+                let sink_dead = if sink_dead && sink_dead_reported != Some(sink_key) {
+                    sink_dead_reported = Some(sink_key);
+                    true
+                } else {
+                    false
+                };
                 caps_err
                     .or_else(|| sink_dead.then(|| "output stream died".to_string()))
                     .map(|msg| (msg, gen))

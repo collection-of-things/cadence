@@ -849,7 +849,11 @@ impl Sink for PipeWireSink {
         //    at Paused with processed_once set — PipeWire resumes it.
         let state = self.state.load(Ordering::Acquire);
         let never = !self.processed_once.load(Ordering::Relaxed);
-        let stale = (never || (state == 3 && now - last > 2500)) && now > 2500;
+        // `last` is the negotiation-end anchor (or a pause-transition
+        // reseed) under !processed_once — the grace must measure from
+        // there, not from open-start t0: a ~2s decisive wait would
+        // leave the never-arm <0.5s to see its first callback.
+        let stale = (never || state == 3) && now - last > 2500;
         if stale {
             if let Ok(mut cell) = self.error.lock() {
                 *cell = Some("stream never scheduled (no process callbacks)".into());

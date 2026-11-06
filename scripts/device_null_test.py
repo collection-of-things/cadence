@@ -26,6 +26,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -345,11 +346,6 @@ def xcorr_valid(cap, seg):
     return np.divide(cc, denom, out=np.zeros_like(cc), where=denom > 0)
 
 
-def xcorr_align(cap, seg):
-    """Offset where `seg` best matches inside `cap`."""
-    return int(np.argmax(np.abs(xcorr_valid(cap, seg))))
-
-
 def best_align(cap, seg):
     """Periodic content (pure tones) gives many equal correlation peaks —
     argmax alone can land off by whole periods and the whole-overlap
@@ -571,35 +567,29 @@ def node_ports(node_id, direction):
     ]
 
 
-def unlink_port(port_id):
-    """Disconnect every link touching `port_id`."""
-    pairs = linked_pairs()
-    for o, i in pairs:
-        if o == port_id or i == port_id:
-            subprocess.run(
-                ["pw-link", "-d", str(o), str(i)], capture_output=True
-            )
-
-
 def attach_recorder(workdir, tag, tap, rate, sink_id):
     """Link a recorder to the tap's monitor ports — callable BEFORE the
     app's playback starts, so no content is lost to attach latency.
     Returns (Recorder, path)."""
     rec_path = os.path.join(workdir, f"cap-{tag}.f32le")
     rec = Recorder(rec_path, rate, 2)
-    rec_in = rec.input_ports()
-    monitor = tap[1]
-    for attempt in range(8):
-        try:
-            rec.tap(monitor, rec_in)
-            break
-        except subprocess.CalledProcessError:
-            if attempt == 7:
-                rec.stop()
-                raise
-            monitor = node_ports(sink_id, "output")
-            time.sleep(0.5)
-    return rec, rec_path
+    try:
+        rec_in = rec.input_ports()
+        monitor = tap[1]
+        for attempt in range(8):
+            try:
+                rec.tap(monitor, rec_in)
+                break
+            except subprocess.CalledProcessError:
+                if attempt == 7:
+                    raise
+                monitor = node_ports(sink_id, "output")
+                time.sleep(0.5)
+        return rec, rec_path
+    except Exception:
+        if rec.proc.poll() is None:
+            rec.stop()
+        raise
 
 
 def app_stream_info(pid, expect_name=None):
@@ -615,24 +605,6 @@ def app_stream_info(pid, expect_name=None):
         )
     rate, fmt = stream_format(node_id, props)
     return node_id, rate, fmt, props
-
-
-def make_default_sink(name, rate, channels):
-    """Create the tap and make it the session default — the app under test
-    autoconnects to it as its driver (matched-rate, no rate-matching).
-    Returns (module_id, sink_id, monitor_ports, previous_default)."""
-    prev = subprocess.run(
-        ["pactl", "get-default-sink"], capture_output=True, text=True
-    ).stdout.strip()
-    mod_id, sink_id = make_null_sink(name, rate, channels)
-    subprocess.run(["pactl", "set-default-sink", name], check=True)
-    for _ in range(20):
-        mon = node_ports(sink_id, "output")
-        if len(mon) >= channels:
-            return mod_id, sink_id, mon, prev
-        time.sleep(0.25)
-    unload_module(mod_id)
-    raise TimeoutError("null sink monitor ports never appeared")
 
 
 def main():
@@ -750,16 +722,19 @@ def main():
                 workdir, "mpv", tap, mpv_rate or src_rate, tap[0])
             try:
                 # Retry the IPC unpause — the socket exists before mpv
-                # accepts connections on it.
+                # accepts connections on it. (unix socket, no socat dep)
                 for _ in range(20):
-                    r = subprocess.run(
-                        ["socat", "-", f"UNIX-CONNECT:{mpv_sock}"],
-                        input=b'{"command": ["set_property", "pause", false]}\n',
-                        capture_output=True,
-                    )
-                    if r.returncode == 0:
+                    try:
+                        s = socket.socket(socket.AF_UNIX)
+                        s.settimeout(0.3)
+                        s.connect(mpv_sock)
+                        s.sendall(
+                            b'{"command": ["set_property", "pause", false]}\n'
+                        )
+                        s.close()
                         break
-                    time.sleep(0.25)
+                    except OSError:
+                        time.sleep(0.25)
                 time.sleep(dur + 0.8)
             finally:
                 if rec.proc.poll() is None:

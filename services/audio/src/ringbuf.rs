@@ -124,7 +124,9 @@ impl<T: RingWord> Producer<T> {
         // Discarded data is already gone — a stale consumer store can
         // regress head, but the fence is the true floor.
         let head = head.max(fence);
-        self.s.cap.saturating_sub(tail.saturating_sub(head)) - 1
+        // saturating_sub on the -1 too: a stale head/fence read can
+        // inflate occupancy past cap — don't wrap to usize::MAX.
+        self.s.cap.saturating_sub(tail.saturating_sub(head)).saturating_sub(1)
     }
 
     /// Non-blocking write; returns number of elements written (0..=data.len()).
@@ -138,7 +140,7 @@ impl<T: RingWord> Producer<T> {
             .s
             .cap
             .saturating_sub(tail.saturating_sub(head.max(fence)))
-            - 1;
+            .saturating_sub(1);
         let n = data.len().min(free);
         for i in 0..n {
             // Per-word atomic store: a just-cleared slot may still be
