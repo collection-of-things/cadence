@@ -13,14 +13,23 @@ const port = process.env.CAPTURE_PORT ?? '4517';
 const [outDir, ...shots] = process.argv.slice(2);
 
 const preview = spawn('npx', ['vite', 'preview', '--port', port, '--strictPort'], {
-  cwd: resolve(root, 'apps/ui'), shell: true, stdio: ['ignore', 'ignore', 'inherit'],
+  cwd: resolve(root, 'apps/ui'), shell: true, stdio: ['ignore', 'pipe', 'inherit'],
 });
-// Wait for the server instead of a fixed sleep; fail fast if it exits
-// (e.g. --strictPort with the port taken) so another server can't answer.
-let exited = false;
-preview.on('exit', () => (exited = true));
+// Readiness comes from our own Vite process: it prints its local URL only
+// after binding the port. With --strictPort a taken port makes it exit
+// instead, so a different server on that port is never captured.
+const ready = await new Promise((res) => {
+  let out = '';
+  const timer = setTimeout(() => res(false), 20000);
+  preview.stdout.on('data', (d) => {
+    // Vite colours the port; strip ANSI escapes before matching.
+    out += String(d).replace(/\x1b\[[0-9;]*m/g, '');
+    if (out.includes(`localhost:${port}`)) { clearTimeout(timer); res(true); }
+  });
+  preview.on('exit', () => { clearTimeout(timer); res(false); });
+});
 let up = false;
-for (let i = 0; i < 80 && !up && !exited; i++) {
+for (let i = 0; i < 80 && ready && !up; i++) {
   try {
     up = (await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })).ok;
   } catch {
