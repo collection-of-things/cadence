@@ -57,8 +57,8 @@ A track that keeps playing across a switch keeps its source tile and shows
 - `⌘K` palette (actions, go-to, platform switch incl. connect), right-click
   menus on tracks/cards with target highlight, toasts, fake-OAuth connect
   flow for unconnected services, tasteful switch transition.
-- Persistent painted window chrome (traffic lights stay crisp over Now Playing
-  and every overlay).
+- Chromeless top-left: the sidebar header anchors the corner — no painted
+  traffic lights or window controls.
 - Keyboard: `Space` play/pause, `←/→` seek ±5s, `Shift+←/→` prev/next,
   `↑/↓` volume, `L` now playing, `Esc` layered close.
 
@@ -99,6 +99,8 @@ delegatable; the seat ran on `fusion-claude-opus-5-5-medium-sidekick-swe-2-mediu
   connect CTA uses a white label; connect copy left-aligned.
 - Data fixes: Liquid State/Pastel Hours covers were swapped (chrome↔beach);
   `Chill Mix` cover updated.
+- Follow-up: painted traffic lights removed; sidebar header re-spaced so the
+  Cadence mark anchors the top-left.
 
 ### Round-3 critiques (final)
 
@@ -128,5 +130,5 @@ service's IA) — are deliberate or inherent.
 - Line-level (not word-level) lyric sync; fake timings.
 - Covers are AI-generated placeholders; local albums reuse tinted streaming
   covers and a few platforms share scenes.
-- Painted window chrome; no native drag region.
+- No window chrome or native drag region.
 - Stills can't prove motion smoothness; the shader's pacing needs a live view.

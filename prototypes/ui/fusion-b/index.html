@@ -119,7 +119,7 @@ body.gl #amb .lay,body.gl #amb .wash{display:none}
 /* --- sidebar --- */
 #side{grid-row:1/3;width:var(--sb);margin:12px 0 12px 12px;display:flex;flex-direction:column;min-height:0;
   border-radius:20px;background:linear-gradient(180deg,oklch(1 0 0/.05),oklch(1 0 0/0) 120px),var(--panel);backdrop-filter:blur(48px) saturate(1.7);-webkit-backdrop-filter:blur(48px) saturate(1.7);box-shadow:var(--elev)}
-#sideTop{flex:none;padding:14px 14px 10px}
+#sideTop{flex:none;padding:18px 14px 10px}
 .brand{display:flex;align-items:center;gap:9px;height:30px;padding:0 4px}
 .brand .mk{width:22px;height:22px;border-radius:7px;flex:none;background:conic-gradient(from 200deg,var(--acc),#fff 40%,var(--acc));box-shadow:inset 0 0 0 1px oklch(1 0 0/.24),0 2px 10px -2px oklch(0 0 0/.6)}
 .brand b{font-size:15px;font-weight:750;letter-spacing:-.02em}
@@ -180,9 +180,6 @@ body[data-svc=apple]{--jc-rad:18px}
 /* --- main --- */
 #main{grid-row:1;min-width:0;min-height:0;display:flex;flex-direction:column}
 #top{flex:none;position:relative;display:flex;align-items:center;gap:8px;height:56px;padding:0 20px 0 76px}
-.lights{position:fixed;left:16px;top:17px;z-index:50;display:flex;gap:7px}
-.lights i{width:11.5px;height:11.5px;border-radius:50%;box-shadow:inset 0 0 0 .5px oklch(0 0 0/.25)}
-.lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
 #top .ib{width:30px;height:30px}
 #search{position:absolute;left:50%;transform:translateX(-50%);width:min(460px,44%)}
 #search .ic{position:absolute;left:11px;top:50%;translate:0 -50%;width:16px;height:16px;color:var(--t4);pointer-events:none}
@@ -561,7 +558,6 @@ body.q-open #top,body.q-open #view{padding-right:calc(354px + 20px)}
 <div id="veil" aria-hidden="true"></div>
 <div id="grain" aria-hidden="true"></div>
 
-<div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
 <div id="app">
   <aside id="side">
     <div id="sideTop">
