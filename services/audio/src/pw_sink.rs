@@ -857,11 +857,14 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
-        // The driver queue is FIFO: each completed silence cycle means
-        // that many frames of the held pull have gone out. Track the
-        // consumption — clearing only after the buffer drops, and only
-        // by what this cycle proves was consumed.
-        let consumed = (size / stride) as u64;
+        // The driver queue is FIFO and advances one graph quantum per
+        // completed cycle — that quantum is the proven consumption of
+        // the held pull (the written SIZE is just this buffer's span:
+        // an unstated request fills the whole mapped region and would
+        // zero the count while audio remains queued). Decrement by the
+        // quantum after hand-back; under-counting only biases toward
+        // replay, never a skip.
+        let consumed = feed.latency_frames as u64;
         drop(buffer);
         let cur = feed.inflight.load(Ordering::Acquire);
         feed.inflight
