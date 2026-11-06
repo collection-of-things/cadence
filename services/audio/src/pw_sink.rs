@@ -1048,6 +1048,13 @@ impl Sink for PipeWireSink {
         // NB: a process-callback stall is NOT a completion signal —
         // `draining` suppresses call_process from the moment the drain
         // is ISSUED, so the callback goes quiet on every request.
+        // Notification coalescing (pending_drain) can suppress our
+        // event ONLY if another drained event is still undispatched
+        // when ours completes — impossible here: (a) every old event
+        // dispatches ahead of our marker by FIFO, and (b) a stream
+        // carries at most one in-flight drain (pending_ends FIFO +
+        // resume-on-supersession), so no event can post between our
+        // marker and our completion except ours.
         self.barrier.dispatched.load(Ordering::Acquire) >= baseline
             && self.drained_seq.load(Ordering::Acquire)
                 > self.barrier.settled.load(Ordering::Acquire)

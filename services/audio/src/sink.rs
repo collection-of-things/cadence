@@ -668,7 +668,10 @@ impl Sink for CpalSink {
         // conservative fixed wait, used ONLY for end-of-track drain
         // fallback (never for position: reporting an estimate there
         // would mis-state position and repeat audio on respawn).
-        250
+        // 500ms covers ALSA's largest typical buffers; bounded by the
+        // entry deadline either way, and a delayed transition is
+        // always better than a truncated tail.
+        500
     }
 }
 
