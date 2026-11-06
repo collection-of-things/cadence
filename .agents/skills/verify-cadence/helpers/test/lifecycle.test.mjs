@@ -4,12 +4,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { activeLaunches, teardownActiveLaunches, teardownRecorded } from "../src/lib/session.mjs";
-import { UD_MARKER, procAlive, procStartTime } from "../src/lib/isolation.mjs";
+import { UD_MARKER, procAlive, procStartTime, procIds, procComm } from "../src/lib/isolation.mjs";
 import { sleep } from "../src/lib/env.mjs";
+
+const CLI = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.mjs");
+
+/** Direct children of `pid` with the given comm name (via /proc stat). */
+function childCommPids(pid, comm) {
+  const out = [];
+  for (const d of readdirSync("/proc")) {
+    if (!/^\d+$/.test(d)) continue;
+    const ids = procIds(Number(d));
+    if (ids?.ppid === pid && procComm(Number(d)) === comm) out.push(Number(d));
+  }
+  return out;
+}
 
 test("teardownActiveLaunches reaps resources acquired mid-launch", async () => {
   // simulate a launch that got as far as spawning a detached proc + an
@@ -45,6 +59,45 @@ test("teardownActiveLaunches tolerates empty + already-dead state", async () => 
   await teardownActiveLaunches();
   assert.equal(activeLaunches.size, 0);
 });
+
+test("SIGTERM while Xvfb is still coming up reaps it (real signal-at-spawn)", async () => {
+  // Reproduces the reviewer finding: signal lands inside startXvfb's
+  // readiness wait — before this fix the spawned Xvfb was orphaned.
+  const slug = `sigx-${Date.now()}`;
+  const cli = spawn(process.execPath, [CLI, "run", "smoke", "--slug", slug], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  cli.stdout.on("data", (d) => { out += d; });
+  cli.stderr.on("data", (d) => { out += d; });
+
+  // poll fast for the Xvfb child of the CLI, then signal IMMEDIATELY —
+  // racing its readiness window is the point
+  let xvfbPid = null;
+  const deadline = Date.now() + 60_000;
+  while (!xvfbPid && Date.now() < deadline && cli.exitCode === null) {
+    xvfbPid = childCommPids(cli.pid, "Xvfb")[0] ?? null;
+    if (!xvfbPid) await sleep(5);
+  }
+  assert.ok(xvfbPid, `never observed an Xvfb child of cli pid ${cli.pid}:\n${out.slice(-800)}`);
+
+  process.kill(cli.pid, "SIGTERM");
+  const code = await new Promise((res) => {
+    cli.on("exit", (c) => res(c));
+    setTimeout(() => res(-1), 30_000);
+  });
+  assert.equal(code, 143, `expected exit 143 from signal teardown, got ${code}`);
+  await sleep(500);
+  assert.equal(procAlive(xvfbPid), false, `Xvfb pid ${xvfbPid} leaked`);
+  // no harness daemons left behind either
+  for (const d of readdirSync("/proc")) {
+    if (!/^\d+$/.test(d)) continue;
+    const ids = procIds(Number(d));
+    if (ids?.ppid === cli.pid) {
+      assert.fail(`stray child ${d} (${procComm(Number(d))}) survived signal teardown`);
+    }
+  }
+}, { timeout: 120_000 });
 
 test("recorded teardown never escalates after an ownership check fails", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cadence-stop-test-"));

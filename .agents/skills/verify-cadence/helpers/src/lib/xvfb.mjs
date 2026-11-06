@@ -26,7 +26,7 @@ async function displayFree(n) {
   return !existsSync(`/tmp/.X11-unix/X${n}`) && !existsSync(`/tmp/.X${n}-lock`);
 }
 
-export async function startXvfb({ width = 1440, height = 900, persistent = false } = {}) {
+export async function startXvfb({ width = 1440, height = 900, persistent = false, onProc = null } = {}) {
   for (let n = 90; n < 120; n++) {
     if (!(await displayFree(n))) continue;
     const proc = spawn("Xvfb", [`:${n}`, "-screen", "0", `${width}x${height}x24`, "-nolisten", "tcp"], {
@@ -34,6 +34,10 @@ export async function startXvfb({ width = 1440, height = 900, persistent = false
       detached: persistent,
     });
     if (persistent) proc.unref();
+    // register the spawned process AT SPAWN TIME — an interrupt landing
+    // inside the readiness wait below must still find it killable
+    const handle = { display: `:${n}`, proc, stop: () => proc.kill("SIGTERM") };
+    onProc?.(handle);
     // wait for the socket to appear
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline) {
@@ -43,7 +47,7 @@ export async function startXvfb({ width = 1440, height = 900, persistent = false
         await sleep(250);
         if (proc.exitCode === null) {
           proc.on("exit", () => {});
-          return { display: `:${n}`, proc, stop: () => proc.kill("SIGTERM") };
+          return handle;
         }
       }
       if (proc.exitCode !== null) break;

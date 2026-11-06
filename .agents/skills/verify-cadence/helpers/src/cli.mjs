@@ -18,7 +18,7 @@
 // Every command exits non-zero on failure. `run` and `attach` always write
 // SUMMARY.md + verdict.json — including launch crashes, unknown flows and
 // interrupted runs. A PASS requires every required check to have passed.
-import { existsSync, symlinkSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, symlinkSync, rmSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { newRunDir, fixtureTracks, readJson, RUNS_ROOT, HELPERS } from "./lib/env.mjs";
@@ -120,7 +120,14 @@ async function main() {
         ? readdirSync(testDir).filter((f) => f.endsWith(".test.mjs")).map((f) => join(testDir, f))
         : [];
       if (!files.length) die("no tests under helpers/test");
-      const r = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+      // test subprocesses get a PRIVATE tmp under the evidence root — no
+      // dependence on (or footprint in) the shared /tmp quota
+      const tmp = join(RUNS_ROOT, ".selftest-tmp");
+      mkdirSync(tmp, { recursive: true });
+      const r = spawnSync(process.execPath, ["--test", ...files], {
+        stdio: "inherit",
+        env: { ...process.env, TMPDIR: tmp },
+      });
       process.exit(r.status ?? 1);
     }
 
@@ -200,6 +207,19 @@ async function main() {
     case "launch": {
       const runDir = newRunDir(flags.slug ?? "interactive");
       linkLatest(runDir);
+      // a signal during bringup must still reap the detached resources
+      // already acquired (Xvfb, private core, profile) — same as `run`
+      const onSignal = async (sig) => {
+        try { await teardownActiveLaunches(); } catch {}
+        const ev = new Evidence(runDir);
+        ev.fail("launch interrupted", `received ${sig}`);
+        try { ev.summary({ launch: true, flavor, interrupted: sig }); } catch {}
+        process.exit(sig === "SIGINT" ? 130 : 143);
+      };
+      const sigint = () => void onSignal("SIGINT");
+      const sigterm = () => void onSignal("SIGTERM");
+      process.on("SIGINT", sigint);
+      process.on("SIGTERM", sigterm);
       try {
         if (flags.pw && flags.pw !== "private") {
           throw new Error(`--pw ${flags.pw} is not supported — only a private PipeWire core is allowed`);
@@ -208,6 +228,8 @@ async function main() {
           flavor, userData: flags["user-data"], runDir,
           cdpPort: flags.cdp ? Number(flags.cdp) : null,
         });
+        process.off("SIGINT", sigint);
+        process.off("SIGTERM", sigterm);
         console.log(`launched pid=${ctx.meta.pid} display=${ctx.xvfb.display} cdp=${ctx.meta.cdpPort}`);
         console.log(`session: ${sessionFile(runDir)}`);
         console.log(`attach:   cadence-verify attach <flow> --run-dir ${runDir}`);

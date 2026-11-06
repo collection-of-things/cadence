@@ -25,7 +25,7 @@ import {
 import {
   prepareUserData, requireAudioBinary, sanitizedAppEnv, writePrivateAsound,
   freePort, cdpOccupied, verifyCdpEndpoint, verifyRecordedProcess,
-  procAlive, procStartTime, procIds, UD_MARKER,
+  procAlive, procStartTime, procIds, procComm, descendantPids, UD_MARKER,
 } from "./isolation.mjs";
 import { startXvfb } from "./xvfb.mjs";
 import { Pw } from "./pipewire.mjs";
@@ -72,12 +72,37 @@ function tracked() {
  * can still reap the Xvfb/private core/profile already acquired. */
 export const activeLaunches = new Set();
 
+/** Set by teardownActiveLaunches — every pending acquisition step checks
+ * it so signal cleanup cannot race a LATER spawn (e.g. teardown running
+ * while a launch's next await resolves into another spawn call). */
+let launchAborted = false;
+
+export class LaunchAborted extends Error {
+  constructor() { super("launch aborted by signal teardown"); this.name = "LaunchAborted"; }
+}
+
+function checkAborted() {
+  if (launchAborted) throw new LaunchAborted();
+}
+
 /** Teardown for resources of launches still in progress. The CLI's signal
- * handler calls this before exiting; safe to call with nothing in flight. */
+ * handler calls this before exiting; safe to call with nothing in flight.
+ * After releasing every tracked record it sweeps OUR OWN child tree for
+ * the app binary — the one window spawn-time tracking cannot cover:
+ * playwright's _electron.launch resolves only AFTER spawning. */
 export async function teardownActiveLaunches() {
+  launchAborted = true; // pending launch steps bail at the next checkpoint
   for (const r of [...activeLaunches]) {
     try { await releaseTracked(r); } catch {}
     activeLaunches.delete(r);
+  }
+  // backstop: any cadence/electron child of THIS process not yet registered
+  for (const pid of descendantPids(process.pid)) {
+    if (pid === process.pid) continue;
+    const comm = procComm(pid);
+    if (comm && /^(electron|cadence|cadence-audio|Xvfb|pipewire|wireplumber|pw-cat)$/.test(comm)) {
+      try { process.kill(pid, "SIGKILL"); } catch {}
+    }
   }
 }
 
@@ -182,11 +207,13 @@ export async function launchManaged({ flavor = "dev", userData = null, runDir } 
   activeLaunches.add(r); // mid-launch SIGTERM can reap these too
   const logStream = createWriteStream(join(runDir, "logs", "electron.log"), { flags: "a" });
   try {
-    r.xvfb = await startXvfb();
+    r.xvfb = await startXvfb({ onProc: (h) => { r.xvfb = h; } });
+    checkAborted();
     r.pw = new Pw({ mode: "private", logPath: join(runDir, "logs", "pipewire.log") });
     // assigned BEFORE start() resolves — a rejection still leaves the
     // half-up daemon reachable by releaseTracked
     await r.pw.start();
+    checkAborted();
     const bin = flavor === "packaged" ? packagedBinary() : electronBinary();
     if (!bin) throw new Error(`no electron binary for flavor ${flavor} (run builds first)`);
     r.app = await _electron.launch({
@@ -195,10 +222,14 @@ export async function launchManaged({ flavor = "dev", userData = null, runDir } 
       env: appEnvFor({ pw: r.pw, display: r.xvfb.display, asoundPath, audioBin }),
       timeout: 45_000,
     });
+    // abort check AFTER registration — teardown's child sweep covers the
+    // spawn-to-resolution window, this covers everything after
+    checkAborted();
     r.app.process().stderr?.pipe(logStream);
     r.app.process().stdout?.pipe(logStream);
     const page = await r.app.firstWindow();
     await waitReady(page);
+    checkAborted();
     // the CDP endpoint must belong to this app — not a pre-existing browser
     const cdp = await verifyCdpEndpoint(cdpPort, r.app.process().pid);
     if (!cdp.ok) {
@@ -229,11 +260,13 @@ export async function launchInteractive({ flavor = "dev", userData = null, runDi
   // descriptor, not a pipe that dies with us
   const logFd = openSync(join(runDir, "logs", "electron.log"), "a");
   try {
-    r.xvfb = await startXvfb({ persistent: true });
+    r.xvfb = await startXvfb({ persistent: true, onProc: (h) => { r.xvfb = h; } });
+    checkAborted();
     r.pw = new Pw({
       mode: "private", logPath: join(runDir, "logs", "pipewire.log"), persistent: true,
     });
     await r.pw.start();
+    checkAborted();
     const bin = flavor === "packaged" ? packagedBinary() : electronBinary();
     if (!bin) throw new Error(`no electron binary for flavor ${flavor} (run builds first)`);
     r.proc = spawn(bin, appArgs({ flavor, ud, cdpPort }), {
@@ -266,6 +299,7 @@ export async function launchInteractive({ flavor = "dev", userData = null, runDi
       { timeout: 30_000, what: "CDP page" },
     );
     await waitReady(page);
+    checkAborted();
     activeLaunches.delete(r);
     return finishLaunch({
       flavor, app: null, page, xvfb: r.xvfb, pw: r.pw, ud, runDir,
