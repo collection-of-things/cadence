@@ -1492,6 +1492,14 @@ impl Engine {
     /// and the prefetched successor from 0 (same device stream params
     /// permitting).
     fn respawn_pipelines(&self, position_ms: u64) {
+        self.respawn_pipelines_inner(position_ms, true);
+    }
+
+    /// `follow_prefetch` tails into respawn_prefetch for the armed slot;
+    /// promoted-successor redirects pass false so the convergence can't
+    /// recurse unboundedly (fatal on the monitor thread, which can't
+    /// adopt a boundary while it's inside this function).
+    fn respawn_pipelines_inner(&self, position_ms: u64, follow_prefetch: bool) {
         // Bounded loop: a gapless promotion can land while we spawn — a
         // stale install would overwrite the newly-active successor. A
         // snapshot is only trustworthy when core and state agree on the
@@ -1637,8 +1645,10 @@ impl Engine {
                 (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)
             })
         };
-        if let Some((qid, src, rg)) = prefetch {
-            self.respawn_prefetch(qid, src, rg);
+        if follow_prefetch {
+            if let Some((qid, src, rg)) = prefetch {
+                self.respawn_prefetch(qid, src, rg);
+            }
         }
     }
 
@@ -1673,9 +1683,10 @@ impl Engine {
         let Some(step) = step else { return };
         let Some((seq, gen)) = step else {
             // Already promoted pull-side — respawn it as the ACTIVE track
-            // rather than dropping the install below.
+            // rather than dropping the install below. No prefetch tail —
+            // that would recurse back here unboundedly.
             let pos = self.core.lock().unwrap().position_ms();
-            self.respawn_pipelines(pos);
+            self.respawn_pipelines_inner(pos, false);
             return;
         };
         *self.prefetch_producer.lock().unwrap() = None;
@@ -1730,9 +1741,10 @@ impl Engine {
                             if promoted {
                                 // The successor is already live — respawn
                                 // it as the active track so the new DSP
-                                // settings actually apply.
+                                // settings actually apply. No prefetch
+                                // tail — bounded, non-recursive.
                                 let pos = self.core.lock().unwrap().position_ms();
-                                self.respawn_pipelines(pos);
+                                self.respawn_pipelines_inner(pos, false);
                             }
                             return;
                         }
@@ -2157,12 +2169,23 @@ impl Engine {
         self.settle_boundary();
         // Pipelines read EQ at construction, so restart the current pipeline
         // at its position to apply changes immediately. Skipped on bypass.
-        let (bypass, seq) = {
+        let (bypass, seq, torn) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
-            (st.fidelity_bypass, core.boundary_seq)
+            (
+                st.fidelity_bypass,
+                core.boundary_seq,
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance)),
+            )
         };
-        if !bypass {
+        // A promotion landing between settle and snapshot leaves state
+        // describing the ended track — converge through the respawn path
+        // which waits for adoption and re-reads settled state.
+        if torn || !bypass {
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
         } else {
@@ -2196,7 +2219,8 @@ impl Engine {
     /// successor would otherwise keep the old gain through promotion.
     pub fn set_replay_gain(&self, enabled: bool) -> Result<Value> {
         self.settle_boundary();
-        let (changed, live_stream, bypass, cur_tagged, pf_tagged) = {
+        let (changed, live_stream, bypass, cur_tagged, pf_tagged, torn) = {
+            let core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             let was = st.replay_gain;
             st.replay_gain = enabled;
@@ -2209,12 +2233,17 @@ impl Engine {
                     .as_ref()
                     .filter(|p| p.replay_gain_db.is_some())
                     .map(|p| (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)),
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance)),
             )
         };
         if !changed {
             return Ok(json!({ "ok": true }));
         }
-        if cur_tagged && !bypass && !live_stream {
+        if torn || (cur_tagged && !bypass && !live_stream) {
             // respawn_pipelines handles the prefetched successor too.
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
