@@ -204,8 +204,11 @@ def src_rate_hint(path):
         return None
 
 
-def drive_cadence(binary, path, generation=1, device=None):
+def drive_cadence(binary, path, generation=1, device=None,
+                  start_paused=False):
     """Start cadence-audio (real device) and play `path`.
+    With start_paused=True the track loads but doesn't play — the caller
+    attaches the recorder first, then sends audio.play itself.
     Returns (proc, req, events)."""
     proc = subprocess.Popen(
         [binary],
@@ -230,6 +233,7 @@ def drive_cadence(binary, path, generation=1, device=None):
         {
             "queueId": "q1",
             "generationId": generation,
+            "startPaused": start_paused,
             "source": {"kind": "file", "path": str(path)},
         },
         1,
@@ -243,7 +247,8 @@ def drive_cadence(binary, path, generation=1, device=None):
         if ev and ev.get("sampleRateHz") == src_rate_hint(path):
             break
         time.sleep(0.05)
-    req("audio.play", {"generationId": generation}, 2)
+    if not start_paused:
+        req("audio.play", {"generationId": generation}, 2)
     return proc, req, evr
 
 
@@ -318,8 +323,13 @@ def ffprobe_duration(path):
 
 
 def xcorr_valid(cap, seg):
-    """Full cross-correlation (valid mode) via FFT — direct np.correlate
-    is O(n·m) and stalls on high-rate captures."""
+    """Normalized full cross-correlation (valid mode) via FFT. Raw
+    correlation magnitude alone is a bad alignment key for periodic
+    content: window energy wobbles a few ppm across a non-integer-period
+    tone, so a wrong lag can out-score the true one (seen at 192k —
+    argmax landed on a −0.9999-correlated window whose energy beat the
+    exact match by 6ppm). Dividing by the sliding window energy makes
+    the true lag uniquely maximal (=1.0)."""
     if len(cap) < len(seg):
         seg = seg[: len(cap)]
     n = len(cap) + len(seg) - 1
@@ -327,7 +337,12 @@ def xcorr_valid(cap, seg):
     C = np.fft.rfft(cap, nfft)
     S = np.fft.rfft(seg[::-1], nfft)
     cc = np.fft.irfft(C * S, nfft)
-    return cc[len(seg) - 1 : len(seg) - 1 + len(cap) - len(seg) + 1]
+    cc = cc[len(seg) - 1 : len(seg) - 1 + len(cap) - len(seg) + 1]
+    # Sliding window energy E_win[k] = sum(cap[k:k+L]^2) via cumsum.
+    esq = np.concatenate(([0.0], np.cumsum(cap.astype(np.float64) ** 2)))
+    e_win = esq[len(seg):] - esq[: len(cap) - len(seg) + 1]
+    denom = np.sqrt(np.maximum(e_win, 0.0) * float(np.dot(seg, seg)))
+    return np.divide(cc, denom, out=np.zeros_like(cc), where=denom > 0)
 
 
 def xcorr_align(cap, seg):
@@ -339,7 +354,8 @@ def best_align(cap, seg):
     """Periodic content (pure tones) gives many equal correlation peaks —
     argmax alone can land off by whole periods and the whole-overlap
     compare then reads as noise. Score the top peaks by residual RMS and
-    keep the best alignment."""
+    keep the best alignment. The capture's own content-start position is
+    an extra anchor — correlation alone can't pin a degenerate signal."""
     cc = xcorr_valid(cap, seg)
     idx = np.argsort(np.abs(cc))[::-1]
     cands = []
@@ -348,12 +364,29 @@ def best_align(cap, seg):
             cands.append(int(i))
         if len(cands) >= 24:
             break
-    return min(
-        cands,
-        key=lambda k: float(
-            np.sqrt(((cap[k : k + len(seg)] - seg) ** 2).mean())
-        ),
-    )
+    # Content-start anchor: where seg's content would sit if the capture
+    # started recording before playback. Add ±small refinements around it.
+    nz0 = np.flatnonzero(np.abs(cap) > 1e-6)
+    ref_nz0 = np.flatnonzero(np.abs(seg) > 1e-6)
+    if len(nz0) and len(ref_nz0):
+        anchor = int(nz0[0]) - int(ref_nz0[0])
+        for d_ in range(-2048, 2049, 512):
+            k2 = anchor + d_
+            if 0 <= k2 < len(cc) and all(
+                abs(k2 - c) > 16 for c in cands
+            ):
+                cands.append(k2)
+    scored = [
+        (float(np.sqrt(((cap[k : k + len(seg)] - seg) ** 2).mean())), k)
+        for k in cands
+    ]
+    best_rms = min(s for s, _ in scored)
+    # Tie-break by earliest position: among equally good alignments the
+    # earliest yields the largest overlap (highest coverage) — a pure
+    # tone makes every period-shift "exact", and a later pick shrinks
+    # the measured overlap for no content reason.
+    good = [k for s, k in scored if s <= max(best_rms * 2, 1e-12)]
+    return min(good)
 
 
 def zero_runs(body, ch, min_frames=8):
@@ -452,23 +485,31 @@ def null_residual(a, b):
         seg = a
         seg_off = 0
     cc = xcorr_valid(b, seg)
-    # A periodic signal has hundreds of near-equal correlation peaks —
-    # top-16 by magnitude misses the true lag. Score every peak within
-    # ~1% of max by residual over the SEGMENT (guaranteed content) —
-    # whole-overlap scoring punishes the true lag for legitimate
-    # leading/trailing attach zeros.
-    thr = float(np.abs(cc).max()) * 0.99
-    cands = np.flatnonzero(np.abs(cc) >= thr)
-    k = 0
-    best = None
-    for cand in cands[:2000]:
-        cand = int(cand)
-        r = b[cand : cand + len(seg)] - seg
-        s = float(np.abs(r).max())
-        if best is None or s < best:
-            best, k = s, cand
-            if best == 0.0:
-                break
+    if len(cc) == 0:
+        return b - a
+    # Candidate lags: the normalized-correlation argmax AND the
+    # content-start difference. Degenerate fixtures (pure tones,
+    # mirrored noise) can score a wrong/inverted lag a few ppm above
+    # the true one; the content-start anchor is immune to periodicity.
+    k0 = int(np.argmax(np.abs(cc)))
+    a_nz0 = np.flatnonzero(np.abs(a) > 1e-6)
+    b_nz0 = np.flatnonzero(np.abs(b) > 1e-6)
+    anchors = [k0]
+    if len(a_nz0) and len(b_nz0):
+        anchors.append(int(b_nz0[0]) - int(a_nz0[0]) + seg_off)
+    k, best = k0, None
+    for anchor in anchors:
+        span = min(1024, len(cc) - 1)
+        lo, hi = max(0, anchor - span), min(len(cc), anchor + span + 1)
+        for cand in range(lo, hi):
+            r = b[cand : cand + len(seg)] - seg
+            s = float(np.abs(r).max())
+            if best is None or s < best:
+                best, k = s, cand
+                if best == 0.0:
+                    break
+        if best == 0.0:
+            break
     # k locates seg inside b — a[i] aligns to b[k - seg_off + i].
     off = k - seg_off
     a_lo = max(0, -off)
@@ -540,16 +581,32 @@ def unlink_port(port_id):
             )
 
 
-def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate,
-                       expect_name=None):
-    """Record `tap`'s monitor while `pid` plays into it (the app targets
-    the tap directly — its only link — so it is the tap's driver, a
-    rate-matched, passthrough capture). Foreign apps never see the tap.
-    Returns (path, rate, fmt, node_id, props)."""
-    sink_id, monitor = tap
+def attach_recorder(workdir, tag, tap, rate, sink_id):
+    """Link a recorder to the tap's monitor ports — callable BEFORE the
+    app's playback starts, so no content is lost to attach latency.
+    Returns (Recorder, path)."""
+    rec_path = os.path.join(workdir, f"cap-{tag}.f32le")
+    rec = Recorder(rec_path, rate, 2)
+    rec_in = rec.input_ports()
+    monitor = tap[1]
+    for attempt in range(8):
+        try:
+            rec.tap(monitor, rec_in)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 7:
+                rec.stop()
+                raise
+            monitor = node_ports(sink_id, "output")
+            time.sleep(0.5)
+    return rec, rec_path
+
+
+def app_stream_info(pid, expect_name=None):
+    """Find the app's output stream node and assert it's the expected
+    backend's node — a fallback that produces a differently-named node
+    must not pass as the real one. Returns (node_id, rate, fmt, props)."""
     node_id, app_out, props = find_stream(pid, "Stream/Output/Audio")
-    # Prove the node we found is the transport we claim: a fallback that
-    # produces a differently-named node must not pass as the real one.
     name = props.get("node.name", "")
     if expect_name and name != expect_name:
         raise RuntimeError(
@@ -557,25 +614,7 @@ def capture_app_stream(pid, duration_s, workdir, tag, tap, expect_rate,
             "the app did not take the expected backend"
         )
     rate, fmt = stream_format(node_id, props)
-    rec_path = os.path.join(workdir, f"cap-{tag}.f32le")
-    rec = Recorder(rec_path, rate or expect_rate, 2)
-    try:
-        rec_in = rec.input_ports()
-        for attempt in range(8):
-            try:
-                rec.tap(monitor, rec_in)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 7:
-                    raise
-                monitor = node_ports(sink_id, "output")
-                time.sleep(0.5)
-        time.sleep(duration_s)
-        return rec_path, rate, fmt, node_id, props
-    finally:
-        # No leaked pw-cat even when tap/port discovery fails mid-run.
-        if rec.proc.poll() is None:
-            rec.stop()
+    return node_id, rate, fmt, props
 
 
 def make_default_sink(name, rate, channels):
@@ -653,14 +692,22 @@ def main():
             sys.exit(3)
 
         # ---- cadence ----
-        print("[cadence] starting playback into tap")
+        # Load paused, attach the recorder, THEN play — nothing misses
+        # the head to attach latency.
+        print("[cadence] loading paused into tap")
         cap_proc, _req, evr = drive_cadence(
-            args.bin, src, device="cadence-tap")
+            args.bin, src, device="cadence-tap", start_paused=True)
         try:
-            cap_path, cad_rate, cad_fmt, cad_node, _ = capture_app_stream(
-                cap_proc.pid, dur + 0.8, workdir, "cadence", tap, src_rate,
-                expect_name="cadence-audio",
-            )
+            cad_node, cad_rate, cad_fmt, _ = app_stream_info(
+                cap_proc.pid, expect_name="cadence-audio")
+            rec, cap_path = attach_recorder(
+                workdir, "cadence", tap, cad_rate or src_rate, tap[0])
+            try:
+                _req("audio.play", {"generationId": 1}, 2)
+                time.sleep(dur + 0.8)
+            finally:
+                if rec.proc.poll() is None:
+                    rec.stop()
         except TimeoutError:
             print("stream nodes at timeout:")
             for nid, p in stream_nodes().items():
@@ -682,21 +729,44 @@ def main():
         # ---- mpv ----
         # --audio-samplerate pins mpv's stream to the source rate so both
         # apps deliver at the same rate into the same driver; the device
-        # targets the tap directly (no default-sink switching).
+        # targets the tap directly (no default-sink switching). mpv
+        # launches --pause, the recorder attaches, then IPC unpauses.
         print("[mpv] starting playback into tap")
+        mpv_sock = os.path.join(workdir, "mpv.sock")
         mpv = subprocess.Popen(
             [
                 args.mpv_bin, "--ao=pipewire", "--no-video", "--really-quiet",
+                "--pause", f"--input-ipc-server={mpv_sock}",
                 "--audio-device=pipewire/cadence-tap",
                 f"--audio-samplerate={src_rate}", str(src),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        mpv_path, mpv_rate, mpv_fmt, mpv_node, _ = capture_app_stream(
-            mpv.pid, dur + 0.8, workdir, "mpv", tap, src_rate,
-            expect_name="mpv",
-        )
+        try:
+            mpv_node, mpv_rate, mpv_fmt, _ = app_stream_info(
+                mpv.pid, expect_name="mpv")
+            rec, mpv_path = attach_recorder(
+                workdir, "mpv", tap, mpv_rate or src_rate, tap[0])
+            try:
+                # Retry the IPC unpause — the socket exists before mpv
+                # accepts connections on it.
+                for _ in range(20):
+                    r = subprocess.run(
+                        ["socat", "-", f"UNIX-CONNECT:{mpv_sock}"],
+                        input=b'{"command": ["set_property", "pause", false]}\n',
+                        capture_output=True,
+                    )
+                    if r.returncode == 0:
+                        break
+                    time.sleep(0.25)
+                time.sleep(dur + 0.8)
+            finally:
+                if rec.proc.poll() is None:
+                    rec.stop()
+        except TimeoutError:
+            mpv.kill()
+            raise
         mpv.wait(timeout=10)
         print(f"[mpv] node={mpv_node} stream={mpv_fmt}@{mpv_rate}")
     finally:
