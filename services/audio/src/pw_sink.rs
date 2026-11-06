@@ -917,6 +917,10 @@ impl Sink for PipeWireSink {
         // downstream graph/device latency in `rate` ticks (usually
         // 1/samplerate — the docs' formula is delay*num/denom seconds).
         // Fall back to the negotiated quantum if the query fails.
+        // tl.lock() on the 20ms monitor path — a bounded struct read
+        // only. This MUST stay non-blocking: it's the only monitor →
+        // thread-loop-lock edge, so nothing inside may wait on the
+        // monitor back.
         let _g = self.tl.lock();
         self.stream
             .time()

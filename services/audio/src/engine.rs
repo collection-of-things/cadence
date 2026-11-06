@@ -2673,10 +2673,13 @@ impl Engine {
             }
         }
         // Check + stop atomically — a newer load must not
-        // be overwritten with Stopped in the gap.
+        // be overwritten with Stopped in the gap, and a device error
+        // recorded mid-park must not be clobbered either.
         let stopped = {
             let mut st = self.state.lock().unwrap();
-            let ours = st.generation == gen && st.queue_id.is_none();
+            let ours = st.generation == gen
+                && st.queue_id.is_none()
+                && st.state != PlayState::Error;
             if ours {
                 st.state = PlayState::Stopped;
             }
