@@ -913,6 +913,53 @@ pub struct PipeWireSink {
 // guarantees on every path.
 unsafe impl Send for PipeWireSink {}
 
+impl PipeWireSink {
+    /// Marker+flush with `tl` ALREADY held — used by request_drain
+    /// and retry_drain so the check-and-issue is one critical section.
+    fn request_drain_locked(&self) -> Option<u64> {
+        // Marker FIRST, then flush. Every stale event was queued
+        // before the marker (the loop can't dispatch while we hold
+        // tl, and no event can post between marker and flush: a drain
+        // completion needs the queue empty, and the queued tail keeps
+        // it non-empty). A real completion can only post after the
+        // flush → after the marker → it always counts.
+        let tag = self.barrier.req.fetch_add(1, Ordering::AcqRel) + 1;
+        unsafe {
+            let l = pw::sys::pw_thread_loop_get_loop(self.tl.as_raw_ptr());
+            if l.is_null() || (*l).loop_.is_null() {
+                return None;
+            }
+            let lp = (*l).loop_;
+            let methods =
+                (*lp).iface.cb.funcs as *const spa::sys::spa_loop_methods;
+            let invoke = (*methods).invoke?;
+            let ud = Box::into_raw(Box::new(BarrierUd {
+                barrier: Arc::clone(&self.barrier),
+                req_id: tag,
+            })) as *mut std::ffi::c_void;
+            let r = invoke(
+                (*lp).iface.cb.data,
+                Some(drain_barrier_cb),
+                spa::sys::SPA_ID_INVALID,
+                std::ptr::null(),
+                0,
+                false,
+                ud,
+            );
+            if r < 0 {
+                // Marker never queued — reclaim the userdata and
+                // report unsupported so the caller falls back to the
+                // deadline path rather than waiting forever.
+                drop(Box::from_raw(ud as *mut BarrierUd));
+                return None;
+            }
+        }
+        self.stream.flush(true).ok()?;
+        Some(tag)
+    }
+
+}
+
 impl Sink for PipeWireSink {
     fn stop(&mut self) {
         self.feed.stop();
@@ -999,46 +1046,8 @@ impl Sink for PipeWireSink {
     }
 
     fn request_drain(&self) -> Option<u64> {
-        // Marker FIRST, then flush — both under tl. Every stale event
-        // was queued before the marker (the loop can't dispatch while
-        // we hold tl, and no event can post between marker and flush:
-        // a drain completion needs the queue empty, and the queued
-        // tail keeps it non-empty). A real completion can only post
-        // after the flush → after the marker → it always counts.
         let _g = self.tl.lock();
-        let tag = self.barrier.req.fetch_add(1, Ordering::AcqRel) + 1;
-        unsafe {
-            let l = pw::sys::pw_thread_loop_get_loop(self.tl.as_raw_ptr());
-            if l.is_null() || (*l).loop_.is_null() {
-                return None;
-            }
-            let lp = (*l).loop_;
-            let methods =
-                (*lp).iface.cb.funcs as *const spa::sys::spa_loop_methods;
-            let invoke = (*methods).invoke?;
-            let ud = Box::into_raw(Box::new(BarrierUd {
-                barrier: Arc::clone(&self.barrier),
-                req_id: tag,
-            })) as *mut std::ffi::c_void;
-            let r = invoke(
-                (*lp).iface.cb.data,
-                Some(drain_barrier_cb),
-                spa::sys::SPA_ID_INVALID,
-                std::ptr::null(),
-                0,
-                false,
-                ud,
-            );
-            if r < 0 {
-                // Marker never queued — reclaim the userdata and
-                // report unsupported so the caller falls back to the
-                // deadline path rather than waiting forever.
-                drop(Box::from_raw(ud as *mut BarrierUd));
-                return None;
-            }
-        }
-        self.stream.flush(true).ok()?;
-        Some(tag)
+        self.request_drain_locked()
     }
 
     fn drained_since(&self, baseline: u64) -> bool {
@@ -1065,19 +1074,17 @@ impl Sink for PipeWireSink {
     }
 
     fn retry_drain(&self, baseline: u64) -> Option<u64> {
-        // Under `tl` the main loop cannot dispatch — so drained_seq
-        // and `settled` are frozen for the whole check-and-issue.
-        // If the original completion already landed (possibly folded
-        // into a later marker's settled… no — completions can only
-        // ADD to drained_seq; drained_since(baseline) still detects
-        // it), report u64::MAX instead of re-draining.
-        {
-            let _g = self.tl.lock();
-            if self.drained_since(baseline) {
-                return Some(u64::MAX);
-            }
+        // ONE continuous tl hold covering the completion recheck AND
+        // the new marker+flush — no dispatch can interleave, so a
+        // completion that has already landed (dispatched or queued
+        // events are frozen here either way) can never be swallowed
+        // by a retry. u64::MAX = the original request already
+        // completed; don't re-drain.
+        let _g = self.tl.lock();
+        if self.drained_since(baseline) {
+            return Some(u64::MAX);
         }
-        self.request_drain()
+        self.request_drain_locked()
     }
 
     fn drain_fallback_ms(&self) -> u64 {

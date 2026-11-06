@@ -3162,12 +3162,18 @@ impl Engine {
                                                 // recheck under tl
                                                 // found the original
                                                 // completion — resume
-                                                // + handle now.
+                                                // under the sink lock,
+                                                // then drop `g` BEFORE
+                                                // handle_track_end
+                                                // (it can re-lock
+                                                // sink via
+                                                // rebuild_stream).
                                                 if let Some(s2) =
                                                     g.as_ref()
                                                 {
                                                     s2.resume();
                                                 }
+                                                drop(g);
                                                 self.handle_track_end(
                                                     qid, inst,
                                                 );
