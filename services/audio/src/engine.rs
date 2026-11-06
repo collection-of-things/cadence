@@ -1467,6 +1467,27 @@ impl Engine {
         json!({ "devices": caps.list() })
     }
 
+    /// Wait out an un-adopted pull-side boundary so callers reading
+    /// `state` metadata (bypass flag, prefetch slot, current track) see
+    /// the settled truth rather than the ended track's leftovers.
+    fn settle_boundary(&self) {
+        for _ in 0..4 {
+            let torn = {
+                let core = self.core.lock().unwrap();
+                let st = self.state.lock().unwrap();
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            };
+            if !torn {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     /// After a stream rebuild: restart the current track at `position_ms`
     /// and the prefetched successor from 0 (same device stream params
     /// permitting).
@@ -2092,6 +2113,9 @@ impl Engine {
         {
             self.state.lock().unwrap().fidelity = enabled;
         }
+        // Same settle as set_eq — a mid-flight boundary leaves stale
+        // current/prefetch metadata in state.
+        self.settle_boundary();
         // Rebuild current + prefetch pipelines under the new rules.
         let pos = self.core.lock().unwrap().position_ms();
         self.respawn_pipelines(pos);
@@ -2101,6 +2125,9 @@ impl Engine {
 
     pub fn set_eq(&self, bands: &[(f64, f64)]) -> Result<Value> {
         self.state.lock().unwrap().eq_bands = bands.to_vec();
+        // A boundary mid-flight would let the bypass/prefetch decisions
+        // read the ended track's metadata — wait for adoption first.
+        self.settle_boundary();
         // Pipelines read EQ at construction, so restart the current pipeline
         // at its position to apply changes immediately. Skipped on bypass.
         let bypass = self.state.lock().unwrap().fidelity_bypass;
@@ -2131,6 +2158,7 @@ impl Engine {
     /// an armed prefetch is still refreshed — a compatible non-bypass
     /// successor would otherwise keep the old gain through promotion.
     pub fn set_replay_gain(&self, enabled: bool) -> Result<Value> {
+        self.settle_boundary();
         let (changed, live_stream, bypass, cur_tagged, pf_tagged) = {
             let mut st = self.state.lock().unwrap();
             let was = st.replay_gain;
