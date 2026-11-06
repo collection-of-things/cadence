@@ -107,6 +107,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
 
   private async prepareInner(): Promise<void> {
     await this.session.prepare();
+    // Sign-out may have started while session.prepare() was pending —
+    // recheck before any controller eval touches the view.
+    if (this.signedOut) {
+      throw new Error("Apple Music is signed out — sign in to use it");
+    }
     if (this.installed) return;
     if (Date.now() < this.installBackoffUntil) {
       throw new Error("Apple Music provider is still starting");
@@ -459,7 +464,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     } catch (e) {
       // Only this attempt's own failure may release it — a prepare that
       // outlived its attempt must not clear a newer flow's pending flag.
-      if (attempt === this.signInAttempt) endAttempt();
+      if (attempt !== this.signInAttempt) return; // superseded — quiet exit
+      endAttempt();
       throw e;
     }
     // prepare() is the first async boundary — sign-out or a newer flow may

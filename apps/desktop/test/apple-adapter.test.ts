@@ -462,7 +462,7 @@ describe("apple adapter page events", () => {
     const b = adapter.signIn(); // attempt B — prepare resolves fast
     await new Promise((r) => setTimeout(r, 30));
     rejectFirst!(new Error("dead")); // A's prepare rejects late
-    await expect(a).rejects.toThrow("dead");
+    await a; // superseded attempt exits quietly — no leak, no throw
     expect((adapter as any).signInPending).toBe(true); // B keeps its attempt
     await b;
     (sess as any).prepare = origPrep;
@@ -541,6 +541,23 @@ describe("apple adapter page events", () => {
     await Promise.all([out1, out2]);
     await p;
     expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(false);
+    (sess as any).eval = origEval;
+  });
+
+  it("an operation mid-prepare when sign-out starts can't reach the controller", async () => {
+    const origPrep = sess.prepare.bind(sess);
+    const origEval = sess.eval.bind(sess);
+    const waiters: Array<() => void> = [];
+    (sess as any).prepare = () => new Promise<void>((r) => waiters.push(r));
+    const c = adapter.catalog({ kind: "search", text: "x" } as any).catch((e: unknown) => e);
+    await new Promise((r) => setImmediate(r));
+    const out = adapter.signOut(); // begins while catalog is inside prepare()
+    await new Promise((r) => setTimeout(r, 10));
+    for (const r of waiters) r(); // let the paused prepare() resume
+    const result = await c;
+    expect(result instanceof Error).toBe(true);
+    await out;
+    (sess as any).prepare = origPrep;
     (sess as any).eval = origEval;
   });
 });
