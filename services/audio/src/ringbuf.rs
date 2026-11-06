@@ -11,6 +11,10 @@ struct Shared<T> {
     cap: usize,
     head: AtomicUsize, // read index
     tail: AtomicUsize, // write index
+    /// Monotonic discard fence: samples below this index are stale and
+    /// must never be delivered — set by Producer::clear (epoch flush).
+    /// Unlike a head store, it can't be regressed by a stale reader.
+    fence: AtomicUsize,
     /// Producer finished (EOF); consumer may drain remaining then end track.
     done: AtomicBool,
     /// Consumer side dropped/aborted; producer should stop writing.
@@ -43,6 +47,7 @@ pub fn channel<T: Copy + Default>(capacity: usize) -> (Producer<T>, Consumer<T>)
         cap: capacity,
         head: AtomicUsize::new(0),
         tail: AtomicUsize::new(0),
+        fence: AtomicUsize::new(0),
         done: AtomicBool::new(false),
         abort: AtomicBool::new(false),
     });
@@ -54,14 +59,25 @@ impl<T: Copy + Default> Producer<T> {
     pub fn free_space(&self) -> usize {
         let head = self.s.head.load(Ordering::Acquire);
         let tail = self.s.tail.load(Ordering::Relaxed);
-        self.s.cap - (tail - head) - 1
+        let fence = self.s.fence.load(Ordering::Acquire);
+        // Discarded data is already gone — a stale consumer store can
+        // regress head, but the fence is the true floor.
+        let head = head.max(fence);
+        self.s.cap.saturating_sub(tail.saturating_sub(head)) - 1
     }
 
     /// Non-blocking write; returns number of elements written (0..=data.len()).
     pub fn write(&self, data: &[T]) -> usize {
         let head = self.s.head.load(Ordering::Acquire);
         let tail = self.s.tail.load(Ordering::Relaxed);
-        let free = self.s.cap - (tail - head) - 1; // keep one slot to disambiguate full/empty
+        let fence = self.s.fence.load(Ordering::Acquire);
+        // keep one slot to disambiguate full/empty; the fence floors the
+        // effective head (a stale consumer store can regress head).
+        let free = self
+            .s
+            .cap
+            .saturating_sub(tail.saturating_sub(head.max(fence)))
+            - 1;
         let n = data.len().min(free);
         for i in 0..n {
             let idx = (tail + i) % self.s.cap;
@@ -98,11 +114,15 @@ impl<T: Copy + Default> Producer<T> {
 
     /// Discard everything currently queued — used by the staging feeder
     /// when a control change bumps the epoch: every staged sample is
-    /// provably stale. Safe next to a concurrent consumer read: it may
-    /// finish reading at most one in-flight slice before the new head is
-    /// observed; it can never resurrect more than that.
+    /// provably stale. Monotonic via the fence: a stale head store from
+    /// a preempted consumer read can never resurrect discarded data.
     pub fn clear(&self) {
         let tail = self.s.tail.load(Ordering::Acquire);
+        self.s.fence.fetch_max(tail, Ordering::AcqRel);
+        // Advance head too so free_space reflects the drop. Tail is
+        // monotonic, so this store is too — a stale consumer store may
+        // regress head transiently, but reads and free_space floor at
+        // the fence, so nothing stale is ever delivered or overwritten.
         self.s.head.store(tail, Ordering::Release);
     }
 
@@ -116,17 +136,21 @@ impl<T: Copy + Default> Consumer<T> {
     pub fn read(&self, out: &mut [T]) -> usize {
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
-        let n = out.len().min(tail - head);
+        let fence = self.s.fence.load(Ordering::Acquire);
+        // start >= fence: a clear() that landed mid-read can never make
+        // us serve discarded data; start >= head keeps head monotonic.
+        let start = head.max(fence);
+        let n = out.len().min(tail.saturating_sub(start));
         for i in 0..n {
-            out[i] = self.s.buf[(head + i) % self.s.cap];
+            out[i] = self.s.buf[(start + i) % self.s.cap];
         }
-        // Clamp to the observed tail: a concurrent producer clear() may
-        // have moved head forward while we read; an unclamped store
-        // would regress past it, resurrect stale samples AND inflate
-        // tail-head past cap (free_space underflow → producer overwrite).
-        self.s
-            .head
-            .store((head + n).min(tail), Ordering::Release);
+        self.s.head.store(start + n, Ordering::Release);
+        // A clear() landing mid-copy means what we just read was already
+        // stale (and possibly torn by a wrapping producer): report the
+        // head advance but give the caller nothing usable.
+        if self.s.fence.load(Ordering::Acquire) > start {
+            return 0;
+        }
         n
     }
 
@@ -140,30 +164,36 @@ impl<T: Copy + Default> Consumer<T> {
         }
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
-        let avail = tail - head;
+        let fence = self.s.fence.load(Ordering::Acquire);
+        let start = head.max(fence);
+        let avail = tail.saturating_sub(start);
         let mut n = out.len().min(avail) / frame * frame;
         // End of stream: a trailing partial frame must still drain or
         // the track can never finish (is_drained would stick false).
         // Re-read the tail — `avail` may be stale-mid-write and the true
         // remainder could already be frame-aligned.
         if n == 0 && self.s.done.load(Ordering::Acquire) {
-            let avail2 = self.s.tail.load(Ordering::Acquire) - head;
+            let avail2 = self.s.tail.load(Ordering::Acquire).saturating_sub(start);
             if avail2 < frame {
                 n = out.len().min(avail2);
             }
         }
         for i in 0..n {
-            out[i] = self.s.buf[(head + i) % self.s.cap];
+            out[i] = self.s.buf[(start + i) % self.s.cap];
         }
-        // Clamp to the observed tail — see read().
-        self.s
-            .head
-            .store((head + n).min(tail), Ordering::Release);
+        self.s.head.store(start + n, Ordering::Release);
+        // See read(): a mid-copy clear makes this slice stale.
+        if self.s.fence.load(Ordering::Acquire) > start {
+            return 0;
+        }
         n
     }
 
     pub fn available(&self) -> usize {
-        self.s.tail.load(Ordering::Acquire) - self.s.head.load(Ordering::Relaxed)
+        let tail = self.s.tail.load(Ordering::Acquire);
+        let head = self.s.head.load(Ordering::Relaxed);
+        let fence = self.s.fence.load(Ordering::Acquire);
+        tail.saturating_sub(head.max(fence))
     }
 
     /// Producer signaled EOF and no data remains.

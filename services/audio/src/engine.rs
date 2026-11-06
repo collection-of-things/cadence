@@ -1441,6 +1441,16 @@ impl Engine {
     fn set_device_inner(&self, name: Option<&str>, owner_gen: Option<u64>) -> Result<Value> {
         // Don't probe or commit anything while a boundary is un-adopted —
         // the guarded rebuild would bail anyway and leave mixed state.
+        // Lock order: sink BEFORE core — shutdown holds `sink` while
+        // joining the feeder (which needs `core`), so a core→sink edge
+        // deadlocks. The staged read races a publish by ≤1 chunk.
+        let staged = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|sk| sk.staged_frames())
+            .unwrap_or(0);
         let (pos, expected) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
@@ -1459,13 +1469,6 @@ impl Engine {
             }
             (
                 {
-                    let staged = self
-                        .sink
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|sk| sk.staged_frames())
-                        .unwrap_or(0);
                     let rate = core.negotiated.rate.max(1) as u64;
                     core.position_ms()
                         .saturating_sub(staged * 1000 / rate)
@@ -1546,18 +1549,21 @@ impl Engine {
     /// skips the staged tail (read BEFORE any flush: the staged value
     /// disappears with the ring).
     fn audible_position_ms(&self) -> u64 {
-        let pull = self.core.lock().unwrap().position_ms();
-        let (staged, rate) = {
-            let staged = self
-                .sink
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|s| s.staged_frames())
-                .unwrap_or(0);
-            let rate = self.core.lock().unwrap().negotiated.rate.max(1) as u64;
-            (staged, rate)
-        };
+        // Lock order: sink FIRST — shutdown holds `sink` while stopping
+        // (and joining the feeder); a core→sink edge deadlocks against
+        // it. Sink alone doesn't need `core`, so take it, drop it, then
+        // take core. A publish between the two reads under-subtracts at
+        // most one chunk — bounded, never a stall.
+        let staged = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.staged_frames())
+            .unwrap_or(0);
+        let core = self.core.lock().unwrap();
+        let pull = core.position_ms();
+        let rate = core.negotiated.rate.max(1) as u64;
         pull.saturating_sub(staged * 1000 / rate)
     }
 
@@ -1632,7 +1638,7 @@ impl Engine {
                 let pos = if attempt == 0 {
                     position_ms
                 } else {
-                    self.core.lock().unwrap().position_ms()
+                    self.audible_position_ms()
                 };
                 let st = self.state.lock().unwrap();
                 (pos, st.replay_gain_db)
@@ -2827,10 +2833,22 @@ impl Engine {
             // defers handling to the next tick.
             let device_error = deferred_device_error.take().or_else(|| {
                 let gen = self.state.lock().unwrap().generation;
-                self.caps
+                // The caps' error cell covers reported failures; the
+                // sink's dead flag covers silent ones (never-scheduled
+                // streams, dead callbacks) — both need a poll each tick.
+                let caps_err = self
+                    .caps
                     .lock()
                     .unwrap()
-                    .device_error()
+                    .device_error();
+                let sink_dead = self
+                    .sink
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|s| s.is_dead());
+                caps_err
+                    .or_else(|| sink_dead.then(|| "output stream died".to_string()))
                     .map(|msg| (msg, gen))
             });
             if let Some((msg, err_gen)) = device_error {
@@ -2950,7 +2968,10 @@ impl Engine {
         // installed after this point.
         let _serial = self.stream_mu.lock().unwrap();
         // Stop the sink first so no more samples land on the dump tap.
-        if let Some(mut s) = self.sink.lock().unwrap().take() {
+        // `take` under a temporary guard — holding `sink` through stop()
+        // would hold it across the feeder join, which needs `core`.
+        let taken = self.sink.lock().unwrap().take();
+        if let Some(mut s) = taken {
             s.stop();
         }
         let mut core = self.core.lock().unwrap();

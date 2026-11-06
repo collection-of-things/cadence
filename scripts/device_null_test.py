@@ -427,15 +427,16 @@ def compare(name, cap, ref, ch, label):
     exact = mx == 0.0
     nz_res = int(np.count_nonzero(res))
     ok = exact or (mx <= float(np.finfo(np.float32).eps) and nz_res <= 32)
-    # Coverage gate: a capture missing a large chunk of the source must
-    # not pass on a thin surviving slice.
-    coverage = (end - lo) / len(ref)
+    # Coverage gate: the post-trim compared span must cover most of the
+    # source — a mostly-silent capture containing one matching slice
+    # must not pass on that slice alone.
+    coverage = len(a) / len(ref)
     cov_ok = coverage >= 0.6
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
         f"bitexact={exact} ok={ok} zero-runs(>=8f)={len(zr)}"
         + (f" sizes={zr[:8]}" if zr else "")
-        + f" compared={(end - lo)//ch}f coverage={coverage:.0%}"
+        + f" compared={len(a)//ch}f coverage={coverage:.0%}"
     )
     return ok and cov_ok, len(zr)
 
@@ -475,27 +476,16 @@ def null_residual(a, b):
     n = min(len(a) - a_lo, len(b) - b_lo)
     aa = a[a_lo : a_lo + n]
     bb = b[b_lo : b_lo + n]
-    # Only compare where BOTH captures actually carry signal on EVERY
-    # channel — attach skew leaves one channel's zeros inside the
-    # other's content span.
-    ch = 2
-    nfr = n - n % ch
-    afr = aa[:nfr].reshape(-1, ch)
-    bfr = bb[:nfr].reshape(-1, ch)
-    def nz_span(x):
-        lo, hi = nfr, -1
-        for c in range(x.shape[1]):
-            nz = np.flatnonzero(x[:, c])
-            if len(nz):
-                lo = min(lo, int(nz[0]))
-                hi = max(hi, int(nz[-1]))
-        return lo, hi
-    a_lo_f, a_hi_f = nz_span(afr)
-    b_lo_f, b_hi_f = nz_span(bfr)
-    lo_f = max(a_lo_f, b_lo_f)
-    hi_f = min(a_hi_f, b_hi_f)
-    if hi_f > lo_f:
-        return bfr[lo_f : hi_f + 1].reshape(-1) - afr[lo_f : hi_f + 1].reshape(-1)
+    # Only compare where BOTH captures actually carry signal — the
+    # callers reshape and compare per channel already; here the shared
+    # nonzero span trims legitimate attach zeros at the edges.
+    a_nz = np.flatnonzero(aa)
+    b_nz = np.flatnonzero(bb)
+    if len(a_nz) and len(b_nz):
+        lo = max(int(a_nz[0]), int(b_nz[0]))
+        hi = min(int(a_nz[-1]), int(b_nz[-1]))
+        if hi > lo:
+            return bb[lo : hi + 1] - aa[lo : hi + 1]
     return bb - aa
 
 

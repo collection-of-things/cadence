@@ -103,9 +103,9 @@ impl PipeWireCaps {
     pub fn new(name: Option<&str>) -> Result<Arc<Self>> {
         match name {
             Some(want) => {
-                let (serial, found) = sink_serial_for(want)?;
+                let (node_id, found) = sink_node_for(want)?;
                 Ok(Arc::new(PipeWireCaps {
-                    target: Some(serial),
+                    target: Some(node_id),
                     device_name: found,
                     error: Arc::new(Mutex::new(None)),
                 }))
@@ -151,7 +151,7 @@ fn with_core<R>(f: impl FnOnce(&pw::core::CoreRc) -> Result<R>) -> Result<R> {
     r
 }
 
-/// Enumerate Audio/Sink nodes -> (object.serial, node.name) plus the
+/// Enumerate Audio/Sink nodes -> (global node id, node.name) plus the
 /// session's default sink name (from the `default` metadata object's
 /// `default.audio.sink` property). Objects stay alive through the whole
 /// dispatch window; a core.sync round-trip bounds the wait, and the
@@ -334,10 +334,10 @@ fn enumerate_sinks() -> Result<(Vec<(u32, String)>, Option<String>)> {
     Ok((out, dn))
 }
 
-fn sink_serial_for(name: &str) -> Result<(u32, String)> {
-    for (serial, node_name) in enumerate_sinks()?.0 {
+fn sink_node_for(name: &str) -> Result<(u32, String)> {
+    for (node_id, node_name) in enumerate_sinks()?.0 {
         if node_name == name {
-            return Ok((serial, node_name));
+            return Ok((node_id, node_name));
         }
     }
     Err(anyhow!("no pipewire sink named {name:?}"))
@@ -459,7 +459,7 @@ impl PipeWireCaps {
         let capacity = (neg.rate as usize * neg.channels as usize / 8)
             .max(4 * latency as usize * neg.channels.max(1) as usize);
         let (paused, last_process_ms) = {
-            let c = core.lock().unwrap();
+            let c = core.lock().unwrap_or_else(|p| p.into_inner());
             (
                 Arc::clone(&c.paused_flag),
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -666,6 +666,7 @@ impl PipeWireCaps {
             t0,
             staged,
             error: Arc::clone(&self.error),
+            state,
         }))
     }
 }
@@ -780,6 +781,9 @@ pub struct PipeWireSink {
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
     error: Arc<Mutex<Option<String>>>,
+    /// Stream state shared with the state listener — the watchdog only
+    /// flags a stopped stream if the graph thinks it should be running.
+    state: Arc<std::sync::atomic::AtomicU8>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -814,7 +818,14 @@ impl Sink for PipeWireSink {
         }
         let last = self.last_process_ms.load(Ordering::Relaxed);
         let now = self.t0.elapsed().as_millis() as u64;
-        if now > 2500 && now - last > 2500 {
+        // Never-processed while expected to run: an unlinked stream sits
+        // at Paused forever — the graph has nothing to drive it.
+        // A stopped-mid-playback stream reports Streaming but stops
+        // calling process(). A merely suspended stream sits at Paused
+        // with last>0 — PipeWire resumes it; that's not dead.
+        let state = self.state.load(Ordering::Acquire);
+        let stale = (last == 0 || (state == 3 && now - last > 2500)) && now > 2500;
+        if stale {
             if let Ok(mut cell) = self.error.lock() {
                 *cell = Some("stream never scheduled (no process callbacks)".into());
             }

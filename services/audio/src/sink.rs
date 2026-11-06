@@ -77,7 +77,9 @@ impl Drop for FeedGuard {
 fn feed_capacity(min_capacity: usize, channels: usize) -> usize {
     let ch = channels.max(1);
     let chunk = (2048 / ch).max(1) * ch;
-    min_capacity.max(2 * chunk)
+    // +1: the ring keeps one slot to disambiguate full/empty, so 2*chunk
+    // of capacity holds only 2*chunk-1 usable slots.
+    min_capacity.max(2 * chunk + 1)
 }
 
 /// Spawn a feeder thread that pulls `core` into a lock-free staging ring.
@@ -106,7 +108,9 @@ pub fn spawn_feed<T: PcmSample>(
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
     let core2 = Arc::clone(core);
-    let epoch = Arc::clone(&core.lock().unwrap().clear_epoch);
+    let epoch = Arc::clone(
+        &core.lock().unwrap_or_else(|p| p.into_inner()).clear_epoch,
+    );
     let join = std::thread::Builder::new()
         .name("pcm-feed".into())
         .spawn(move || {
@@ -143,9 +147,10 @@ pub fn spawn_feed<T: PcmSample>(
                     }
                     pull(&mut c, &mut scratch);
                     // free_space can't shrink between the check above
-                    // and here — the only reducer was a consumer head
-                    // rewind, which the read-clamp made impossible.
-                    debug_assert_eq!(prod.write(&scratch), scratch.len());
+                    // and here — head only ever advances, and the
+                    // fence never lets it regress below a clear.
+                    let written = prod.write(&scratch);
+                    debug_assert_eq!(written, scratch.len());
                 }
             }
         })?;
@@ -523,7 +528,9 @@ impl DeviceCaps for CpalCaps {
         // contended pull no longer surfaces as an audible silence gap.
         let capacity = (neg.rate as usize * neg.channels as usize / 16).max(8192);
         let ch = neg.channels as usize;
-        let paused = Arc::clone(&core.lock().unwrap().paused_flag);
+        let paused = Arc::clone(
+            &core.lock().unwrap_or_else(|p| p.into_inner()).paused_flag,
+        );
         let staged_fn: Box<dyn Fn() -> u64 + Send + Sync>;
         let (stream, feed) = match neg.kind {
             PcmKind::F32 => {
@@ -818,9 +825,10 @@ mod tests {
                 let chunk = (2048 / ch).max(1) * ch;
                 let min_cap = (rate * ch / 8).max(4 * 2048 * ch);
                 let capacity = feed_capacity(min_cap, ch);
+                // Usable slots are cap-1; two chunks must always fit.
                 assert!(
-                    capacity >= 2 * chunk + 1,
-                    "rate {rate} ch {ch}: capacity {capacity} < 2*chunk+1"
+                    capacity - 1 >= 2 * chunk,
+                    "rate {rate} ch {ch}: capacity {capacity} too small for 2*chunk {chunk}"
                 );
             }
         }
