@@ -11,6 +11,14 @@ import type {
 import type { AudioServiceClient } from "../audio/audio-client.js";
 import type { FidelityCapable, ReplayGainCapable, RestartRestorable } from "./types.js";
 
+/** Engine refused during a track boundary or stream rebuild — the
+ * window is one monitor tick (~20ms); a short defer makes it succeed. */
+function isBoundaryRetry(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes("boundary in flight") || msg.includes("rebuild in flight")
+    || msg.includes("during prefetch");
+}
+
 /** The item's source could not be expressed to the audio engine. */
 export class UnplayableSource extends Error {
   readonly _tag = "UnplayableSource" as const;
@@ -147,7 +155,13 @@ export class LocalRouteAdapter
 
   /** Seek under the lease's generation. */
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {
-    await this.client.seek(lease.generationId, positionMs);
+    try {
+      await this.client.seek(lease.generationId, positionMs);
+    } catch (e) {
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.seek(lease.generationId, positionMs);
+    }
   }
 
   /** Apply engine volume (the coordinator's mute lives above this). */
@@ -170,7 +184,16 @@ export class LocalRouteAdapter
       generationId: this.lastLoadGeneration,
     };
     if (item.track.replayGainDb !== undefined) params.replayGainDb = item.track.replayGainDb;
-    await this.client.prefetch(params);
+    try {
+      await this.client.prefetch(params);
+    } catch (e) {
+      // The engine refuses a prefetch during an un-adopted track boundary
+      // (~20ms) — retry once after the adoption tick rather than dropping
+      // the successor.
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.prefetch(params);
+    }
   }
 
   /** Idle teardown: silence whatever generation is loaded, keep the service warm. */

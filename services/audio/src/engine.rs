@@ -1405,19 +1405,7 @@ impl Engine {
         let new_caps: Arc<dyn DeviceCaps> = if self.cfg.null_sink {
             crate::sink::initial_caps(&self.cfg)?
         } else {
-            let caps = crate::sink::CpalCaps::new(name)?;
-            if !caps.has_supported_configs() {
-                // A busy `hw:` device answers supported_output_configs only
-                // while no stream holds the PCM — drop ours briefly and
-                // re-probe. A failed rebuild leaves sink=None, which the
-                // next spawn recovers.
-                if let Some(mut s) = self.sink.lock().unwrap().take() {
-                    s.stop();
-                }
-                crate::sink::CpalCaps::new(name)?
-            } else {
-                caps
-            }
+            crate::sink::CpalCaps::new(name)?
         };
         // Default negotiated for the new device; next spawn refines it.
         let neg = Negotiated {
@@ -1662,6 +1650,9 @@ impl Engine {
             st.queue_id = Some(p.queue_id.clone());
             st.source = Some(p.source.clone());
             st.replay_gain_db = p.replay_gain_db;
+            // A new generation obsoletes any un-adopted end — its event
+            // will be dropped as stale, so the flag would otherwise wedge.
+            self.core.lock().unwrap().ended_pending = false;
             // Unblock any producer still waiting on a previous feed.
             for (_, f) in st.feeds.drain() {
                 f.close();
@@ -1915,6 +1906,8 @@ impl Engine {
             let mut core = self.core.lock().unwrap();
             core.clear_all();
             core.paused = true;
+            // The stopped event supersedes the un-adopted end.
+            core.ended_pending = false;
         }
         {
             let mut st = self.state.lock().unwrap();
@@ -2117,17 +2110,17 @@ impl Engine {
         if let Some(h) = self.prefetch_producer.lock().unwrap().take() {
             drop(h);
         }
-        // Clear the control slot only when core and state agree on the
-        // current track — while a promotion is un-adopted, the monitor
-        // still needs the slot's source/ReplayGain to finish adopting it.
+        // Clear the control slot except while a promotion is un-adopted —
+        // the monitor still needs its source/ReplayGain to adopt. For a
+        // pending END clearing is correct: the monitor takes the slot for
+        // the boundary reopen, and cancel means "no reopen".
         let core = self.core.lock().unwrap();
         let mut st = self.state.lock().unwrap();
-        let torn = core.ended_pending
-            || core
-                .active
-                .as_ref()
-                .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
-        if !torn {
+        let promotion_pending = core
+            .active
+            .as_ref()
+            .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
+        if !promotion_pending {
             st.prefetch = None;
             st.reported_prefetch_ready = false;
         }
