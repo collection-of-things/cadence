@@ -212,13 +212,16 @@ def main():
         results["gap_bounded"] = gap_ms < 2000
 
     # The recorder was attached before A played — nothing justifies
-    # missing content, so the checks demand effectively full coverage
-    # (0.999 tolerates a single boundary frame at the stream edge).
+    # missing content. Bound by frame count, not percent: each check
+    # allows at most ~2 boundary frames at the stream edge.
+    def frame_cov(ref):
+        return 1.0 - 2.5 / max(1, len(ref) // ch)
     ok_a, _ = compare(
-        "cadence", a_region, ref_a, ch, "track A vs ffmpeg", min_cov=0.999)
+        "cadence", a_region, ref_a, ch, "track A vs ffmpeg",
+        min_cov=frame_cov(ref_a))
     ok_b, _ = (
         compare("cadence", cap[b_start:], ref_b, ch, "track B vs ffmpeg",
-                min_cov=0.999)
+                min_cov=frame_cov(ref_b))
         if b_start >= 0 else (False, 0)
     )
     results["a_tail_intact"] = ok_a
