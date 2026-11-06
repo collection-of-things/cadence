@@ -478,9 +478,18 @@ export class Coordinator {
         ...this.queue,
         currentIndex: endedIdx,
       });
-      return nextIdx !== null && nextIdx >= 0 && nextIdx < this.queue.items.length
-        ? this.startItem(nextIdx, opts)
-        : Promise.resolve();
+      if (nextIdx === null) {
+        // The ended item has no successor NOW — same teardown as the
+        // event-time no-successor path; the lease dies with the output.
+        this.status = "stopped";
+        this.lease = null;
+        this.activeAdapter = null;
+        this.positionMs = 0;
+        this.emitSnapshot();
+        this.persistSoon();
+        return Promise.resolve();
+      }
+      return this.startItem(nextIdx, opts);
     });
   }
 

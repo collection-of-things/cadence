@@ -589,3 +589,49 @@ describe("model finding: timed advance target is settled at run time", () => {
     done();
   });
 });
+
+describe("model finding: no successor when the advance link runs", () => {
+  it("removing the queued advance's target stops the session", async () => {
+    vi.useFakeTimers();
+    const { coordinator, local, done } = rig((a) => {
+      a.failPrefetch = new Error("no prefetch"); // immediate chain path
+    });
+    const microFlush = async () => {
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+    await coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b")],
+      startIndex: 0,
+      autoplay: true,
+    });
+    await microFlush();
+    const qa = coordinator.getQueue().items[0]!.queueId;
+    const qb = coordinator.getQueue().items[1]!.queueId;
+
+    // Wedge the chain, queue the remove BEFORE the ended's advance link,
+    // then let the wedge time out. The link must find no successor and
+    // stop — not keep reporting "playing" over a dead engine.
+    const wedged = new Promise<void>(() => {});
+    let wedgedOnce = false;
+    const origSetVolume = local.setVolume.bind(local);
+    local.setVolume = (v: number) => {
+      if (!wedgedOnce) {
+        wedgedOnce = true;
+        return wedged;
+      }
+      return origSetVolume(v);
+    };
+    void coordinator.handleCommand({ kind: "setVolume", volume: 0.5 });
+    void coordinator.handleCommand({ kind: "remove", queueIds: [qb] });
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, queueId: qa });
+    await microFlush();
+    await vi.advanceTimersByTimeAsync(11_000);
+    await microFlush();
+
+    const snap = coordinator.getSnapshot();
+    expect(snap.status).toBe("stopped");
+    expect(snap.lease).toBeNull();
+    done();
+  });
+});

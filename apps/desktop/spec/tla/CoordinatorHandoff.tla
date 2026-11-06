@@ -159,13 +159,17 @@ BeginStart ==
                 \/ \E i \in DOMAIN Tail(startQueue) : Tail(startQueue)[i].advance IN
         /\ startQueue' = Tail(startQueue)
         /\ IF target = 0
-             THEN \* nothing to advance (ended item has no successor) —
-                  \* the link resolves without touching promotion state
+             THEN \* the ended item has no successor when the link runs —
+                  \* the session stops; the lease dies with the output
+                  \* (same teardown as the event-time no-successor path)
+                  /\ status' = "stopped"
+                  /\ lease' = NoLease
+                  /\ active' = "none"
                   /\ si' = si
                   /\ advanceDue' = dueLeft
-                  /\ UNCHANGED <<generation, lease, status, currentIndex,
-                                 active, sounding, pendingPrefetch, armedGen,
-                                 armedQid, inFlight, handledEnded,
+                  /\ UNCHANGED <<generation, currentIndex, sounding,
+                                 pendingPrefetch, armedGen, armedQid,
+                                 inFlight, handledEnded,
                                  stoppedBad, staleStomp, movedAdvance>>
              ELSE IF /\ AdvanceGuarded /\ staleLink
                     THEN \* stale advance link: the lease no longer names
