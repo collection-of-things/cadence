@@ -948,13 +948,29 @@ impl Sink for PipeWireSink {
 
     fn request_drain(&self) -> Option<u64> {
         // flush(drain=true) → the `drained` event fires once the
-        // downstream queue has played out. The baseline is the event
-        // counter BEFORE the flush: any later event is this request's
-        // completion (or a superset of it — a drained stream is
-        // drained regardless of which request prompted it).
-        let baseline = self.drained_seq.load(Ordering::Acquire);
-        let _g = self.tl.lock();
-        self.stream.flush(true).ok().map(|_| baseline)
+        // downstream queue has played out. Stale events are the trap:
+        // an earlier drain's `drained` can be posted-but-undispatched
+        // (it can't dispatch while we hold tl) and would otherwise be
+        // misattributed to THIS request. So settle: flush under the
+        // lock, then yield to the loop and re-baseline until the
+        // counter is quiet across a yield. A REAL completion can't
+        // land inside this window — the queued tail is tens of ms of
+        // audio — so every event seen here is provably stale and gets
+        // folded into the baseline.
+        {
+            let _g = self.tl.lock();
+            self.stream.flush(true).ok()?;
+        }
+        let mut base = self.drained_seq.load(Ordering::Acquire);
+        for _ in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let cur = self.drained_seq.load(Ordering::Acquire);
+            if cur == base {
+                return Some(base);
+            }
+            base = cur; // stale event consumed — re-baseline
+        }
+        Some(base)
     }
 
     fn drained_since(&self, baseline: u64) -> bool {

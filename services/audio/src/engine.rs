@@ -2725,15 +2725,16 @@ impl Engine {
         // out — queued because a fast user load can END a successor
         // before the predecessor's drain finishes; each entry carries
         // its own rate-scaled deadline.
-        // (queue_id, instance, parked_at, deadline_ms, drain baseline
-        //  — Some(n) once a drain was requested; completion = a drained
-        //  event newer than n, keyed per-request)
+        // (queue_id, instance, parked_at, deadline_ms, drain token —
+        //  Some((baseline, sink_gen)) once a drain was requested;
+        //  completion = a drained event newer than baseline on the
+        //  same sink generation)
         let mut pending_ends: std::collections::VecDeque<(
             String,
             u64,
             std::time::Instant,
             u64,
-            Option<u64>,
+            Option<(u64, u64)>,
         )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
@@ -2885,11 +2886,17 @@ impl Engine {
                         && st.current_instance == inst
                 };
                 if !owned {
-                    let Some(base) = issued else {
+                    let Some((base, gen)) = issued else {
                         // Never touched the sink — drop outright.
                         self.handle_track_end(qid, inst);
                         continue;
                     };
+                    // The drain belongs to the sink that issued it —
+                    // a rebuild since then means that stream is gone;
+                    // nothing to wait for or reactivate.
+                    if self.sink_gen.load(Ordering::Acquire) != gen {
+                        continue;
+                    }
                     // Its drain IS in flight on the reused stream: when
                     // it lands, the stream deactivates — so wait for a
                     // drain event newer than THIS request's baseline,
@@ -2957,7 +2964,10 @@ impl Engine {
                                     == Some(qid.as_str())
                                     && st.current_instance == inst;
                                 if owned {
-                                    s.request_drain()
+                                    s.request_drain().map(|b| {
+                                        (b, self.sink_gen
+                                            .load(Ordering::Acquire))
+                                    })
                                 } else {
                                     None
                                 }
@@ -2985,7 +2995,13 @@ impl Engine {
                                 }
                             }
                         }
-                        Some(s) if s.drained_since(issued.unwrap()) => {
+                        Some(s) if issued
+                            .map(|(b, g)| {
+                                g == self.sink_gen.load(Ordering::Acquire)
+                                    && s.drained_since(b)
+                            })
+                            .unwrap_or(false) =>
+                        {
                             Gate::Drained
                         }
                         Some(_) => Gate::Playing,
