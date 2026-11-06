@@ -1441,9 +1441,16 @@ impl Engine {
     fn set_device_inner(&self, name: Option<&str>, owner_gen: Option<u64>) -> Result<Value> {
         // Don't probe or commit anything while a boundary is un-adopted —
         // the guarded rebuild would bail anyway and leave mixed state.
-        // Lock order: sink BEFORE core — shutdown holds `sink` while
-        // joining the feeder (which needs `core`), so a core→sink edge
-        // deadlocks. The staged read races a publish by ≤1 chunk.
+        // Read position before staged — a publish landing between the
+        // two reads inflates staged → over-subtract → repeat ≤1 chunk,
+        // the safe direction. Locks never nest (see audible_position_ms).
+        let (pos_pre, rate_pre) = {
+            let core = self.core.lock().unwrap();
+            (
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
+            )
+        };
         let staged = self
             .sink
             .lock()
@@ -1468,11 +1475,7 @@ impl Engine {
                 bail!("track boundary in flight — retry device change");
             }
             (
-                {
-                    let rate = core.negotiated.rate.max(1) as u64;
-                    core.position_ms()
-                        .saturating_sub(staged * 1000 / rate)
-                },
+                pos_pre.saturating_sub(staged * 1000 / rate_pre),
                 Some((core.boundary_seq, st.generation)),
             )
         };
@@ -1549,11 +1552,19 @@ impl Engine {
     /// skips the staged tail (read BEFORE any flush: the staged value
     /// disappears with the ring).
     fn audible_position_ms(&self) -> u64 {
-        // Lock order: sink FIRST — shutdown holds `sink` while stopping
-        // (and joining the feeder); a core→sink edge deadlocks against
-        // it. Sink alone doesn't need `core`, so take it, drop it, then
-        // take core. A publish between the two reads under-subtracts at
-        // most one chunk — bounded, never a stall.
+        // Position first, then staged — a publish landing between the
+        // two reads makes staged *larger* than the snapshot warranted:
+        // over-subtract → the respawn REPEATS up to one chunk. The
+        // other order skips it — repeats are the safe failure direction.
+        // Neither lock is held across the other (shutdown holds `sink`
+        // while joining the feeder — a core→sink edge deadlocks).
+        let (pull, rate) = {
+            let core = self.core.lock().unwrap();
+            (
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
+            )
+        };
         let staged = self
             .sink
             .lock()
@@ -1561,9 +1572,6 @@ impl Engine {
             .as_ref()
             .map(|s| s.staged_frames())
             .unwrap_or(0);
-        let core = self.core.lock().unwrap();
-        let pull = core.position_ms();
-        let rate = core.negotiated.rate.max(1) as u64;
         pull.saturating_sub(staged * 1000 / rate)
     }
 

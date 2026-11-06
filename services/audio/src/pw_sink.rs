@@ -421,6 +421,10 @@ struct Feed<T> {
     /// is_dead() watchdog uses it to detect a stream that reaches
     /// Paused but never runs.
     last_process_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Distinct from last_process_ms (which is reseeded at negotiation
+    /// end): set only by an actual process callback — the watchdog's
+    /// "never scheduled" arm keys on this.
+    processed_once: Arc<AtomicBool>,
     t0: std::time::Instant,
 }
 
@@ -458,11 +462,12 @@ impl PipeWireCaps {
         let latency = 2048u32;
         let capacity = (neg.rate as usize * neg.channels as usize / 8)
             .max(4 * latency as usize * neg.channels.max(1) as usize);
-        let (paused, last_process_ms) = {
+        let (paused, last_process_ms, processed_once) = {
             let c = core.lock().unwrap_or_else(|p| p.into_inner());
             (
                 Arc::clone(&c.paused_flag),
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                Arc::new(AtomicBool::new(false)),
             )
         };
         let t0 = std::time::Instant::now();
@@ -565,6 +570,7 @@ impl PipeWireCaps {
                     channels: neg.channels as usize,
                     paused: paused.clone(),
                     last_process_ms: Arc::clone(&last_process_ms),
+                    processed_once: Arc::clone(&processed_once),
                     t0,
                 })
                 .process(|stream, feed| fill::<T>(stream, feed))
@@ -651,6 +657,7 @@ impl PipeWireCaps {
         // Anchor the watchdog grace at negotiation END — the decisive
         // wait itself can consume ~2s of it otherwise.
         last_process_ms.store(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+        let paused_flag = paused.load(Ordering::Relaxed);
         Ok(Box::new(PipeWireSink {
             _state_listener: Box::new(state_listener),
             _process_listener: Box::new(process_listener),
@@ -663,10 +670,12 @@ impl PipeWireCaps {
             suppress,
             paused,
             last_process_ms,
+            processed_once,
             t0,
             staged,
             error: Arc::clone(&self.error),
             state,
+            wd_paused: AtomicBool::new(paused_flag),
         }))
     }
 }
@@ -677,6 +686,7 @@ impl PipeWireCaps {
 fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
     feed.last_process_ms
         .store(feed.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+    feed.processed_once.store(true, Ordering::Relaxed);
     // Paused: silence WITHOUT draining — the pre-pause tail stays queued
     // so resume picks up exactly where playback stopped.
     if feed.paused.load(Ordering::Acquire) {
@@ -784,6 +794,14 @@ pub struct PipeWireSink {
     /// Stream state shared with the state listener — the watchdog only
     /// flags a stopped stream if the graph thinks it should be running.
     state: Arc<std::sync::atomic::AtomicU8>,
+    /// True only once a real process callback ran — the negotiation-end
+    /// reseed of last_process_ms can't distinguish never-scheduled from
+    /// scheduled-then-stalled; this can.
+    processed_once: Arc<AtomicBool>,
+    /// Pause state seen by the last is_dead() call — a transition
+    /// reseeds the grace window so a resume can't false-trip on a
+    /// timestamp that went stale DURING the pause.
+    wd_paused: AtomicBool,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -808,23 +826,30 @@ impl Sink for PipeWireSink {
         if self.dead.load(Ordering::Relaxed) {
             return true;
         }
-        // Watchdog: a stream that never processed while unpaused for
-        // 2.5s sits forever at Paused — the graph has nothing to link
-        // it to. That's a real failure, just not an explicit one —
-        // write the error cell so the monitor's device_error poll sees
-        // it (the dead flag alone only matters at the next open).
-        if self.paused.load(Ordering::Relaxed) {
+        // Watchdog: write the error cell on trip so the monitor's
+        // device_error poll sees it (the dead flag alone only matters
+        // at the next open).
+        let paused_now = self.paused.load(Ordering::Relaxed);
+        let now = self.t0.elapsed().as_millis() as u64;
+        if self.wd_paused.swap(paused_now, Ordering::Relaxed) != paused_now {
+            // A pause/resume transition just happened — timestamps that
+            // went stale during the pause must not trip the watchdog;
+            // reseed the grace window at the transition.
+            self.last_process_ms.store(now, Ordering::Relaxed);
+        }
+        if paused_now {
             return false;
         }
         let last = self.last_process_ms.load(Ordering::Relaxed);
-        let now = self.t0.elapsed().as_millis() as u64;
-        // Never-processed while expected to run: an unlinked stream sits
-        // at Paused forever — the graph has nothing to drive it.
-        // A stopped-mid-playback stream reports Streaming but stops
-        // calling process(). A merely suspended stream sits at Paused
-        // with last>0 — PipeWire resumes it; that's not dead.
+        // Arms:
+        //  - never scheduled: no process callback at all while expected
+        //    to run (unlinked streams sit at Paused forever);
+        //  - stopped mid-playback: graph still reports Streaming but
+        //    callbacks stopped >2.5s ago. A merely suspended stream sits
+        //    at Paused with processed_once set — PipeWire resumes it.
         let state = self.state.load(Ordering::Acquire);
-        let stale = (last == 0 || (state == 3 && now - last > 2500)) && now > 2500;
+        let never = !self.processed_once.load(Ordering::Relaxed);
+        let stale = (never || (state == 3 && now - last > 2500)) && now > 2500;
         if stale {
             if let Ok(mut cell) = self.error.lock() {
                 *cell = Some("stream never scheduled (no process callbacks)".into());

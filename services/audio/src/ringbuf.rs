@@ -2,12 +2,56 @@
 //!
 //! The decode/producer side pushes interleaved samples; the output callback
 //! pops them. All operations on the hot path are non-allocating and lock-free.
+//!
+//! Every slot is an atomic word: a `clear()` racing a consumer's in-flight
+//! copy lets a wrapping producer reuse the cleared region, and per-word
+//! relaxed load/stores keep that overlap within defined behaviour — the
+//! post-copy fence check then discards the stale slice entirely.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-struct Shared<T> {
-    buf: Vec<T>,
+/// Sample types storable in a ring slot (one 32-bit word each).
+pub trait RingWord: Copy {
+    fn to_word(self) -> u32;
+    fn from_word(w: u32) -> Self;
+}
+
+impl RingWord for i32 {
+    fn to_word(self) -> u32 {
+        self as u32
+    }
+    fn from_word(w: u32) -> Self {
+        w as i32
+    }
+}
+impl RingWord for u32 {
+    fn to_word(self) -> u32 {
+        self
+    }
+    fn from_word(w: u32) -> Self {
+        w
+    }
+}
+impl RingWord for i16 {
+    fn to_word(self) -> u32 {
+        self as u16 as u32
+    }
+    fn from_word(w: u32) -> Self {
+        w as u16 as i16
+    }
+}
+impl RingWord for f32 {
+    fn to_word(self) -> u32 {
+        self.to_bits()
+    }
+    fn from_word(w: u32) -> Self {
+        f32::from_bits(w)
+    }
+}
+
+struct Shared {
+    buf: Vec<AtomicU32>,
     cap: usize,
     head: AtomicUsize, // read index
     tail: AtomicUsize, // write index
@@ -22,28 +66,36 @@ struct Shared<T> {
 }
 
 pub struct Producer<T> {
-    s: Arc<Shared<T>>,
+    s: Arc<Shared>,
+    _t: std::marker::PhantomData<T>,
 }
 
 impl<T> Clone for Producer<T> {
     fn clone(&self) -> Self {
-        Producer { s: Arc::clone(&self.s) }
+        Producer {
+            s: Arc::clone(&self.s),
+            _t: std::marker::PhantomData,
+        }
     }
 }
 
 pub struct Consumer<T> {
-    s: Arc<Shared<T>>,
+    s: Arc<Shared>,
+    _t: std::marker::PhantomData<T>,
 }
 
 impl<T> Clone for Consumer<T> {
     fn clone(&self) -> Self {
-        Consumer { s: Arc::clone(&self.s) }
+        Consumer {
+            s: Arc::clone(&self.s),
+            _t: std::marker::PhantomData,
+        }
     }
 }
 
-pub fn channel<T: Copy + Default>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+pub fn channel<T: RingWord>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let s = Arc::new(Shared {
-        buf: vec![T::default(); capacity],
+        buf: (0..capacity).map(|_| AtomicU32::new(0)).collect(),
         cap: capacity,
         head: AtomicUsize::new(0),
         tail: AtomicUsize::new(0),
@@ -51,10 +103,19 @@ pub fn channel<T: Copy + Default>(capacity: usize) -> (Producer<T>, Consumer<T>)
         done: AtomicBool::new(false),
         abort: AtomicBool::new(false),
     });
-    (Producer { s: s.clone() }, Consumer { s })
+    (
+        Producer {
+            s: s.clone(),
+            _t: std::marker::PhantomData,
+        },
+        Consumer {
+            s,
+            _t: std::marker::PhantomData,
+        },
+    )
 }
 
-impl<T: Copy + Default> Producer<T> {
+impl<T: RingWord> Producer<T> {
     /// Free slots writable without overwriting unread data.
     pub fn free_space(&self) -> usize {
         let head = self.s.head.load(Ordering::Acquire);
@@ -80,12 +141,11 @@ impl<T: Copy + Default> Producer<T> {
             - 1;
         let n = data.len().min(free);
         for i in 0..n {
-            let idx = (tail + i) % self.s.cap;
-            // Safety of mutation: producer is the only writer for slots < tail.
-            unsafe {
-                let p = self.s.buf.as_ptr() as *mut T;
-                p.add(idx).write(data[i]);
-            }
+            // Per-word atomic store: a just-cleared slot may still be
+            // inside a consumer's in-flight copy — the word-level write
+            // is defined behaviour; the consumer's post-copy fence check
+            // discards the slice.
+            self.s.buf[(tail + i) % self.s.cap].store(data[i].to_word(), Ordering::Relaxed);
         }
         self.s.tail.store(tail + n, Ordering::Release);
         n
@@ -131,7 +191,7 @@ impl<T: Copy + Default> Producer<T> {
     }
 }
 
-impl<T: Copy + Default> Consumer<T> {
+impl<T: RingWord> Consumer<T> {
     /// Non-blocking read; returns elements read.
     pub fn read(&self, out: &mut [T]) -> usize {
         let tail = self.s.tail.load(Ordering::Acquire);
@@ -142,12 +202,12 @@ impl<T: Copy + Default> Consumer<T> {
         let start = head.max(fence);
         let n = out.len().min(tail.saturating_sub(start));
         for i in 0..n {
-            out[i] = self.s.buf[(start + i) % self.s.cap];
+            out[i] = T::from_word(self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed));
         }
         self.s.head.store(start + n, Ordering::Release);
         // A clear() landing mid-copy means what we just read was already
-        // stale (and possibly torn by a wrapping producer): report the
-        // head advance but give the caller nothing usable.
+        // stale (possibly torn by a wrapping producer): report the head
+        // advance but give the caller nothing usable.
         if self.s.fence.load(Ordering::Acquire) > start {
             return 0;
         }
@@ -179,7 +239,7 @@ impl<T: Copy + Default> Consumer<T> {
             }
         }
         for i in 0..n {
-            out[i] = self.s.buf[(start + i) % self.s.cap];
+            out[i] = T::from_word(self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed));
         }
         self.s.head.store(start + n, Ordering::Release);
         // See read(): a mid-copy clear makes this slice stale.
@@ -311,22 +371,36 @@ mod tests {
     }
 
     #[test]
+    fn clear_makes_inflight_read_stale() {
+        // A clear between the consumer's loads and its fence re-check
+        // must discard the whole slice — never served, never resurrected.
+        let (p, c) = channel::<i16>(16);
+        p.write(&[1, 2, 3, 4]);
+        p.clear();
+        p.write(&[9, 10]);
+        let mut out = [0i16; 8];
+        let n = c.read(&mut out);
+        assert_eq!(&out[..n], &[9, 10]);
+    }
+
+    #[test]
     fn concurrent_spsc() {
-        let (p, c) = channel::<u64>(1024);
-        let total = 1_000_000u64;
+        let (p, c) = channel::<u32>(1024);
+        let total = 1_000_000u32;
         let t = std::thread::spawn(move || {
-            let mut v = 0u64;
+            let mut v = 0u32;
             while v < total {
-                let chunk: Vec<u64> = (v..(v + 97).min(total)).collect();
+                let end = (v + 97).min(total);
+                let chunk: Vec<u32> = (v..end).collect();
                 if !p.write_all(&chunk) {
                     return;
                 }
-                v += chunk.len() as u64;
+                v = end;
             }
             p.finish();
         });
-        let mut seen = 0u64;
-        let mut buf = [0u64; 128];
+        let mut seen = 0u32;
+        let mut buf = [0u32; 128];
         loop {
             let n = c.read(&mut buf);
             for i in 0..n {

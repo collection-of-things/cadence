@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Sample type carried to a device — f32/s32/s16, little-endian on wire.
-pub trait PcmSample: Copy + Default + Send + Sync + 'static {
+pub trait PcmSample:
+    Copy + Default + Send + Sync + 'static + crate::ringbuf::RingWord
+{
     const BYTES: usize;
 }
 impl PcmSample for f32 {
