@@ -2891,19 +2891,19 @@ impl Engine {
                         self.handle_track_end(qid, inst);
                         continue;
                     };
-                    // The drain belongs to the sink that issued it —
-                    // a rebuild since then means that stream is gone;
-                    // nothing to wait for or reactivate.
-                    if self.sink_gen.load(Ordering::Acquire) != gen {
-                        continue;
-                    }
                     // Its drain IS in flight on the reused stream: when
                     // it lands, the stream deactivates — so wait for a
                     // drain event newer than THIS request's baseline,
                     // then reactivate (a completion can't satisfy a
-                    // later request by accident).
+                    // later request by accident). The generation check
+                    // runs INSIDE the sink lock — a rebuild installing a
+                    // replacement between check and access can't slip.
                     let done = {
                         let g = self.sink.lock().unwrap();
+                        if self.sink_gen.load(Ordering::Acquire) != gen {
+                            // The drain belonged to a dead sink — gone.
+                            true
+                        } else {
                         let d = g
                             .as_ref()
                             .map(|s| s.drained_since(base))
@@ -2918,6 +2918,7 @@ impl Engine {
                             true
                         } else {
                             false
+                        }
                         }
                     };
                     if done {

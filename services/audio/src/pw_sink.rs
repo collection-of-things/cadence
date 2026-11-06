@@ -947,34 +947,23 @@ impl Sink for PipeWireSink {
     }
 
     fn request_drain(&self) -> Option<u64> {
-        // flush(drain=true) → the `drained` event fires once the
-        // downstream queue has played out. Stale events are the trap:
-        // an earlier drain's `drained` can be posted-but-undispatched
-        // (it can't dispatch while we hold tl) and would otherwise be
-        // misattributed to THIS request. So settle: flush under the
-        // lock, then yield to the loop and re-baseline until the
-        // counter is quiet across a yield. A REAL completion can't
-        // land inside this window — the queued tail is tens of ms of
-        // audio — so every event seen here is provably stale and gets
-        // folded into the baseline.
-        {
-            let _g = self.tl.lock();
-            self.stream.flush(true).ok()?;
-        }
-        let mut base = self.drained_seq.load(Ordering::Acquire);
-        for _ in 0..8 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let cur = self.drained_seq.load(Ordering::Acquire);
-            if cur == base {
-                return Some(base);
-            }
-            base = cur; // stale event consumed — re-baseline
-        }
-        Some(base)
+        // flush(drain=true) under tl — a stale `drained` event can't
+        // dispatch while we hold the lock, and drained_since() ignores
+        // counter bumps that aren't accompanied by the stream leaving
+        // Streaming, so posted-but-undispatched events from earlier
+        // drains can never satisfy THIS request.
+        let _g = self.tl.lock();
+        self.stream.flush(true).ok()?;
+        Some(self.drained_seq.load(Ordering::Acquire))
     }
 
     fn drained_since(&self, baseline: u64) -> bool {
+        // Completion needs BOTH a newer drained event AND the stream
+        // deactivated (drain completion → set_active(false) → Paused).
+        // A stale event bumps the counter while our tail still plays —
+        // the stream is still Streaming then, so it can't pass.
         self.drained_seq.load(Ordering::Acquire) > baseline
+            && self.state.load(Ordering::Acquire) == 2 // Paused
     }
 
     fn resume(&self) {
