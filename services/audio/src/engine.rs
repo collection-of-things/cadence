@@ -2469,11 +2469,29 @@ impl Engine {
     }
 
     fn emit_position(&self) {
-        let (pos, dur, gen) = {
+        // Report the AUDIBLE position, not the pull position — the
+        // staging ring can hold ~170ms of audio the listener hasn't
+        // heard yet (mpv does the same with audio-pts). Read position
+        // before staged: a publish between inflates staged →
+        // over-subtract → repeat, the safe direction. Locks never nest.
+        let (pull, rate, dur, gen) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
-            (core.position_ms(), st.duration_ms, st.generation)
+            (
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
+                st.duration_ms,
+                st.generation,
+            )
         };
+        let staged = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.staged_frames())
+            .unwrap_or(0);
+        let pos = pull.saturating_sub(staged * 1000 / rate);
         self.emit(
             "event.position",
             json!({
@@ -2865,11 +2883,11 @@ impl Engine {
                 // The caps' error cell covers reported failures; the
                 // sink's dead flag covers silent ones (never-scheduled
                 // streams, dead callbacks) — both need a poll each tick.
-                let caps_err = self
-                    .caps
-                    .lock()
-                    .unwrap()
-                    .device_error();
+                // Poll is_dead FIRST: the watchdog writes the shared
+                // error cell on its first trip, and the caps read below
+                // picks that real message up in the SAME tick — one
+                // event with the true cause instead of a generic trip
+                // followed by a duplicate.
                 // Keyed by sink generation (not the Box address — the
                 // allocator can reuse it after a rebuild) — one report
                 // per installed sink. Placeholders don't report at all.
@@ -2886,6 +2904,11 @@ impl Engine {
                         None => (false, 0),
                     }
                 };
+                let caps_err = self
+                    .caps
+                    .lock()
+                    .unwrap()
+                    .device_error();
                 let sink_dead = if sink_dead && sink_dead_reported != Some(sink_key) {
                     true
                 } else {

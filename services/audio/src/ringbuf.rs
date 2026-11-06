@@ -73,9 +73,12 @@ struct Shared {
     done: AtomicBool,
     /// Consumer side dropped/aborted; producer should stop writing.
     abort: AtomicBool,
-    /// Test hook fired between the consumer's copy and its fence
-    /// re-check — lets a test land a clear()+write() inside the race
-    /// window deterministically.
+    /// Test hooks fired inside the consumer's race windows — after the
+    /// atomic reads (pre-copy) and between the copy and the fence
+    /// re-check (post-copy) — so tests land a clear()+write() inside the
+    /// interleavings deterministically.
+    #[cfg(test)]
+    pre_copy_hook: Option<Box<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     post_copy_hook: Option<Box<dyn Fn() + Send + Sync>>,
 }
@@ -109,12 +112,15 @@ impl<T> Clone for Consumer<T> {
 }
 
 pub fn channel<T: RingWord>(capacity: usize) -> (Producer<T>, Consumer<T>) {
-    channel_hooked(capacity, None)
+    channel_hooked(capacity, None, None)
 }
+
+type TestHook = Option<Box<dyn Fn() + Send + Sync>>;
 
 fn channel_hooked<T: RingWord>(
     capacity: usize,
-    #[cfg_attr(not(test), allow(unused_variables))] hook: Option<Box<dyn Fn() + Send + Sync>>,
+    #[cfg_attr(not(test), allow(unused_variables))] pre_hook: TestHook,
+    #[cfg_attr(not(test), allow(unused_variables))] post_hook: TestHook,
 ) -> (Producer<T>, Consumer<T>) {
     let s = Arc::new(Shared {
         buf: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
@@ -126,7 +132,9 @@ fn channel_hooked<T: RingWord>(
         done: AtomicBool::new(false),
         abort: AtomicBool::new(false),
         #[cfg(test)]
-        post_copy_hook: hook,
+        pre_copy_hook: pre_hook,
+        #[cfg(test)]
+        post_copy_hook: post_hook,
     });
     (
         Producer {
@@ -228,14 +236,22 @@ impl<T: RingWord> Producer<T> {
 impl<T: RingWord> Consumer<T> {
     /// Non-blocking read; returns elements read.
     pub fn read(&self, out: &mut [T]) -> usize {
-        let g0 = self.s.gen.load(Ordering::Relaxed);
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
         let fence = self.s.fence.load(Ordering::Acquire);
+        // Read the generation AFTER the Acquire fence load: if the fence
+        // shows a clear landed, the load sees the bumped generation —
+        // fresh post-clear slots can never be mis-tagged as torn. A
+        // clear landing after this point is caught per-slot instead.
+        let g0 = self.s.gen.load(Ordering::Relaxed);
         // start >= fence: a clear() that landed mid-read can never make
         // us serve discarded data; start >= head keeps head monotonic.
         let start = head.max(fence);
         let n = out.len().min(tail.saturating_sub(start));
+        #[cfg(test)]
+        if let Some(h) = &self.s.pre_copy_hook {
+            h();
+        }
         let mut torn = false;
         for i in 0..n {
             let slot = self.s.buf[(start + i) % self.s.cap].load(Ordering::Relaxed);
@@ -270,12 +286,17 @@ impl<T: RingWord> Consumer<T> {
         if frame <= 1 {
             return self.read(out);
         }
-        let g0 = self.s.gen.load(Ordering::Relaxed);
         let tail = self.s.tail.load(Ordering::Acquire);
         let head = self.s.head.load(Ordering::Relaxed);
         let fence = self.s.fence.load(Ordering::Acquire);
+        // See read(): generation after the Acquire fence load.
+        let g0 = self.s.gen.load(Ordering::Relaxed);
         let start = head.max(fence);
         let avail = tail.saturating_sub(start);
+        #[cfg(test)]
+        if let Some(h) = &self.s.pre_copy_hook {
+            h();
+        }
         let mut n = out.len().min(avail) / frame * frame;
         // End of stream: a trailing partial frame must still drain or
         // the track can never finish (is_drained would stick false).
@@ -447,7 +468,7 @@ mod tests {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        channel_hooked(cap, Some(Box::new(hook)))
+        channel_hooked(cap, None, Some(Box::new(hook)))
     }
 
     #[test]
@@ -499,6 +520,43 @@ mod tests {
         p.write(&[1, 2, 3, 4, 5, 6, 7]);
         let mut out = [0i16; 4];
         assert_eq!(c.read(&mut out), 0, "torn slice must be discarded");
+        let n = c.read(&mut out);
+        assert_eq!(&out[..n], &[9, 10]);
+    }
+
+    #[test]
+    fn clear_write_in_copy_window_does_not_lose_fresh() {
+        // F1 regression: a clear()+fresh-write lands INSIDE the read's
+        // atomic-read→copy window. The fresh slots enter the copy span
+        // with the NEW generation tag → torn → discarded — and the next
+        // read must serve the fresh data (not skip it past head).
+        let cell = Arc::new(std::sync::Mutex::new(None::<Producer<i16>>));
+        let once = Arc::new(AtomicBool::new(false));
+        let cell2 = Arc::clone(&cell);
+        let once2 = Arc::clone(&once);
+        let s_shared = {
+            // Need a pre_copy_hook — build via channel_hooked directly.
+            let (p, c) = channel_hooked::<i16>(
+                8,
+                Some(Box::new(move || {
+                    if once2.swap(true, Ordering::Relaxed) {
+                        return;
+                    }
+                    let g = cell2.lock().unwrap();
+                    if let Some(p) = g.as_ref() {
+                        p.clear();
+                        p.write(&[9, 10]);
+                    }
+                })),
+                None,
+            );
+            *cell.lock().unwrap() = Some(p.clone());
+            (p, c)
+        };
+        let (p, c) = s_shared;
+        p.write(&[1, 2, 3, 4]);
+        let mut out = [0i16; 4];
+        assert_eq!(c.read(&mut out), 0, "mid-read clear must discard");
         let n = c.read(&mut out);
         assert_eq!(&out[..n], &[9, 10]);
     }
