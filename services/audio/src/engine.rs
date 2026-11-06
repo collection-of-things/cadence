@@ -1648,6 +1648,18 @@ impl Engine {
     /// format-mismatched successor stays armed for the boundary reopen;
     /// only a probe failure refuses to claim readiness.
     fn respawn_prefetch(&self, qid: String, src: SourceSpec, rg: Option<f64>) {
+        // The armed successor may already be promoted pull-side — its
+        // adoption lags the boundary, and installing it as `next` would
+        // drop as stale. Respawn it as the ACTIVE track instead.
+        let promoted = {
+            let core = self.core.lock().unwrap();
+            core.active.as_ref().is_some_and(|r| r.queue_id == qid)
+        };
+        if promoted {
+            let pos = self.core.lock().unwrap().position_ms();
+            self.respawn_pipelines(pos);
+            return;
+        }
         // Retire the armed reader only while the slot still describes THIS
         // successor — a boundary or a newer prefetch may have claimed it
         // since the caller's snapshot.
