@@ -410,7 +410,7 @@ def zero_runs(body, ref, ch, min_frames=8):
     return [r for r in runs if r >= min_frames]
 
 
-def compare(name, cap, ref, ch, label):
+def compare(name, cap, ref, ch, label, min_cov=0.85):
     """Null-test cap (raw f32 capture) against ref (f32): find ref's
     position inside cap by cross-correlating a midsection (the recorder
     attaches mid-playback — the file head may not be in the capture),
@@ -497,7 +497,7 @@ def compare(name, cap, ref, ch, label):
     # deflate it either.
     ref_extent = max(1, int(ref_nz0[-1]) + 1 - int(ref_nz0[0])) if len(ref_nz0) else len(ref)
     coverage = (nz[-1] + 1 - start) / ref_extent
-    cov_ok = coverage >= 0.85
+    cov_ok = coverage >= min_cov
     print(
         f"  {label}: max|res|={mx:.3e} rms={db:.1f} dBFS "
         f"bitexact={exact} ok={ok} zero-runs(>=8f)={len(zr)}"

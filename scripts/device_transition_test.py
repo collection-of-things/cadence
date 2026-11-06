@@ -153,6 +153,18 @@ def main():
         finally:
             if rec.proc.poll() is None:
                 rec.stop()
+        # Assert B's stream: the same node id as A's proves the
+        # sink-reuse path this test exists for — a rebuilt node would
+        # mean the drain→reuse contract wasn't exercised at all.
+        try:
+            b_node, _, _, _ = app_stream_info(
+                cap_proc.pid, expect_name="cadence-audio")
+            results["sink_reused"] = b_node == cad_node
+            print(f"[transition] A node={cad_node} B node={b_node} "
+                  f"reused={results['sink_reused']}")
+        except Exception as e:
+            results["sink_reused"] = False
+            print(f"  no B stream node: {e}")
         # A failed drain → watchdog trip → event.error. Any error
         # event fails this test.
         errs = [e for e in evr.events
@@ -199,9 +211,14 @@ def main():
         # under 2s even on a slow graph.
         results["gap_bounded"] = gap_ms < 2000
 
-    ok_a, _ = compare("cadence", a_region, ref_a, ch, "track A vs ffmpeg")
+    # The recorder was attached before A played — nothing justifies
+    # missing content, so the checks demand effectively full coverage
+    # (0.999 tolerates a single boundary frame at the stream edge).
+    ok_a, _ = compare(
+        "cadence", a_region, ref_a, ch, "track A vs ffmpeg", min_cov=0.999)
     ok_b, _ = (
-        compare("cadence", cap[b_start:], ref_b, ch, "track B vs ffmpeg")
+        compare("cadence", cap[b_start:], ref_b, ch, "track B vs ffmpeg",
+                min_cov=0.999)
         if b_start >= 0 else (False, 0)
     )
     results["a_tail_intact"] = ok_a
