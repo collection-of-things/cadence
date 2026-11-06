@@ -226,7 +226,7 @@ impl OutputCore {
     /// blocking I/O — safe to call on the device callback thread. Zero-fills
     /// on underrun/pause.
     pub fn pull_f32(&mut self, out: &mut [f32]) {
-        if self.paused {
+        if self.paused || self.rebuilding {
             out.fill(0.0);
             return;
         }
@@ -289,7 +289,7 @@ impl OutputCore {
 
     /// Fill `out` with s32 output samples (fidelity-bypass streams).
     pub fn pull_s32(&mut self, out: &mut [i32]) {
-        if self.paused {
+        if self.paused || self.rebuilding {
             out.fill(0);
             return;
         }
@@ -1445,7 +1445,15 @@ impl Engine {
         };
         // Rebuild under the new caps BEFORE committing them — a rejected
         // rebuild leaves the old device caps and stream intact.
-        self.rebuild_stream(&neg, expected, Some(new_caps.clone()))?;
+        if let Err(e) = self.rebuild_stream(&neg, expected, Some(new_caps.clone())) {
+            // Guard rejections leave the sink alive; only an actual open
+            // failure leaves playback with no output — mark it honestly.
+            if self.sink.lock().unwrap().is_none() {
+                self.set_state(PlayState::Error);
+                self.emit_state(Some(&format!("{e:#}")));
+            }
+            return Err(e);
+        }
         *self.caps.lock().unwrap() = new_caps;
         // New device: the cached native-open failure belongs to the old one.
         self.state.lock().unwrap().native_failed = None;
@@ -2363,9 +2371,12 @@ impl Engine {
                                     let mut st = self.state.lock().unwrap();
                                     let stale = st.generation != gen
                                         || st.queue_id.is_some()
-                                        // a stop()/pause mid-reopen must
-                                        // not be overridden back to Playing
-                                        || st.state != PlayState::Playing
+                                        // a stop() mid-reopen must not be
+                                        // overridden back to Playing —
+                                        // but a pause keeps the reader,
+                                        // installed paused below
+                                        || (st.state != PlayState::Playing
+                                            && st.state != PlayState::Paused)
                                         || core.rebuilding
                                         || core.negotiated != reader.neg;
                                     if stale {
@@ -2376,15 +2387,20 @@ impl Engine {
                                         let _ = handle;
                                         continue;
                                     }
+                                    let paused = st.state == PlayState::Paused;
                                     core.set_active(reader);
-                                    core.paused = false;
+                                    core.paused = paused;
                                     st.current_instance = reopen_instance;
                                     st.queue_id = Some(pf.queue_id.clone());
                                     st.source = Some(pf.source);
                                     st.replay_gain_db = pf.replay_gain_db;
                                     st.duration_ms = dur;
                                     st.fidelity_bypass = bypass;
-                                    st.state = PlayState::Playing;
+                                    st.state = if paused {
+                                        PlayState::Paused
+                                    } else {
+                                        PlayState::Playing
+                                    };
                                     drop(st);
                                     drop(core);
                                     *self.producer.lock().unwrap() = Some(handle);
