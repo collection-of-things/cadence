@@ -2935,13 +2935,17 @@ impl Engine {
                         Some(s) if s.staged_frames() > 0 => Gate::Playing,
                         Some(s) if issued.is_none() => {
                             // Hold `state` THROUGH the flush: a load's
-                            // queue_id/instance mutation can't interleave
-                            // between our ownership check and the drain.
+                            // queue_id/instance mutation AND a pause
+                            // can't interleave between our checks and
+                            // the drain (a paused drain would play the
+                            // queued tail audibly — Paused here retries
+                            // next tick).
                             let issued_b = {
                                 let st = self.state.lock().unwrap();
                                 let owned = st.queue_id.as_deref()
                                     == Some(qid.as_str())
-                                    && st.current_instance == inst;
+                                    && st.current_instance == inst
+                                    && st.state != PlayState::Paused;
                                 if owned {
                                     s.request_drain().map(|b| {
                                         (b, self.sink_gen
@@ -2957,16 +2961,21 @@ impl Engine {
                                     Gate::DrainIssued
                                 }
                                 None => {
-                                    // Lost ownership OR the backend
-                                    // can't drain — the next tick's
-                                    // stale check sorts out which.
-                                    let owned2 = {
+                                    // Lost ownership OR paused OR the
+                                    // backend can't drain — sort out
+                                    // which (paused retries next tick).
+                                    let (owned2, paused2) = {
                                         let st = self.state.lock().unwrap();
-                                        st.queue_id.as_deref()
-                                            == Some(qid.as_str())
-                                            && st.current_instance == inst
+                                        (
+                                            st.queue_id.as_deref()
+                                                == Some(qid.as_str())
+                                                && st.current_instance == inst,
+                                            st.state == PlayState::Paused,
+                                        )
                                     };
-                                    if owned2 {
+                                    if paused2 {
+                                        Gate::Paused
+                                    } else if owned2 {
                                         Gate::DrainUnsupported
                                     } else {
                                         Gate::Playing
