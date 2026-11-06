@@ -44,6 +44,9 @@ interface SidebarProps {
 
 export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
   const platform = useUi((s) => s.platform);
+  const capabilities = useUi((s) => s.capabilities);
+  const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
+  const needsAppleSignIn = platform === 'apple' && appleCap !== undefined && appleCap.state !== 'ready';
   const [compact, setCompact] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 690px)').matches);
 
   useEffect(() => {
@@ -133,6 +136,16 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
         )}
       </nav>
 
+      {needsAppleSignIn && !collapsed && (
+        <button className="sidebar-signin" onClick={() => session.signInRoute('apple-musickit')}>
+          Sign in to Apple Music
+        </button>
+      )}
+      {needsAppleSignIn && collapsed && (
+        <button className="sidebar-signin sidebar-signin-icon" aria-label="Sign in to Apple Music" title="Sign in to Apple Music" onClick={() => session.signInRoute('apple-musickit')}>
+          <Glyph name="apple" size={16} />
+        </button>
+      )}
       {!collapsed && (
         <div className="sidebar-footer">
           <span className="sidebar-live-dot" />

@@ -514,7 +514,14 @@ export class AppleMusicCatalog {
     const r = res.data?.[0];
     if (!r) throw new CatalogError(`${collection.slice(0, -1)} ${id} not found`, false);
     const a = r.attributes ?? {};
-    const tracks = entriesOf(r.relationships?.tracks?.data).filter(
+    // Library playlist details don't embed tracks — they live on /tracks.
+    // Albums (catalog or library) do embed them in relationships.tracks.
+    let trackResources = r.relationships?.tracks?.data;
+    if (library && collection === "playlists" && !trackResources?.length) {
+      const t = (await this.amp(`${path}/tracks`, { limit: "100" })) as { data?: AmResource[] };
+      trackResources = t.data ?? [];
+    }
+    const tracks = entriesOf(trackResources).filter(
       (e): e is Extract<CatalogEntry, { kind: "song" }> => e.kind === "song",
     );
     const aw = artwork(a.artwork);

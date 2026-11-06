@@ -112,9 +112,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     if (spec.type === 'station') return { station: spec.id };
     if (spec.type === 'album') return { album: spec.id };
     if (spec.type === 'playlist') return { playlist: spec.id };
-    if (spec.type === 'library-song') {
-      return { items: [{ id: spec.id, type: 'song', isLibrary: true }] };
-    }
+    // Library ids resolve through the plain {song:id} form — the {items:[…]}
+    // form returns mk-007 NOT_FOUND for library-songs on current MusicKit.
     return { song: spec.id };
   }
 
