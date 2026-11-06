@@ -857,10 +857,15 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
-        // A completed silence cycle proves the prior real buffer was
-        // consumed — only now is the held pull stale. Clearing before
-        // this point could drop still-queued unheard frames.
-        feed.inflight.store(0, Ordering::Release);
+        // The driver queue is FIFO: each completed silence cycle means
+        // that many frames of the held pull have gone out. Track the
+        // consumption — clearing only after the buffer drops, and only
+        // by what this cycle proves was consumed.
+        let consumed = (size / stride) as u64;
+        drop(buffer);
+        let cur = feed.inflight.load(Ordering::Acquire);
+        feed.inflight
+            .store(cur.saturating_sub(consumed), Ordering::Release);
         return;
     }
     let Some(mut buffer) = stream.dequeue_buffer() else {
