@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { AppleMusicKitAdapter } from "../src/adapters/providers/apple-musickit.js";
+import { ProviderEvalTimeout } from "../src/adapters/providers/provider-session.js";
 import type { AdapterEvent, QueueItem } from "@cadence/protocol";
 
 /** Minimal fake — captures evals, lets the test fire page events. */
@@ -37,6 +38,7 @@ class FakeSession {
   closePopup(): void {
     for (const h of [...this.popupCloseHandlers]) h();
   }
+  hasOpenPopups = false;
   emit(name: string, data: unknown): void {
     this.onEvent?.({ name, data });
   }
@@ -272,7 +274,7 @@ describe("apple adapter page events", () => {
     (sess as any).hide = () => { hideCount++; };
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
-      return expr.includes("authorize()") ? Promise.reject(new Error("eval timed out")) : Promise.resolve(true);
+      return expr.includes("authorize()") ? Promise.reject(new ProviderEvalTimeout("test")) : Promise.resolve(true);
     };
     await adapter.signIn();
     await new Promise((r) => setTimeout(r, 20));

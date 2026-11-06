@@ -24,7 +24,7 @@ import type {
   TrackRef,
 } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
-import { ProviderSession } from "./provider-session.js";
+import { ProviderEvalTimeout, ProviderSession } from "./provider-session.js";
 import { MUSICKIT_CONTROLLER_JS } from "./inject/musickit-controller.js";
 import { AppleMusicCatalog } from "./apple-music-catalog.js";
 
@@ -417,11 +417,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // 'timeout' is not a dismissal — the popup may still be open while the
     // user types; only a real rejection/false means the flow ended.
     const authed: Promise<true | false | "timeout"> = this.session
-      .eval<boolean | false>(
+      .eval<boolean>(
         `window.__cadenceCtl.authorize().then((r) => r !== false).catch(() => false)`,
         120_000,
       )
-      .catch((e) => (/timed out/i.test((e as Error).message) ? "timeout" : false));
+      .catch((e) => (e instanceof ProviderEvalTimeout ? "timeout" : false));
     // Give authorize() a short window to fail fast — an immediate rejection
     // (no mk.authorize, dead page) needs a different recovery than a popup
     // that's simply waiting on the user.
@@ -454,12 +454,17 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         this.emit({ kind: "capabilitiesChanged" });
         return;
       }
-      // ok === false (rejected) or 'timeout': the popup's own lifecycle
-      // decides — the popup-closed listener ends the attempt when the
-      // window actually closes; a timeout alone doesn't.
+      // ok === false (rejected): the flow provably ended — release and hide.
       if (ok === false && attempt === this.signInAttempt) {
         endAttempt();
         if (!this.authorized && !this.destroyed) this.session.hide();
+        this.emit({ kind: "capabilitiesChanged" });
+      }
+      // 'timeout': if the popup really is still open, keep the attempt owned
+      // — its 'closed' event releases it. If no popup exists, the flow is
+      // dead; release now or the Sign-in button stays locked forever.
+      if (ok === "timeout" && !this.session.hasOpenPopups) {
+        endAttempt();
         this.emit({ kind: "capabilitiesChanged" });
       }
     });

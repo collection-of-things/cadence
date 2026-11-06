@@ -54,6 +54,14 @@ function hostAllowedFor(partition: string, hostname: string): boolean {
   return false;
 }
 
+/** The page eval exceeded its time budget — the call's fate is unknown. */
+export class ProviderEvalTimeout extends Error {
+  constructor(partition: string) {
+    super(`provider eval timed out on ${partition}`);
+    this.name = "ProviderEvalTimeout";
+  }
+}
+
 export class ProviderSession {
   readonly partition: string;
   private win: BrowserWindow | null = null;
@@ -173,7 +181,9 @@ export class ProviderSession {
       };
       win.webContents.on("did-create-window", (child) => {
         guardPopup(child.webContents);
+        this.popups.add(child);
         child.on("closed", () => {
+          this.popups.delete(child);
           for (const l of this.popupClosedListeners) l();
         });
       });
@@ -211,7 +221,7 @@ export class ProviderSession {
         this.win!.webContents.executeJavaScript(expression, true),
         new Promise<never>((_, rej) => {
           timer = setTimeout(
-            () => rej(new Error(`provider eval timed out on ${this.partition}`)),
+            () => rej(new ProviderEvalTimeout(this.partition)),
             timeoutMs,
           );
         }),
@@ -228,6 +238,12 @@ export class ProviderSession {
    */
   reset(): void {
     if (this.win && !this.win.isDestroyed()) this.win.destroy();
+    // Popups outlive the parent — a sign-in window surviving teardown could
+    // re-seed auth into a wiped partition. Kill them too.
+    for (const p of this.popups) {
+      if (!p.isDestroyed()) p.destroy();
+    }
+    this.popups.clear();
     this.win = null;
     this.readyPromise = null;
   }
@@ -238,11 +254,18 @@ export class ProviderSession {
   }
 
   private popupClosedListeners = new Set<() => void>();
+  /** Live popup windows (sign-in flows) this view spawned. */
+  private popups = new Set<BrowserWindow>();
 
   /** Popup windows this session's view spawned (sign-in flows) closing. */
   onPopupClosed(cb: () => void): () => void {
     this.popupClosedListeners.add(cb);
     return () => this.popupClosedListeners.delete(cb);
+  }
+
+  /** Whether a provider popup (e.g. the sign-in window) is still open. */
+  get hasOpenPopups(): boolean {
+    return this.popups.size > 0;
   }
 
   /**
