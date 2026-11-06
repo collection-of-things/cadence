@@ -51,16 +51,16 @@ palette + empty, context menu, queue, connect, all three platforms, local).
 
 | Seat | Model | R1 | R2 | R3 | Final |
 | --- | --- | --- | --- | --- | --- |
-| Terra | `codex/gpt-6.1-terra` (high) | 7/10 | 8.5/10 | 9/10 | pending |
-| SWE 2 | `devin/swe-2-high` | 7/10 | 8/10 | 9/10 | pending |
-| Fusion | `devin/fusion-claude-opus-5-5-medium-sidekick-swe-2-medium` | 7/10 | 8/10 | 8.6/10 | pending |
+| Terra | `codex/gpt-6.1-terra` (high) | 7/10 | 8.5/10 | 9/10 | **9/10** |
+| SWE 2 | `devin/swe-2-high` | 7/10 | 8/10 | 9/10 | **9/10** |
+| Fusion | `devin/fusion-claude-opus-5-5-medium-sidekick-swe-2-medium` | 7/10 | 8/10 | 8.6/10 | **9.4/10** |
 
 Fusion model note: the requested `fusion-claude-opus-5-5-high-sidekick-swe-2-medium`
 is not delegatable; the seat ran on `fusion-claude-opus-5-5-medium-sidekick-swe-2-medium`
 (Claude Opus 5.5 + SWE-2 sidekick). An earlier run on standalone `claude-opus-5-5-medium`
 was cancelled and re-scored per Nirvaan's model rule.
 
-### Last critiques (round 1 → round 2 fixes)
+### Last critiques (final round)
 
 **Terra** — connect CTA was unstyled (`--csvc` scoped to the logo, not the
 dialog); small text too faint; lyric neighbours unreadable; player truncation;
@@ -92,6 +92,23 @@ disagreed with itself; connect sheet mixed alignments.
 stronger ambient + NP glow, bottom fade, local row single line, cards
 flush-left, palette full-width fixed rows, bare album rows, labelled Clear,
 dimmer past lines + clean mask, filled heart, left-aligned connect copy.
+
+### Final-round critiques (all addressed in this build)
+
+**Terra (9/10)** — veil at 1280 too strong; "via" text clipped; lyric blur
+lingered on base/past lines; queue-remove could reset playback; Alt+arrow
+leaked to volume keys; Enter/Space didn't activate focused rows; Shift+→
+keycaps needed grouping; footer lacked the reorder hint.
+
+**SWE 2 (9/10)** — NP kicker clipped at both sizes; palette sat off the
+pill axis; pill meta cut mid-word; remove/more buttons unreachable by
+keyboard; third up-next row grazed the pill; "Add to queue" drifted to
+"Play last" in one menu only.
+
+**Fusion (9.4/10)** — pill badge touched the text; `#pArtist` wasn't a
+flex row so the album never dropped (fixed with measured drop, no
+mid-word cut); keycap pair needed a wrapper; meta didn't recompute on
+resize.
 
 ### Remaining known limits (inherent, not fixable in a static prototype)
 
