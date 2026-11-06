@@ -1076,10 +1076,14 @@ impl Sink for PipeWireSink {
     fn retry_drain(&self, baseline: u64) -> Option<u64> {
         // ONE continuous tl hold covering the completion recheck AND
         // the new marker+flush — no dispatch can interleave, so a
-        // completion that has already landed (dispatched or queued
-        // events are frozen here either way) can never be swallowed
+        // completion that has already landed can never be swallowed
         // by a retry. u64::MAX = the original request already
         // completed; don't re-drain.
+        // Convergence bound: a retry's completion can be coalesced
+        // away only if an OLD event is still undispatched at that
+        // moment — but the retry's own marker dispatches after every
+        // such event, so once IT ran, pending_drain==0 and the NEXT
+        // retry is unsuppressible. ≤2 retries guarantees resolution.
         let _g = self.tl.lock();
         if self.drained_since(baseline) {
             return Some(u64::MAX);

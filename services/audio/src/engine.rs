@@ -2840,14 +2840,19 @@ impl Engine {
                         // with the staged tail at park time so long
                         // low-rate rings get their full drain; a paused
                         // track keeps its tail until resume.
-                        let (staged, rate) = {
-                            let staged = self
+                        let (staged, rate, downstream) = {
+                            let (staged, downstream) = self
                                 .sink
                                 .lock()
                                 .unwrap()
                                 .as_ref()
-                                .map(|s| s.staged_frames())
-                                .unwrap_or(0);
+                                .map(|s| {
+                                    (
+                                        s.staged_frames(),
+                                        s.device_delay_frames(),
+                                    )
+                                })
+                                .unwrap_or((0, 0));
                             let rate = self
                                 .core
                                 .lock()
@@ -2855,9 +2860,15 @@ impl Engine {
                                 .negotiated
                                 .rate
                                 .max(1) as u64;
-                            (staged, rate)
+                            (staged, rate, downstream)
                         };
-                        let deadline_ms = staged * 1000 / rate + 500;
+                        // staged time + measured downstream delay +
+                        // slack: a high-latency graph's tail isn't
+                        // cut just because it exceeds 500ms.
+                        let deadline_ms = (staged + downstream)
+                            * 1000
+                            / rate
+                            + 500;
                         pending_ends.push_back((
                             queue_id,
                             instance,
