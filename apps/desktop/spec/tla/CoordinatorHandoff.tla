@@ -247,10 +247,10 @@ StopOutResolve ==
     /\ stepCount < MaxSteps
     /\ stepCount' = stepCount + 1
     /\ si.phase = "stopout"
-    /\ \/ \* silenced
+    /\ \/ \* silenced — also clears the route's failure exemption
           /\ sounding' = [sounding EXCEPT ![si.outgoing] = FALSE]
           /\ active' = "none"
-          /\ UNCHANGED stoppedBad
+          /\ stoppedBad' = stoppedBad \ {si.outgoing}
        \/ \* teardown failure is reported per-route but cannot wedge
           \* the handoff
           /\ stoppedBad' = stoppedBad \cup {si.outgoing}
@@ -289,8 +289,11 @@ ResilenceResolve ==
     /\ stepCount < MaxSteps
     /\ stepCount' = stepCount + 1
     /\ si.phase = "resile"
-    /\ \/ /\ sounding' = [r \in Routes |-> FALSE]
-          /\ UNCHANGED stoppedBad
+    /\ \/ \* the re-stop silences only the outgoing route — and clears its
+          \* reported-failure exemption (a later successful stop proves the
+          \* engine responds again)
+          /\ sounding' = [sounding EXCEPT ![si.outgoing] = FALSE]
+          /\ stoppedBad' = stoppedBad \ {si.outgoing}
        \/ /\ stoppedBad' = stoppedBad \cup {si.outgoing}
           /\ UNCHANGED sounding
     /\ si' = [si EXCEPT !.phase = "play"]

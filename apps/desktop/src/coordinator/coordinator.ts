@@ -450,7 +450,7 @@ export class Coordinator {
   private enqueueStart(
     index: number,
     opts: { positionMs?: number; routeOverride?: RouteId } = {},
-    expected?: { generationId: number; queueId: string },
+    expected?: { generationId: number; queueId: string; targetQueueId?: string },
   ): void {
     this.extendChain(() => {
       // The event that queued this link belonged to a specific lease — its
@@ -463,7 +463,13 @@ export class Coordinator {
       ) {
         return Promise.resolve();
       }
-      return this.startItem(index, opts);
+      // When the target is a queueId (a successor picked at fire time),
+      // resolve the index NOW — a queued mutation can have moved it.
+      const idx =
+        expected?.targetQueueId !== undefined
+          ? this.queue.items.findIndex((it) => it.queueId === expected.targetQueueId)
+          : index;
+      return idx >= 0 ? this.startItem(idx, opts) : Promise.resolve();
     });
   }
 
@@ -857,11 +863,10 @@ export class Coordinator {
         // ourselves — a redundant load here would restart a track already
         // playing, which is exactly the seam the engine exists to remove.
         if (this.pendingPrefetch !== null) {
-          // Capture the queueId, resolve to an index at fire time — a queue
-          // mutation inside the window must not start whatever item happens
-          // to sit at the stale index.
+          // The link resolves the successor at FIRE time and the index at
+          // RUN time — a queue mutation inside the window or behind the
+          // queued link must not redirect the advance.
           const endedGen = e.generationId;
-          const fallbackQueueId = idx === null ? undefined : this.queue.items[idx]?.queueId;
           this.promotionTimer = setTimeout(() => {
             this.promotionTimer = null;
             if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
@@ -873,14 +878,19 @@ export class Coordinator {
             ) {
               return;
             }
-            if (fallbackQueueId === undefined) return;
-            const nowIdx = this.queue.items.findIndex((it) => it.queueId === fallbackQueueId);
-            if (nowIdx >= 0) {
-              this.enqueueStart(nowIdx, {}, {
-                generationId: endedGen,
-                queueId: endedQid,
-              });
-            }
+            const endedIdx = this.queue.items.findIndex((it) => it.queueId === endedQid);
+            if (endedIdx < 0) return;
+            const nextIdx = QueueOps.nextIndexAfterEnd({
+              ...this.queue,
+              currentIndex: endedIdx,
+            });
+            const targetQid = nextIdx === null ? undefined : this.queue.items[nextIdx]?.queueId;
+            if (targetQid === undefined) return;
+            this.enqueueStart(-1, {}, {
+              generationId: endedGen,
+              queueId: endedQid,
+              targetQueueId: targetQid,
+            });
           }, 600);
           return;
         }

@@ -158,20 +158,22 @@ for (const cfg of cfgs.sort()) {
     continue;
   }
   const expects = cfgExpects(join(SPEC_DIR, cfg));
-  const good = !r.ok && (expects === null || expects.includes(r.blamed));
+  // No EXPECTS declaration = the mutant asserts nothing — a rejection is
+  // meaningless. Only a declared-property kill counts.
+  const good = !r.ok && expects !== null && expects.includes(r.blamed);
   (good ? pass : fail).push(
-    `${cfg.padEnd(48)} rejected (${r.blamed ?? "no error reported"})${good ? "" : `  UNEXPECTED, wanted ${expects?.join("|") ?? "any rejection"}`}`,
+    `${cfg.padEnd(48)} rejected (${r.blamed ?? "no error reported"})${good ? "" : `  UNEXPECTED, wanted ${expects?.join("|") ?? "an EXPECTS declaration"}`}`,
   );
 
-  // Bounds must match the parent pass cfg — a stale bound here would
-  // silently change which traces the mutant covers.
+  // Bounds must match the parent pass cfg — a stale or missing bound here
+  // would silently change which traces the mutant covers.
   const parent = readFileSync(join(SPEC_DIR, `${cfg.replace(/\.mutant-[^.]+/, "")}`), "utf8");
   const mutantText = readFileSync(join(SPEC_DIR, cfg), "utf8");
   for (const bound of ["MaxGen", "MaxSteps", "MaxStarts"]) {
     const pv = parent.match(new RegExp(`${bound}\\s*=\\s*(\\d+)`))?.[1];
     const mv = mutantText.match(new RegExp(`${bound}\\s*=\\s*(\\d+)`))?.[1];
-    if (pv !== undefined && mv !== undefined && pv !== mv) {
-      fail.push(`${cfg.padEnd(48)} bound drift: ${bound}=${mv}, parent=${pv}  UNEXPECTED`);
+    if (pv !== undefined && pv !== mv) {
+      fail.push(`${cfg.padEnd(48)} bound drift: ${bound}=${mv ?? "missing"}, parent=${pv}  UNEXPECTED`);
     }
   }
 }

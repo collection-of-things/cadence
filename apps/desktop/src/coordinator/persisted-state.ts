@@ -30,7 +30,17 @@ export function isTrack(u: unknown): boolean {
   if (typeof t.route !== "string" || !ROUTES.has(t.route)) return false;
   if (typeof t.provider !== "string" || t.provider.length === 0) return false;
   if (typeof t.title !== "string") return false;
-  if (!Array.isArray(t.artists)) return false;
+  if (
+    !Array.isArray(t.artists) ||
+    !t.artists.every(
+      (a) =>
+        typeof a === "object" &&
+        a !== null &&
+        typeof (a as Record<string, unknown>).name === "string",
+    )
+  ) {
+    return false;
+  }
   if (typeof t.durationMs !== "number" || t.durationMs < 0) return false;
   if (
     t.availability !== "available" &&
@@ -71,6 +81,18 @@ function isQueueState(u: unknown): u is QueueState {
       return false;
     }
   }
+  // Queue ops index into shuffleOrder when shuffle is on — a non-array
+  // order is a runtime crash, not a restorable queue.
+  if (typeof q.shuffle !== "boolean") return false;
+  if (q.shuffle === true) {
+    if (
+      !Array.isArray(q.shuffleOrder) ||
+      !q.shuffleOrder.every((n) => typeof n === "number" && Number.isInteger(n))
+    ) {
+      return false;
+    }
+  }
+  if (q.repeat !== "off" && q.repeat !== "all" && q.repeat !== "one") return false;
   return true;
 }
 
