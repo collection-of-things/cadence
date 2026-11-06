@@ -1342,45 +1342,63 @@ impl Engine {
             }
         }
         if let Some((qid, src, rg)) = prefetch {
-            // A format-mismatched prefetch can't render on the rebuilt
-            // stream — check BEFORE spawning so it stays armed for the
-            // boundary reopen instead of surfacing a spurious error. One
-            // plan serves the check and the spawn (no double ffprobe).
-            let arm_for_boundary = |st: &mut EngineState| {
-                // Armed for the boundary reopen, not as a live pipeline:
-                // fresh state — the old one carries a dead producer's
-                // ready flag, so prefetchReady would never emit.
-                st.prefetch = Some(PrefetchState {
-                    queue_id: qid.clone(),
-                    source: src.clone(),
-                    replay_gain_db: rg,
-                    ready: Arc::new(AtomicBool::new(true)),
-                });
-                st.reported_prefetch_ready = false;
-            };
-            match self.plan_track(&src, 0) {
-                Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
-                    match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
-                        Ok((reader, handle, _dur, _bypass, _info)) => {
-                            let ready = reader.ready.clone();
-                            self.core.lock().unwrap().set_next(reader);
-                            *self.prefetch_producer.lock().unwrap() = Some(handle);
-                            let mut st = self.state.lock().unwrap();
-                            st.prefetch = Some(PrefetchState {
-                                queue_id: qid,
-                                source: src,
-                                replay_gain_db: rg,
-                                ready,
-                            });
-                            st.reported_prefetch_ready = false;
-                        }
-                        Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
+            self.respawn_prefetch(qid, src, rg);
+        }
+    }
+
+    /// Re-arm the prefetched successor after a rebuild/toggle. The old
+    /// `next` reader is ALWAYS retired first — it was built under the
+    /// pre-respawn DSP state and must never be promoted as-is. A
+    /// format-mismatched successor stays armed for the boundary reopen;
+    /// only a probe failure refuses to claim readiness.
+    fn respawn_prefetch(&self, qid: String, src: SourceSpec, rg: Option<f64>) {
+        {
+            let mut core = self.core.lock().unwrap();
+            if let Some(old) = core.next.take() {
+                old.pipe.abort();
+            }
+        }
+        *self.prefetch_producer.lock().unwrap() = None;
+        let arm = |ready: bool, qid: &str, src: &SourceSpec, rg| {
+            let mut st = self.state.lock().unwrap();
+            st.prefetch = Some(PrefetchState {
+                queue_id: qid.to_string(),
+                source: src.clone(),
+                replay_gain_db: rg,
+                ready: Arc::new(AtomicBool::new(ready)),
+            });
+            st.reported_prefetch_ready = false;
+        };
+        match self.plan_track(&src, 0) {
+            Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
+                match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
+                    Ok((reader, handle, _dur, _bypass, _info)) => {
+                        let ready = reader.ready.clone();
+                        self.core.lock().unwrap().set_next(reader);
+                        *self.prefetch_producer.lock().unwrap() = Some(handle);
+                        let mut st = self.state.lock().unwrap();
+                        st.prefetch = Some(PrefetchState {
+                            queue_id: qid,
+                            source: src,
+                            replay_gain_db: rg,
+                            ready,
+                        });
+                        st.reported_prefetch_ready = false;
+                    }
+                    // The plan validated — keep it armed for the boundary
+                    // reopen even though this spawn failed.
+                    Err(e) => {
+                        self.emit_error(Some(&qid), &format!("{e:#}"), true);
+                        arm(true, &qid, &src, rg);
                     }
                 }
-                // Incompatible format, or the file can't be probed now —
-                // the boundary reopen decides honestly either way.
-                Ok(_) | Err(_) => arm_for_boundary(&mut self.state.lock().unwrap()),
             }
+            // Different stream format — armed for the boundary reopen,
+            // honestly "ready" in the control sense (validated).
+            Ok(_) => arm(true, &qid, &src, rg),
+            // Can't even probe the file — stay armed for the boundary
+            // reopen, but do NOT claim readiness it can't back.
+            Err(_) => arm(false, &qid, &src, rg),
         }
     }
 
@@ -1637,12 +1655,13 @@ impl Engine {
     }
 
     /// ReplayGain toggle: per-track tag gains are applied only when enabled
-    /// (off by default). A change mid-track respawns the pipeline at its
-    /// position, like set_eq — skipped on fidelity bypass (no DSP runs) and
-    /// on live pcm-streams (can't respawn; the flag applies to the next
-    /// load — spawn_pipeline_planned re-reads it there).
+    /// (off by default). A change mid-track respawns the affected
+    /// pipelines at position, like set_eq. The current track is skipped on
+    /// fidelity bypass (no DSP runs) and live pcm-streams (can't respawn);
+    /// an armed prefetch is still refreshed — a compatible non-bypass
+    /// successor would otherwise keep the old gain through promotion.
     pub fn set_replay_gain(&self, enabled: bool) -> Result<Value> {
-        let (changed, live_stream, bypass, tagged) = {
+        let (changed, live_stream, bypass, cur_tagged, pf_tagged) = {
             let mut st = self.state.lock().unwrap();
             let was = st.replay_gain;
             st.replay_gain = enabled;
@@ -1650,17 +1669,22 @@ impl Engine {
                 was != enabled,
                 matches!(st.source, Some(SourceSpec::PcmStream { .. })),
                 st.fidelity_bypass,
-                st.replay_gain_db.is_some()
-                    || st
-                        .prefetch
-                        .as_ref()
-                        .is_some_and(|p| p.replay_gain_db.is_some()),
+                st.replay_gain_db.is_some(),
+                st.prefetch
+                    .as_ref()
+                    .filter(|p| p.replay_gain_db.is_some())
+                    .map(|p| (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)),
             )
         };
-        // Nothing loaded carries a tag -> no audible change -> no respawn.
-        if changed && !bypass && !live_stream && tagged {
+        if !changed {
+            return Ok(json!({ "ok": true }));
+        }
+        if cur_tagged && !bypass && !live_stream {
+            // respawn_pipelines handles the prefetched successor too.
             let pos = self.core.lock().unwrap().position_ms();
             self.respawn_pipelines(pos);
+        } else if let Some((qid, src, rg)) = pf_tagged {
+            self.respawn_prefetch(qid, src, rg);
         }
         Ok(json!({ "ok": true }))
     }

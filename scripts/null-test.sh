@@ -102,20 +102,33 @@ def wav(path, data, rate, ch):
     with open(path, "wb") as f:
         f.write(hdr + raw)
 
+# Reference rate = source rate (the decode is at source rate).
+src_rate = int(json.loads(subprocess.run(
+    ["ffprobe", "-v", "error", "-select_streams", "a:0",
+     "-show_entries", "stream=sample_rate", "-of", "json", src],
+    check=True, capture_output=True).stdout)["streams"][0]["sample_rate"])
 wav(outbase + ".cadence.wav", cad, rate, ch)
-wav(outbase + ".ffmpeg.wav", ref, 44100, 2)
+wav(outbase + ".ffmpeg.wav", ref, src_rate, 2)
 
 nz = np.flatnonzero(np.abs(cad) > 1e-9)
 rnz = np.flatnonzero(np.abs(ref) > 1e-9)
-c = cad[nz[0]:]
-r = ref[rnz[0]:]
-n = min(len(c), len(r))
-res = c[:n] - r[:n]
-exact = np.array_equal(c[:n], r[:n])
-rms = float(np.sqrt((res ** 2).mean())) if n else 0.0
+# The dump is leading zeros + the track + trailing zeros. Anchor on the
+# first nonzero of each, then demand the WHOLE reference body matches and
+# the dump carries silence elsewhere — a truncated render fails here.
+align = int(nz[0]) - int(rnz[0])
+assert align >= 0, "dump starts inside the reference"
+head_ok = bool(np.all(cad[:nz[0]] == 0.0))
+body = cad[align:align + len(ref)]
+tail_ok = bool(np.all(cad[align + len(ref):] == 0.0))
+complete = len(cad) >= align + len(ref)
+res = body - ref if complete else np.array([1.0])
+exact = bool(complete and np.array_equal(body, ref) and head_ok and tail_ok)
+rms = float(np.sqrt((res ** 2).mean())) if complete else 0.0
 print(f"{src}")
 print(f"  cadence render: {len(cad)//ch} frames, reference: {len(ref)//2} frames")
-print(f"  aligned samples: {n} | bit-exact: {exact} | "
+print(f"  aligned samples: {len(body)} of {len(ref)} | bit-exact: {exact} | "
       f"max|res|={np.abs(res).max():.3e} | rms={20*np.log10(max(rms,1e-20)):.1f} dBFS")
+if not exact:
+    sys.exit(2)
 PY
 echo "artifacts in $TMP"
