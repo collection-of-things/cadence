@@ -539,6 +539,9 @@ struct Feed<T> {
     /// Keeping the last pull counted errs toward replay on a rebuild,
     /// never a skip. Written only by the process callback.
     inflight: Arc<AtomicU64>,
+    /// Stream rate — converts callback-to-callback elapsed time into
+    /// consumed frames for the in-flight decrement.
+    rate_hz: u64,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
     /// "never scheduled" arm keys on this.
@@ -701,6 +704,7 @@ impl PipeWireCaps {
                     last_process_ms: Arc::clone(&last_process_ms),
                     latency_frames: latency as usize,
                     inflight: Arc::clone(&inflight),
+                    rate_hz: neg.rate as u64,
                     processed_once: Arc::clone(&processed_once),
                     t0,
                 })
@@ -825,8 +829,8 @@ impl PipeWireCaps {
 /// the ring is SPSC wait-free; an underrun zero-pads the remainder so the
 /// stream keeps its timeline (same contract as the CPAL callback).
 fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
-    feed.last_process_ms
-        .store(feed.t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+    let now_ms = feed.t0.elapsed().as_millis() as u64;
+    let prev_ms = feed.last_process_ms.swap(now_ms, Ordering::Relaxed);
     feed.processed_once.store(true, Ordering::Relaxed);
     // Paused: silence WITHOUT draining — the pre-pause tail stays queued
     // so resume picks up exactly where playback stopped.
@@ -857,14 +861,12 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
-        // The driver queue is FIFO and advances one graph quantum per
-        // completed cycle — that quantum is the proven consumption of
-        // the held pull (the written SIZE is just this buffer's span:
-        // an unstated request fills the whole mapped region and would
-        // zero the count while audio remains queued). Decrement by the
-        // quantum after hand-back; under-counting only biases toward
-        // replay, never a skip.
-        let consumed = feed.latency_frames as u64;
+        // Consumption tracking: the driver queue drains at device
+        // rate, so the frames consumed between THIS completed cycle
+        // and the last one are (elapsed wall time × rate). `requested`
+        // and node.latency are only suggestions — elapsed time is the
+        // measured quantity. Under-counting biases toward replay only.
+        let consumed = (now_ms - prev_ms) * feed.rate_hz / 1000;
         drop(buffer);
         let cur = feed.inflight.load(Ordering::Acquire);
         feed.inflight
