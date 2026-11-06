@@ -2886,50 +2886,28 @@ impl Engine {
                         && st.current_instance == inst
                 };
                 if !owned {
-                    let Some((base, gen)) = issued else {
+                    let Some((_base, gen)) = issued else {
                         // Never touched the sink — drop outright.
                         self.handle_track_end(qid, inst);
                         continue;
                     };
-                    // Its drain IS in flight on the reused stream: when
-                    // it lands, the stream deactivates — so wait for a
-                    // drain event newer than THIS request's baseline,
-                    // then reactivate (a completion can't satisfy a
-                    // later request by accident). The generation check
-                    // runs INSIDE the sink lock — a rebuild installing a
-                    // replacement between check and access can't slip.
-                    let done = {
+                    // Its drain IS in flight on the reused stream:
+                    // `drained` latches `draining` upstream, which
+                    // stops the process callback for good — cancel the
+                    // drain with resume() NOW rather than waiting for
+                    // it. The queued tail still plays out into the new
+                    // track (cancel only clears the drain flags, not
+                    // the buffers), and the stream never goes silent.
+                    // Generation check inside the sink lock.
+                    {
                         let g = self.sink.lock().unwrap();
-                        if self.sink_gen.load(Ordering::Acquire) != gen {
-                            // The drain belonged to a dead sink — gone.
-                            true
-                        } else {
-                        let d = g
-                            .as_ref()
-                            .map(|s| s.drained_since(base))
-                            .unwrap_or(true);
-                        if d
-                            || since.elapsed()
-                                > std::time::Duration::from_millis(deadline_ms)
-                        {
+                        if self.sink_gen.load(Ordering::Acquire) == gen {
                             if let Some(s) = g.as_ref() {
                                 s.resume();
                             }
-                            true
-                        } else {
-                            false
                         }
-                        }
-                    };
-                    if done {
-                        self.handle_track_end(qid, inst); // stale → bails
-                    } else {
-                        // Defer to the next tick — push_back + continue
-                        // here would re-pop the same entry and spin the
-                        // monitor solid until the drain lands.
-                        pending_ends.push_back((qid, inst, since, deadline_ms, issued));
-                        break;
                     }
+                    self.handle_track_end(qid, inst); // stale → bails
                     continue;
                 }
                 enum Gate {

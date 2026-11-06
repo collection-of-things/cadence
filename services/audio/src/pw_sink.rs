@@ -985,14 +985,13 @@ impl Sink for PipeWireSink {
     }
 
     fn request_drain(&self) -> Option<u64> {
-        // flush(drain=true), then queue a barrier marker behind every
-        // already-posted `drained` event on the main loop (invokes
-        // dispatch FIFO). drained_since() waits for the marker plus a
-        // post-marker event — so a stale event that was queued before
-        // our request can never satisfy it, and a real completion can
-        // never be swallowed either (it lands after the marker).
+        // Marker FIRST, then flush — both under tl. Every stale event
+        // was queued before the marker (the loop can't dispatch while
+        // we hold tl, and no event can post between marker and flush:
+        // a drain completion needs the queue empty, and the queued
+        // tail keeps it non-empty). A real completion can only post
+        // after the flush → after the marker → it always counts.
         let _g = self.tl.lock();
-        self.stream.flush(true).ok()?;
         let tag = self.barrier.seq.load(Ordering::Acquire);
         unsafe {
             let l = pw::sys::pw_thread_loop_get_loop(self.tl.as_raw_ptr());
@@ -1005,7 +1004,7 @@ impl Sink for PipeWireSink {
             let invoke = (*methods).invoke?;
             let ud = Arc::into_raw(Arc::clone(&self.barrier))
                 as *mut std::ffi::c_void;
-            invoke(
+            let r = invoke(
                 (*lp).iface.cb.data,
                 Some(drain_barrier_cb),
                 spa::sys::SPA_ID_INVALID,
@@ -1014,7 +1013,15 @@ impl Sink for PipeWireSink {
                 false,
                 ud,
             );
+            if r < 0 {
+                // Marker never queued — reclaim the userdata Arc and
+                // report unsupported so the caller falls back to the
+                // deadline path rather than waiting forever.
+                drop(Arc::from_raw(ud as *const DrainBarrier));
+                return None;
+            }
         }
+        self.stream.flush(true).ok()?;
         Some(tag)
     }
 
