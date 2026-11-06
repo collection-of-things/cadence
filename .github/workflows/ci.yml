@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (pipewire/alsa headers, ffmpeg for fixtures)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpipewire-0.3-dev libspa-0.2-dev libasound2-dev \
+            ffmpeg pipewire-audio-client-libraries
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: verify.sh (pnpm typecheck/build/test + cargo + fixtures probe)
+        run: bash scripts/verify.sh
+
+      - name: cargo test
+        run: cargo test --manifest-path services/audio/Cargo.toml
