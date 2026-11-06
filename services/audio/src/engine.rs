@@ -1562,7 +1562,22 @@ impl Engine {
                     drop(core);
                     *self.producer.lock().unwrap() = Some(handle);
                 }
-                Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
+                Err(e) => {
+                    self.emit_error(Some(&qid), &format!("{e:#}"), true);
+                    // When a rebuild already cleared the pipeline and this
+                    // file track can't respawn, nothing is playing — mark
+                    // it rather than stay silently Playing. (Streams
+                    // don't need a reader; an intact pipeline keeps
+                    // playing either way.)
+                    let dead = {
+                        let core = self.core.lock().unwrap();
+                        core.active.is_none() && matches!(src, SourceSpec::File { .. })
+                    };
+                    if dead {
+                        self.set_state(PlayState::Error);
+                        self.emit_state(Some(&format!("{e:#}")));
+                    }
+                }
             }
             break;
         }
@@ -1934,20 +1949,26 @@ impl Engine {
 
     pub fn play(&self, generation: u64) -> Result<Value> {
         self.check_gen(generation)?;
-        let mut core = self.core.lock().unwrap();
-        core.paused = false;
-        drop(core);
-        self.set_state(PlayState::Playing);
+        // Flag and state together — a boundary reopen installing in the
+        // gap would otherwise see stale state and override the flag.
+        {
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            core.paused = false;
+            st.state = PlayState::Playing;
+        }
         self.emit_state(None);
         Ok(json!({ "ok": true }))
     }
 
     pub fn pause(&self, generation: u64) -> Result<Value> {
         self.check_gen(generation)?;
-        let mut core = self.core.lock().unwrap();
-        core.paused = true;
-        drop(core);
-        self.set_state(PlayState::Paused);
+        {
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            core.paused = true;
+            st.state = PlayState::Paused;
+        }
         self.emit_state(None);
         self.emit_position();
         Ok(json!({ "ok": true }))
@@ -2357,77 +2378,108 @@ impl Engine {
                         // stream (format reopen required) starts here —
                         // honestly NOT gapless.
                         if let Some(pf) = pf {
-                            // A load landing during this spawn must not be
-                            // destroyed by the reopen's rebuild — guard it.
-                            let seq = self.core.lock().unwrap().boundary_seq;
-                            match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, Some((seq, gen))) {
-                                Ok((reader, handle, dur, bypass, _info)) => {
-                                    // A concurrent audio.load may have landed
-                                    // while we decoded — check + install in
-                                    // ONE critical section so it can't be
-                                    // clobbered mid-gap.
-                                    let reopen_instance = reader.instance;
-                                    let mut core = self.core.lock().unwrap();
-                                    let mut st = self.state.lock().unwrap();
-                                    let stale = st.generation != gen
-                                        || st.queue_id.is_some()
-                                        // a stop() mid-reopen must not be
-                                        // overridden back to Playing —
-                                        // but a pause keeps the reader,
-                                        // installed paused below
-                                        || (st.state != PlayState::Playing
-                                            && st.state != PlayState::Paused)
-                                        || core.rebuilding
-                                        || core.negotiated != reader.neg;
-                                    if stale {
-                                        eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
+                            // A rebuild in flight makes the spawn/install
+                            // transiently stale — retry on the settled
+                            // format rather than lose the only successor.
+                            for attempt in 0..3u8 {
+                                // A load landing during this spawn must not
+                                // be destroyed by the reopen's rebuild —
+                                // guard it.
+                                let seq = self.core.lock().unwrap().boundary_seq;
+                                match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, Some((seq, gen))) {
+                                    Ok((reader, handle, dur, bypass, _info)) => {
+                                        // A concurrent audio.load may have landed
+                                        // while we decoded — check + install in
+                                        // ONE critical section so it can't be
+                                        // clobbered mid-gap.
+                                        let reopen_instance = reader.instance;
+                                        let mut core = self.core.lock().unwrap();
+                                        let mut st = self.state.lock().unwrap();
+                                        let transient =
+                                            core.rebuilding || core.negotiated != reader.neg;
+                                        let stale = st.generation != gen
+                                            || st.queue_id.is_some()
+                                            // a stop() mid-reopen must not be
+                                            // overridden back to Playing —
+                                            // but a pause keeps the reader,
+                                            // installed paused below
+                                            || (st.state != PlayState::Playing
+                                                && st.state != PlayState::Paused)
+                                            || transient;
+                                        if stale {
+                                            drop(st);
+                                            drop(core);
+                                            reader.pipe.abort();
+                                            let _ = handle;
+                                            if transient && attempt < 2 {
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(25),
+                                                );
+                                                continue;
+                                            }
+                                            eprintln!(
+                                                "monitor: dropped stale reopen for {}",
+                                                pf.queue_id
+                                            );
+                                            break;
+                                        }
+                                        let paused = st.state == PlayState::Paused;
+                                        core.set_active(reader);
+                                        core.paused = paused;
+                                        st.current_instance = reopen_instance;
+                                        st.queue_id = Some(pf.queue_id.clone());
+                                        st.source = Some(pf.source.clone());
+                                        st.replay_gain_db = pf.replay_gain_db;
+                                        st.duration_ms = dur;
+                                        st.fidelity_bypass = bypass;
+                                        st.state = if paused {
+                                            PlayState::Paused
+                                        } else {
+                                            PlayState::Playing
+                                        };
                                         drop(st);
                                         drop(core);
-                                        reader.pipe.abort();
-                                        let _ = handle;
-                                        continue;
+                                        *self.producer.lock().unwrap() = Some(handle);
+                                        self.emit_state(None);
+                                        self.emit_output();
+                                        self.emit(
+                                            "event.trackStarted",
+                                            json!({
+                                                "generationId": gen,
+                                                "queueId": pf.queue_id,
+                                                "durationMs": dur,
+                                                "gapless": false,
+                                            }),
+                                        );
+                                        break;
                                     }
-                                    let paused = st.state == PlayState::Paused;
-                                    core.set_active(reader);
-                                    core.paused = paused;
-                                    st.current_instance = reopen_instance;
-                                    st.queue_id = Some(pf.queue_id.clone());
-                                    st.source = Some(pf.source);
-                                    st.replay_gain_db = pf.replay_gain_db;
-                                    st.duration_ms = dur;
-                                    st.fidelity_bypass = bypass;
-                                    st.state = if paused {
-                                        PlayState::Paused
-                                    } else {
-                                        PlayState::Playing
-                                    };
-                                    drop(st);
-                                    drop(core);
-                                    *self.producer.lock().unwrap() = Some(handle);
-                                    self.emit_state(None);
-                                    self.emit_output();
-                                    self.emit(
-                                        "event.trackStarted",
-                                        json!({
-                                            "generationId": gen,
-                                            "queueId": pf.queue_id,
-                                            "durationMs": dur,
-                                            "gapless": false,
-                                        }),
-                                    );
-                                    continue;
-                                }
-                                Err(e) => {
-                                    // A concurrent load may own the slot
-                                    // now — only report against ours.
-                                    let ours = {
-                                        let st = self.state.lock().unwrap();
-                                        st.generation == gen && st.queue_id.is_none()
-                                    };
-                                    if ours {
-                                        self.emit_error(Some(&pf.queue_id), &format!("{e:#}"), true);
+                                    Err(e) => {
+                                        // A concurrent load may own the slot
+                                        // now — only report against ours.
+                                        let ours = {
+                                            let st = self.state.lock().unwrap();
+                                            st.generation == gen && st.queue_id.is_none()
+                                        };
+                                        if ours {
+                                            self.emit_error(
+                                                Some(&pf.queue_id),
+                                                &format!("{e:#}"),
+                                                true,
+                                            );
+                                        }
+                                        break;
                                     }
                                 }
+                            }
+                            // The successful install above already
+                            // advanced the state — skip the stopped check
+                            // when a successor is now active.
+                            let advanced = {
+                                let st = self.state.lock().unwrap();
+                                st.queue_id.is_some()
+                            };
+                            if advanced {
+                                continue;
                             }
                         }
                         // Check + stop atomically — a newer load must not
