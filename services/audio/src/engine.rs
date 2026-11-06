@@ -1221,8 +1221,13 @@ impl Engine {
                     // must be replanned for the REAL stream rate/kind or
                     // the source plays at the wrong speed/pitch (and a
                     // stale bypass could claim transparency it can't
-                    // deliver).
-                    if !plan.src_depth.preserved_by(committed.kind) {
+                    // deliver). Bypass requires the source's EXACT
+                    // format: a rate- or channel-changing fallback is
+                    // never transparent.
+                    let fmt_match = committed.rate == plan.src_rate
+                        && committed.channels == plan.src_channels
+                        && plan.src_depth.preserved_by(committed.kind);
+                    if !fmt_match {
                         bypass = false;
                     }
                     let (rp, pb) = resample_plan(

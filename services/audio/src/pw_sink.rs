@@ -28,7 +28,7 @@ use anyhow::{anyhow, Context, Result};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64,AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::decode::PcmKind;
@@ -61,9 +61,17 @@ mod pos {
     pub const LFE: u32 = 6;
     pub const SL: u32 = 7;
     pub const SR: u32 = 8;
+    pub const FLC: u32 = 9;
+    pub const FRC: u32 = 10;
     pub const RC: u32 = 11;
     pub const RL: u32 = 12;
     pub const RR: u32 = 13;
+    pub const TFL: u32 = 15;
+    pub const TFR: u32 = 17;
+    pub const TBL: u32 = 18;
+    pub const TBC: u32 = 19;
+    pub const TBR: u32 = 20;
+    pub const LFE2: u32 = 23;
 }
 
 /// Speaker positions for an ffmpeg channel-order layout — the decoder
@@ -78,7 +86,10 @@ fn layout_named(name: &str) -> Option<Vec<u32>> {
         "2.1" => vec![FL, FR, LFE],
         "3.0" => vec![FL, FR, FC],
         "3.0(back)" => vec![FL, FR, RC],
+        "3.1" => vec![FL, FR, FC, LFE],
+        "3.1.2" => vec![FL, FR, FC, LFE, TFL, TFR],
         "4.0" => vec![FL, FR, FC, RC],
+        "4.1" => vec![FL, FR, FC, LFE, RC],
         "quad" => vec![FL, FR, RL, RR],
         // ffmpeg truth (`ffmpeg -layouts`): bare 5.0/5.1 use BACK
         // channels (BL/BR → spa RL/RR); only the (side) variants use
@@ -88,11 +99,29 @@ fn layout_named(name: &str) -> Option<Vec<u32>> {
         "5.1" => vec![FL, FR, FC, LFE, RL, RR],
         "5.1(side)" => vec![FL, FR, FC, LFE, SL, SR],
         "6.0" => vec![FL, FR, FC, RC, SL, SR],
+        "6.0(front)" => vec![FL, FR, FLC, FRC, SL, SR],
         "6.1" => vec![FL, FR, FC, LFE, RC, SL, SR],
         "6.1(back)" => vec![FL, FR, FC, LFE, RL, RR, RC],
+        "6.1(front)" => vec![FL, FR, LFE, FLC, FRC, SL, SR],
         "quad(side)" => vec![FL, FR, SL, SR],
         "7.0" => vec![FL, FR, FC, RL, RR, SL, SR],
+        "7.0(front)" => vec![FL, FR, FC, FLC, FRC, SL, SR],
         "7.1" => vec![FL, FR, FC, LFE, RL, RR, SL, SR],
+        "7.1(wide)" => vec![FL, FR, FC, LFE, RL, RR, FLC, FRC],
+        "7.1(wide-side)" => vec![FL, FR, FC, LFE, FLC, FRC, SL, SR],
+        "5.1.2" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR],
+        "5.1.2(back)" => vec![FL, FR, FC, LFE, RL, RR, TFL, TFR],
+        "5.1.4" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR, TBL, TBR],
+        "7.1.2" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR],
+        "7.1.4" => {
+            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TBL, TBR]
+        }
+        "7.2.3" => {
+            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TBC, LFE2]
+        }
+        "hexagonal" => vec![FL, FR, FC, RL, RR, RC],
+        "octagonal" => vec![FL, FR, FC, RL, RR, RC, SL, SR],
+        "cube" => vec![FL, FR, RL, RR, TFL, TFR, TBL, TBR],
         _ => return None,
     })
 }
@@ -484,6 +513,11 @@ struct Feed<T> {
     /// Negotiated latency quantum in frames — the fill ceiling when the
     /// graph doesn't state a request (mpv caps the same way).
     latency_frames: usize,
+    /// Frames pulled from staging into THIS cycle's buffer but not yet
+    /// handed to the driver — position snapshots must count them or a
+    /// rebuild can skip unheard audio. Written only by the process
+    /// callback; read by the monitor.
+    inflight: Arc<AtomicU64>,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
     /// "never scheduled" arm keys on this.
@@ -543,6 +577,7 @@ impl PipeWireCaps {
         let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let suppress = Arc::new(AtomicBool::new(false));
         let drained_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let inflight = Arc::new(std::sync::atomic::AtomicU64::new(0));
         // Spawn before the thread loop; FeedGuard::drop stops+joins on
         // every subsequent failure path.
         let (cons, feed) = spawn_feed(
@@ -644,6 +679,7 @@ impl PipeWireCaps {
                     paused: paused.clone(),
                     last_process_ms: Arc::clone(&last_process_ms),
                     latency_frames: latency as usize,
+                    inflight: Arc::clone(&inflight),
                     processed_once: Arc::clone(&processed_once),
                     t0,
                 })
@@ -747,6 +783,7 @@ impl PipeWireCaps {
             processed_once,
             t0,
             staged,
+            inflight,
             device_delay_frames: latency as u64,
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
@@ -835,6 +872,7 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
             };
             let got = feed.cons.read(out);
             out[got..].fill(T::default());
+            feed.inflight.store(got as u64, Ordering::Release);
             frames * stride
         }
         None => 0,
@@ -843,6 +881,11 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as _;
     *chunk.size_mut() = size as _;
+    // Hand the buffer back to the driver BEFORE clearing the in-flight
+    // count: the frames then sit inside `delay`, and the µs of double
+    // counting errs toward replay rather than a skipped tail.
+    drop(buffer);
+    feed.inflight.store(0, Ordering::Release);
 }
 
 /// Ordering barrier for drain requests. `drained` events post to the
@@ -924,6 +967,9 @@ pub struct PipeWireSink {
     /// Negotiated rate — pw_time.delay is in `rate` ticks, converted
     /// back to frames at the stream's own rate.
     rate_hz: u64,
+    /// Frames currently pulled into the cycle buffer, shared with the
+    /// feed — see Feed::inflight.
+    inflight: Arc<AtomicU64>,
     /// Caps' shared error cell — the watchdog writes here (not just the
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
@@ -1084,14 +1130,13 @@ impl Sink for PipeWireSink {
                 let rate = t.rate();
                 let delay_secs =
                     t.delay().max(0) as f64 * rate.num as f64 / rate.denom.max(1) as f64;
-                // + one quantum: frames fill() pulls from staging into
-                // the CURRENT cycle's buffer are unheard but briefly in
-                // neither `staged` nor `delay` — count them or a
-                // rebuild-time position snapshot can skip them (errs
-                // toward replaying a quantum, never skipping).
+                // + in-flight frames: what fill() pulled into the
+                // CURRENT cycle's buffer — unheard, but briefly in
+                // neither `staged` nor `delay` — a snapshot between
+                // would let a rebuild skip them. Zero outside process.
                 (delay_secs * self.rate_hz as f64).round() as u64
                     + t.buffered()
-                    + self.device_delay_frames
+                    + self.inflight.load(Ordering::Acquire)
             })
             .unwrap_or(self.device_delay_frames)
     }
