@@ -16,6 +16,7 @@ class FakeSession {
     return true;
   }
   async prepare(): Promise<void> {}
+  setAudioMuted(): void {}
   async reset(): Promise<void> {
     this.alive = false;
   }
@@ -166,5 +167,49 @@ describe("apple adapter page events", () => {
     expect(sess.evals.some((e) => e.includes("clearPlayLater()"))).toBe(true);
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
     expect((adapter as any).mirrored).toHaveLength(0);
+  });
+
+  it("a mirrored next uses skipTo, not a stream reload", async () => {
+    (adapter as any).current = { queueId: "q1", providerId: "sA", station: false };
+    (adapter as any).mirrored = [{ queueId: "q2", providerId: "sB", station: false }];
+    await adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });
+    expect(sess.evals.some((e) => e.includes("skipTo"))).toBe(true);
+    expect(sess.evals.some((e) => e.includes("__cadenceCtl.play("))).toBe(false);
+    expect(events.some((e) => e.kind === "started")).toBe(true);
+  });
+
+  it("a prefetch queued behind play() lands after it", async () => {
+    (adapter as any).current = { queueId: "q1", providerId: "sA", station: false };
+    const play = adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });
+    const pre = adapter.prefetch(item("q3", "sC"));
+    await Promise.all([play, pre]);
+    // play's eval must precede prefetch's playLater.
+    const playIdx = sess.evals.findIndex((e) => e.includes("__cadenceCtl.play(") || e.includes("skipTo"));
+    const plIdx = sess.evals.findIndex((e) => e.includes("playLater"));
+    expect(playIdx).toBeGreaterThanOrEqual(0);
+    expect(plIdx).toBeGreaterThan(playIdx);
+  });
+
+  it("sign-out drops a queued play and emits stopped", async () => {
+    (adapter as any).current = { queueId: "q1", providerId: "sA", station: false };
+    // Hold the chain with a slow prefetch, queue a play behind it, then sign out.
+    const origEval = sess.eval.bind(sess);
+    let release!: () => void;
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("clearPlayLater")
+        ? new Promise((r) => { release = () => r(true); })
+        : Promise.resolve(true);
+    };
+    (adapter as any).mirrored = [{ queueId: "qB", providerId: "sB", station: false }];
+    const pre = adapter.prefetch(item("q3", "sC")); // slow clearPlayLater holds the chain
+    const play = adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });
+    await adapter.signOut();
+    expect(events.some((e) => e.kind === "stopped")).toBe(true);
+    release();
+    await expect(play).rejects.toThrow(/signed out/);
+    (sess as any).eval = origEval;
+    await pre.catch(() => {});
+    expect(sess.evals.some((e) => e.includes("skipTo") || e.includes("__cadenceCtl.play("))).toBe(false);
   });
 });
