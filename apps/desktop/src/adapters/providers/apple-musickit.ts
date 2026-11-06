@@ -297,12 +297,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       if (prior >= 0) {
         // Same song under a new queueId — keep the provider-queue entry but
         // re-point bookkeeping at the new queue item.
-        this.mirrored = this.mirrored.slice(prior);
+        this.mirrored = [this.mirrored[prior]!];
         this.mirrored[0]!.queueId = item.queueId;
-        if (this.mirrored.length > 1) {
-          this.mirrored = this.mirrored.slice(0, 1);
-          await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
-        }
         return;
       }
       if (this.mirrored.length > 0) {
@@ -393,11 +389,16 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     }
     this.authorized = false;
     // Kill the live view so the in-memory MusicKit instance can't keep an
-    // authorized session alive; then clear the partition's stored data.
+    // authorized session alive; then clear the partition's stored data. A
+    // live item can't outlive the session it plays from — end it so the
+    // coordinator doesn't hold a dead lease.
     this.session.reset();
     this.installed = false;
-    this.current = null;
-    this.mirrored = [];
+    if (this.current !== null) {
+      this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
+      this.current = null;
+      this.mirrored = [];
+    }
     let clearFailed = false;
     try {
       await this.session.clearData();

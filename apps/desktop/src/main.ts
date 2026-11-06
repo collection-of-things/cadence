@@ -280,9 +280,19 @@ async function main(): Promise<void> {
       if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
       await adapter.signIn();
     },
-    routeSignOut: async (_route) => {
-      // Signing out of the provider drops the platform back to local.
-      store.saveSection("platform", { active: "local" });
+    routeSignOut: async (route) => {
+      // Signing out of the ACTIVE provider drops the platform back to local.
+      const platform: PlatformId = route.startsWith("spotify")
+        ? "spotify"
+        : route.startsWith("apple")
+          ? "apple"
+          : route.startsWith("youtube")
+            ? "youtube"
+            : "local";
+      const active = (store.loadSection("platform") as { active?: string })?.active;
+      if (active === platform) {
+        store.saveSection("platform", { active: "local" });
+      }
     },
     platform: {
       // One streaming platform at a time; "local" means none is active.

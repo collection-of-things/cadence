@@ -597,7 +597,7 @@ export class AppleMusicCatalog {
     const fetched = await Promise.all(
       views.map(async ([view, title]) => {
         try {
-          const v = (await this.amp(`/v1/catalog/${sf}/artists/${id}/view/${view}`, { limit: "10" })) as {
+          const v = (await this.amp(`/v1/catalog/${sf}/artists/${encodeURIComponent(id)}/view/${view}`, { limit: "10" })) as {
             data?: AmResource[];
           };
           const entries = entriesOf(v.data);

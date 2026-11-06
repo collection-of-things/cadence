@@ -785,7 +785,7 @@ export class Coordinator {
           const leaseItem = this.queue.items.find((it) => it.queueId === this.lease?.queueId);
           const durMs = leaseItem?.track.durationMs ?? 0;
           if (
-            e.queueId === this.lease.queueId &&
+            (e.queueId ?? this.lease.queueId) === this.lease.queueId &&
             this.lease.route !== "local" &&
             durMs > 0 &&
             leaseAgeMs >= 0 &&
