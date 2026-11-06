@@ -26,6 +26,9 @@ files:
   - package.json
   - "!**/*.map"
 extraResources:
+  - from: "build/icons"
+    to: "icons"
+    filter: ["*.png"]
   - from: "../../services/audio/bin"
     to: "audio"
     filter: ["**/*"]
@@ -38,6 +41,7 @@ npmRebuild: true
 nativeRebuilder: sequential
 
 linux:
+  icon: build/icons/icon.png
   target:
     - AppImage
   category: Audio
@@ -46,6 +50,7 @@ linux:
   description: Local library (FLAC/WAV/MP3/ALAC) and provider playback through one audio graph.
 
 mac:
+  icon: build/icons/icon.icns
   target:
     - dmg
   category: public.app-category.music
@@ -56,6 +61,7 @@ mac:
   # Widevine CDM + media playback need these entitlements when signed.
 
 win:
+  icon: build/icons/icon.ico
   target:
     - nsis
     - portable

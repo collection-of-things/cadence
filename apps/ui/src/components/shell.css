@@ -43,6 +43,16 @@
   background: var(--sidebar-bg);
   user-select: none;
 }
+.side-brand { display: flex; align-items: center; gap: 8px; min-height: 58px; padding: 12px 18px 0; flex-shrink: 0; -webkit-app-region: drag; }
+.side-brand img { display: block; flex: none; }
+.side-brand-name { color: #f5f2ed; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -0.8px; line-height: 1; }
+.sidebar.is-collapsed .side-brand { justify-content: center; padding-inline: 0; }
+.sidebar.is-collapsed .side-brand-name { display: none; }
+[data-platform='mac'] .side-brand { padding-top: 38px; }
+@media (max-width: 900px) {
+  .sidebar .side-brand { justify-content: center; padding-inline: 0; }
+  .sidebar .side-brand-name { display: none; }
+}
 .side-search { padding: 14px 14px 8px; }
 .side-search-field {
   display: flex;
@@ -307,7 +317,7 @@
 .topbar button, .topbar input, .topbar .topbar-tabs { -webkit-app-region: no-drag; }
 .side-search { -webkit-app-region: drag; }
 .side-search input, .side-search button { -webkit-app-region: no-drag; }
-[data-platform='mac'] .side-search { padding-top: 46px; }
+[data-platform='mac'] .side-search { padding-top: 14px; }
 .window-drag { position: absolute; z-index: 1; inset: 0 0 auto 0; height: var(--topbar-h); -webkit-app-region: drag; }
 /* the rail is hidden here, so the window controls sit over the top bar again */
 @media (max-width: 900px) {

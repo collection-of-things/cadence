@@ -56,6 +56,10 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
 
   return (
     <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Sidebar">
+      <div className="side-brand" aria-label="Cadence">
+        <img src={`${import.meta.env.BASE_URL}brand/mark.svg`} width="36" height="36" alt="" />
+        <span className="side-brand-name">cadence</span>
+      </div>
       <div className="side-search">
         <button className="side-search-btn" aria-label="Search" title="Search" onClick={() => {
           openSearch('');
