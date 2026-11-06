@@ -23,16 +23,34 @@ const ROUTES: ReadonlySet<string> = new Set([
   "youtube-music",
 ]);
 
+function isTrack(u: unknown): boolean {
+  if (typeof u !== "object" || u === null) return false;
+  const t = u as Record<string, unknown>;
+  return (
+    typeof t.id === "string" &&
+    t.id.length > 0 &&
+    typeof t.route === "string" &&
+    t.route.length > 0 &&
+    typeof t.durationMs === "number" &&
+    t.durationMs >= 0
+  );
+}
+
 function isQueueState(u: unknown): u is QueueState {
   if (typeof u !== "object" || u === null) return false;
   const q = u as Record<string, unknown>;
   if (q.owner !== "coordinator" && q.owner !== "provider") return false;
   if (!Array.isArray(q.items)) return false;
-  if (typeof q.currentIndex !== "number") return false;
+  if (typeof q.currentIndex !== "number" || !Number.isInteger(q.currentIndex)) return false;
+  // Empty queues carry -1; a non-empty queue must index a real item.
+  if (q.items.length === 0 && q.currentIndex !== -1) return false;
+  if (q.items.length > 0 && (q.currentIndex < 0 || q.currentIndex >= q.items.length)) {
+    return false;
+  }
   for (const item of q.items) {
     if (typeof item !== "object" || item === null) return false;
     const it = item as Record<string, unknown>;
-    if (typeof it.queueId !== "string" || typeof it.track !== "object" || it.track === null) {
+    if (typeof it.queueId !== "string" || it.queueId === "" || !isTrack(it.track)) {
       return false;
     }
   }
