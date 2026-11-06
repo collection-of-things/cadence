@@ -28,15 +28,26 @@ class FakeSession {
   hide(): void {}
   reveal(): void {}
   popupCloseHandlers: Array<() => void> = [];
+  popupOpenHandlers: Array<() => void> = [];
   onPopupClosed(cb: () => void): () => void {
     this.popupCloseHandlers.push(cb);
     return () => {
       this.popupCloseHandlers = this.popupCloseHandlers.filter((h) => h !== cb);
     };
   }
+  onPopupOpened(cb: () => void): () => void {
+    this.popupOpenHandlers.push(cb);
+    return () => {
+      this.popupOpenHandlers = this.popupOpenHandlers.filter((h) => h !== cb);
+    };
+  }
   /** Test hook: pretend the sign-in popup window just closed. */
   closePopup(): void {
     for (const h of [...this.popupCloseHandlers]) h();
+  }
+  openPopup(): void {
+    this.hasOpenPopups = true;
+    for (const h of [...this.popupOpenHandlers]) h();
   }
   hasOpenPopups = false;
   emit(name: string, data: unknown): void {
@@ -305,7 +316,12 @@ describe("apple adapter page events", () => {
       return expr.includes("authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
     };
     await adapter.signIn();
+    sess.openPopup();
+    sess.hasOpenPopups = false;
     sess.closePopup();
+    // Grace period for a successful auth to land — hide happens ~2.5s later.
+    expect(hides).toBe(0);
+    await new Promise((r) => setTimeout(r, 2_700));
     expect(hides).toBe(1);
     expect((adapter as any).signInPending).toBe(false);
     (sess as any).eval = orig;

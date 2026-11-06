@@ -164,7 +164,16 @@ export class ProviderSession {
         return { action: "allow", overrideBrowserWindowOptions: { show: true } };
       });
       // Sign-in popups get their own windows — keep those inside the
-      // provider's hosts too. Recursive: grandchildren get the same guards.
+      // provider's hosts too. Recursive: grandchildren get the same guards
+      // and the same lifecycle tracking.
+      const trackPopup = (win2: BrowserWindow) => {
+        this.popups.add(win2);
+        for (const l of this.popupOpenedListeners) l();
+        win2.on("closed", () => {
+          this.popups.delete(win2);
+          for (const l of this.popupClosedListeners) l();
+        });
+      };
       const guardPopup = (wc: WebContents) => {
         wc.on("will-navigate", (event, url) => {
           if (!hostAllowed(url)) event.preventDefault();
@@ -177,15 +186,14 @@ export class ProviderSession {
             ? { action: "allow", overrideBrowserWindowOptions: { show: true } }
             : { action: "deny" },
         );
-        wc.on("did-create-window", (grand) => guardPopup(grand.webContents));
+        wc.on("did-create-window", (grand) => {
+          guardPopup(grand.webContents);
+          trackPopup(grand);
+        });
       };
       win.webContents.on("did-create-window", (child) => {
         guardPopup(child.webContents);
-        this.popups.add(child);
-        child.on("closed", () => {
-          this.popups.delete(child);
-          for (const l of this.popupClosedListeners) l();
-        });
+        trackPopup(child);
       });
 
       // Assign before loadURL: reveal() and eval() see the window even while
@@ -254,6 +262,7 @@ export class ProviderSession {
   }
 
   private popupClosedListeners = new Set<() => void>();
+  private popupOpenedListeners = new Set<() => void>();
   /** Live popup windows (sign-in flows) this view spawned. */
   private popups = new Set<BrowserWindow>();
 
@@ -261,6 +270,12 @@ export class ProviderSession {
   onPopupClosed(cb: () => void): () => void {
     this.popupClosedListeners.add(cb);
     return () => this.popupClosedListeners.delete(cb);
+  }
+
+  /** A provider popup window was created — a sign-in flow became visible. */
+  onPopupOpened(cb: () => void): () => void {
+    this.popupOpenedListeners.add(cb);
+    return () => this.popupOpenedListeners.delete(cb);
   }
 
   /** Whether a provider popup (e.g. the sign-in window) is still open. */

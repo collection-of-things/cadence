@@ -393,18 +393,31 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     const attempt = ++this.signInAttempt;
     // Ownership ends on observable events only: auth completes, the popup
     // window closes, or the user signs out — never on a timer's guess.
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
     const endAttempt = () => {
       this.signInPending = false;
-      offPopup();
+      if (hideTimer !== null) clearTimeout(hideTimer);
+      offClose();
+      offOpen();
     };
-    const offPopup = this.session.onPopupClosed(() => {
-      if (!this.authorized && !this.destroyed) {
-        // The IDMSA window closed without authorizing — dismiss the flow.
-        endAttempt();
-        this.session.hide();
-        this.emit({ kind: "capabilitiesChanged" });
-      }
+    // A popup counts as dismissed only when ALL popup windows are gone (the
+    // flow can open children/grandchildren). The short grace lets a
+    // successful auth's playerState land before we treat close as a cancel.
+    const offClose = this.session.onPopupClosed(() => {
+      if (this.session.hasOpenPopups || this.authorized || this.destroyed) return;
+      hideTimer = setTimeout(() => {
+        hideTimer = null;
+        if (!this.authorized && !this.destroyed && attempt === this.signInAttempt) {
+          endAttempt();
+          this.session.hide();
+          this.emit({ kind: "capabilitiesChanged" });
+        }
+      }, 2500);
     });
+    const offOpen = this.session.onPopupOpened(() => {
+      this.signInSawPopup = true;
+    });
+    this.signInSawPopup = false;
     this.signInCleanup = () => {
       endAttempt();
     };
@@ -442,13 +455,20 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         this.session.hide();
         throw new Error("couldn't open Apple sign-in — try again");
       }
-      // The fallback's own flow may be live — keep the attempt owned until
-      // the popup-close or an authorized playerState ends it observably.
+      // The fallback's own flow may be live — but it can also be a
+      // gesture-gated no-op. If no popup materializes shortly, report the
+      // failure instead of holding the attempt forever.
+      setTimeout(() => {
+        if (!this.signInSawPopup && attempt === this.signInAttempt && !this.authorized && !this.destroyed) {
+          endAttempt();
+          this.error("couldn't open Apple sign-in — try again", true);
+        }
+      }, 8_000);
       this.emit({ kind: "capabilitiesChanged" });
       return;
     }
     void authed.then((ok) => {
-      if (ok === true) {
+      if (ok === true && attempt === this.signInAttempt) {
         // authorize() resolved — completion lands via playerState next.
         endAttempt();
         this.emit({ kind: "capabilitiesChanged" });
@@ -470,6 +490,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     });
     this.emit({ kind: "capabilitiesChanged" });
   }
+
+  /** Whether the current sign-in attempt produced a visible popup. */
+  private signInSawPopup = false;
 
   /** A sign-in attempt is outstanding — suppress duplicate popups. */
   private signInPending = false;
