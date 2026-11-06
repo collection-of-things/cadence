@@ -13,11 +13,16 @@
  */
 
 export const MUSICKIT_CONTROLLER_JS = String.raw`
-(async () => {
+(() => {
   if (window.__cadenceCtl) return true;
+  // Single-flight: concurrent injects (adapter prepare + did-finish-load)
+  // share one install instead of racing the async MusicKit wait below.
+  if (window.__cadenceCtlPromise) return window.__cadenceCtlPromise;
   const emit = (name, data) => {
     try { window.__cadenceBridge && window.__cadenceBridge.emit(name, data); } catch (e) {}
   };
+  window.__cadenceCtlPromise = (async () => {
+  try {
 
   async function waitForMK(tries = 90) {
     for (let i = 0; i < tries; i++) {
@@ -241,7 +246,20 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       return true;
     },
     async clearPlayLater() {
+      // Remove the mirrored successors from MusicKit's own queue too — a
+      // stale playLater item would otherwise play at the boundary.
+      const ids = new Set(appended.map(a => String(a.id)));
       appended = [];
+      const q = mk.queue;
+      const items = (q && q.items) || [];
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (!ids.has(String(items[i].id))) continue;
+        try {
+          if (typeof mk.removeItem === 'function') await mk.removeItem(i);
+          else items.splice(i, 1);
+        } catch (e) {}
+      }
+      try { if (typeof mk.updateQueue === 'function') mk.updateQueue(); } catch (e) {}
       post(true);
       return true;
     },
@@ -266,4 +284,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   post(true);
   setInterval(() => post(false), 750);
   return true;
-})`;
+  } finally {
+    // A failed install must not poison later retries (navigations re-inject).
+    if (!window.__cadenceCtl) window.__cadenceCtlPromise = null;
+  }
+  })();
+  return window.__cadenceCtlPromise;
+})()`;

@@ -78,7 +78,7 @@ interface AmResource {
   href?: string;
   attributes?: AmAttributes;
   relationships?: {
-    tracks?: { data?: AmResource[] };
+    tracks?: { data?: AmResource[]; next?: string };
     contents?: { data?: AmResource[] };
     artists?: { data?: AmResource[] };
     catalog?: { data?: AmResource[] };
@@ -146,7 +146,7 @@ export function songToTrack(r: AmResource): TrackRef {
 
 function containerFor(r: AmResource): CatalogContainer {
   const a = r.attributes ?? {};
-  const kind = baseType(r.type) === "playlist" ? "playlist" : "album";
+  const kind = baseType(r.type) === "playlists" ? "playlist" : "album";
   const c: CatalogContainer = {
     kind,
     id: r.id,
@@ -509,17 +509,42 @@ export class AppleMusicCatalog {
 
   private async detail(collection: "albums" | "playlists", id: string, library: boolean): Promise<CatalogPage> {
     const sf = await this.sf();
-    const path = library ? `/v1/me/library/${collection}/${id}` : `/v1/catalog/${sf}/${collection}/${id}`;
+    const path = library
+      ? `/v1/me/library/${collection}/${encodeURIComponent(id)}`
+      : `/v1/catalog/${sf}/${collection}/${encodeURIComponent(id)}`;
     const res = (await this.amp(path)) as { data?: AmResource[] };
     const r = res.data?.[0];
     if (!r) throw new CatalogError(`${collection.slice(0, -1)} ${id} not found`, false);
     const a = r.attributes ?? {};
     // Library playlist details don't embed tracks — they live on /tracks.
     // Albums (catalog or library) do embed them in relationships.tracks.
-    let trackResources = r.relationships?.tracks?.data;
-    if (library && collection === "playlists" && !trackResources?.length) {
-      const t = (await this.amp(`${path}/tracks`, { limit: "100" })) as { data?: AmResource[] };
-      trackResources = t.data ?? [];
+    // Either way the track list can paginate; follow `next` up to a cap.
+    let trackResources: AmResource[] = [];
+    const MAX_TRACKS = 500;
+    let next: string | undefined;
+    const take = (block: { data?: AmResource[]; next?: string }) => {
+      trackResources.push(...(block.data ?? []));
+      next = block.next;
+    };
+    let trackRel = r.relationships?.tracks;
+    if (library && collection === "playlists" && !trackRel?.data?.length) {
+      const t = (await this.amp(`${path}/tracks`, { limit: "100" })) as {
+        data?: AmResource[];
+        next?: string;
+      };
+      take(t);
+    } else {
+      trackResources = trackRel?.data ?? [];
+      next = trackRel?.next;
+    }
+    while (next && trackResources.length < MAX_TRACKS) {
+      // `next` is a relative API href like "/v1/catalog/us/albums/123/tracks?offset=..."
+      const page = (await this.amp(next)) as { data?: AmResource[]; next?: string };
+      take(page);
+    }
+    if (next) {
+      // Pages beyond the cap are dropped honestly in the UI (partial list).
+      trackResources = trackResources.slice(0, MAX_TRACKS);
     }
     const tracks = entriesOf(trackResources).filter(
       (e): e is Extract<CatalogEntry, { kind: "song" }> => e.kind === "song",
@@ -543,7 +568,7 @@ export class AppleMusicCatalog {
 
   private async artist(id: string): Promise<CatalogPage> {
     const sf = await this.sf();
-    const res = (await this.amp(`/v1/catalog/${sf}/artists/${id}`)) as { data?: AmResource[] };
+    const res = (await this.amp(`/v1/catalog/${sf}/artists/${encodeURIComponent(id)}`)) as { data?: AmResource[] };
     const a = res.data?.[0]?.attributes ?? {};
     const aw = artwork(a.artwork);
     const page: CatalogPage = {
@@ -595,7 +620,7 @@ export class AppleMusicCatalog {
 
   private async lyrics(songId: string): Promise<CatalogPage> {
     const sf = await this.sf();
-    const res = (await this.amp(`/v1/catalog/${sf}/songs/${songId}/lyrics`)) as {
+    const res = (await this.amp(`/v1/catalog/${sf}/songs/${encodeURIComponent(songId)}/lyrics`)) as {
       data?: { attributes?: { ttml?: string } }[];
     };
     const ttml = res.data?.[0]?.attributes?.ttml;

@@ -98,6 +98,27 @@ export function parsePlatformId(u: unknown): Result<ProviderId, InvalidIpcPayloa
   return fail(`expected a platform id, got ${JSON.stringify(u)}`);
 }
 
+/** Common id + paging bounds shared by every catalog request kind. */
+const MAX_ID_LEN = 256;
+const MAX_LIMIT = 50;
+const MAX_OFFSET = 10_000;
+
+function checkPaging(u: { limit?: unknown; offset?: unknown }): InvalidIpcPayload | null {
+  if (u.limit !== undefined && (typeof u.limit !== "number" || !Number.isInteger(u.limit) || u.limit < 1 || u.limit > MAX_LIMIT)) {
+    return new InvalidIpcPayload(`catalog limit must be an integer in 1..${MAX_LIMIT}`);
+  }
+  if (u.offset !== undefined && (typeof u.offset !== "number" || !Number.isInteger(u.offset) || u.offset < 0 || u.offset > MAX_OFFSET)) {
+    return new InvalidIpcPayload(`catalog offset must be an integer in 0..${MAX_OFFSET}`);
+  }
+  return null;
+}
+
+function checkId(u: unknown, what: string): InvalidIpcPayload | null {
+  if (typeof u !== "string" || !u) return new InvalidIpcPayload(`${what} requires a non-empty id`);
+  if (u.length > MAX_ID_LEN) return new InvalidIpcPayload(`${what} id exceeds ${MAX_ID_LEN} chars`);
+  return null;
+}
+
 /** Parse {route, request} for catalog.query. */
 export function parseCatalogQuery(
   u: unknown,
@@ -109,6 +130,8 @@ export function parseCatalogQuery(
   if (!isObj(req) || typeof req.kind !== "string" || !CATALOG_REQUEST_KINDS.has(req.kind)) {
     return fail(`catalog request must have a known kind, got ${JSON.stringify(isObj(req) ? req.kind : req)}`);
   }
+  const pagingErr = checkPaging(req);
+  if (pagingErr) return err(pagingErr);
   switch (req.kind) {
     case "search": {
       if (typeof req.text !== "string" || !req.text.trim()) {
@@ -123,7 +146,8 @@ export function parseCatalogQuery(
     case "album":
     case "playlist":
     case "artist": {
-      if (typeof req.id !== "string" || !req.id) return fail(`catalog ${req.kind} requires id`);
+      const e = checkId(req.id, `catalog ${req.kind}`);
+      if (e) return err(e);
       break;
     }
     case "library": {
@@ -136,15 +160,28 @@ export function parseCatalogQuery(
       if (req.collection !== "albums" && req.collection !== "playlists") {
         return fail("libraryDetail collection must be albums|playlists");
       }
-      if (typeof req.id !== "string" || !req.id) return fail("libraryDetail requires id");
+      const e = checkId(req.id, "libraryDetail");
+      if (e) return err(e);
       break;
     }
     case "lyrics": {
-      if (typeof req.songId !== "string" || !req.songId) return fail("lyrics requires songId");
+      const e = checkId(req.songId, "lyrics");
+      if (e) return err(e);
       break;
     }
     case "addToLibrary": {
       if (!isObj(req.ids)) return fail("addToLibrary requires ids object");
+      const keys = Object.keys(req.ids);
+      if (keys.length > 32) return fail("addToLibrary supports at most 32 resource kinds");
+      for (const k of keys) {
+        if (!LIB_COLLECTIONS.has(k) && k !== "music-videos") {
+          return fail(`addToLibrary key must be a library collection, got ${JSON.stringify(k)}`);
+        }
+        const v = (req.ids as Record<string, unknown>)[k];
+        if (!Array.isArray(v) || v.length > 256 || !v.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_ID_LEN)) {
+          return fail(`addToLibrary.${k} must be an array of <=256 id strings`);
+        }
+      }
       break;
     }
   }

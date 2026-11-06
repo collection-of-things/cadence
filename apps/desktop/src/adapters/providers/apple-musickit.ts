@@ -33,6 +33,15 @@ interface QueueSpec {
   id: string;
 }
 
+/** Event names the injected controller is allowed to push through the bridge. */
+const PAGE_EVENT_NAMES = new Set([
+  "playerState",
+  "nowPlaying",
+  "viewGone",
+  "error",
+  "needDeveloperToken",
+]);
+
 /** Decode the item's source into a MusicKit queue spec. */
 function specFor(track: TrackRef): QueueSpec {
   const uri = track.source.kind === "provider" ? track.source.uri : undefined;
@@ -68,16 +77,16 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private installed = false;
   private destroyed = false;
   /** queueId+provider id of the item we told MusicKit to play. */
-  private current: { queueId: string; providerId: string } | null = null;
+  private current: { queueId: string; providerId: string; station: boolean } | null = null;
   /** Successors mirrored into the MusicKit queue, in append order. */
-  private mirrored: { queueId: string; providerId: string }[] = [];
+  private mirrored: { queueId: string; providerId: string; station: boolean }[] = [];
 
   constructor() {
     super();
     this.session = new ProviderSession({
       partition: "persist:provider-apple",
       url: "https://music.apple.com/us/browse",
-      injectScript: `(${MUSICKIT_CONTROLLER_JS})()`,
+      injectScript: MUSICKIT_CONTROLLER_JS,
       onEvent: (e) => this.onPageEvent(e.name, e.data),
     });
   }
@@ -85,7 +94,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   async prepare(): Promise<void> {
     await this.session.prepare();
     if (this.installed) return;
-    const ok = await this.session.eval<boolean>(`(${MUSICKIT_CONTROLLER_JS})()`);
+    // The controller waits for MusicKit to appear — allow well past the
+    // normal 10s eval cap, but still bounded.
+    const ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 90_000);
     if (ok) this.installed = true;
   }
 
@@ -139,7 +150,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (!this.installed) {
       try {
         await this.prepare();
-      } catch {
+      } catch (e) {
+        console.error('[apple] prepare failed:', e);
         return this.baseCapabilities({
           route: this.route,
           state: "unavailable",
@@ -191,11 +203,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       // Fast path: the coordinator's "next" lands on the mirrored successor —
       // skip inside MusicKit's own queue instead of reloading the stream.
       if ((opts.positionMs ?? 0) === 0 && this.mirrored.some((m) => m.queueId === item.queueId)) {
-        this.current = { queueId: item.queueId, providerId: spec.id };
+        this.current = { queueId: item.queueId, providerId: spec.id, station: spec.type === "station" };
         this.mirrored = [];
         await this.evalCtl(`skipTo(${JSON.stringify(spec)})`);
       } else {
-        this.current = { queueId: item.queueId, providerId: spec.id };
+        this.current = { queueId: item.queueId, providerId: spec.id, station: spec.type === "station" };
         this.mirrored = [];
         await this.evalCtl(
           `play(${JSON.stringify(spec)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`,
@@ -221,7 +233,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       await this.session.eval(
         `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
       );
-      this.mirrored.push({ queueId: item.queueId, providerId: spec.id });
+      this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: spec.type === "station" });
     } catch {
       // Mirroring is an optimization; failure only costs seamlessness.
     }
@@ -276,8 +288,22 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       /* unauthorize may not exist on this build — session clear covers it */
     }
     this.authorized = false;
-    await this.session.clearData();
+    // Kill the live view so the in-memory MusicKit instance can't keep an
+    // authorized session alive; then clear the partition's stored data.
+    this.session.reset();
+    this.installed = false;
+    this.current = null;
+    this.mirrored = [];
+    let clearFailed = false;
+    try {
+      await this.session.clearData();
+    } catch {
+      clearFailed = true;
+    }
     this.emit({ kind: "capabilitiesChanged" });
+    if (clearFailed) {
+      this.error("Apple Music session data could not be cleared — sign-out is partial", true);
+    }
   }
 
   async dispose(): Promise<void> {
@@ -288,6 +314,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private onPageEvent(name: string, data: unknown): void {
     if (this.destroyed) return;
     const generationId = this.generation;
+    // The bridge accepts page-originated events — only honor the narrow set
+    // the controller is designed to post.
+    if (!PAGE_EVENT_NAMES.has(name)) return;
     if (name === "viewGone") return this.error("Apple Music view crashed", true);
     if (name === "needDeveloperToken") {
       this.emit({ kind: "capabilitiesChanged" });
@@ -295,11 +324,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     }
     if (name === "error") {
       const d = data as { message?: string };
-      return this.error(d.message ?? "Apple Music error", true);
+      return this.error(typeof d.message === "string" ? d.message.slice(0, 500) : "Apple Music error", true);
     }
     if (name === "nowPlaying") {
-      const d = data as { id: string | null };
-      this.onNowPlaying(d.id);
+      const d = data as { id?: unknown };
+      this.onNowPlaying(typeof d.id === "string" ? d.id : null);
       return;
     }
     if (name !== "playerState") return;
@@ -334,6 +363,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private onNowPlaying(id: string | null): void {
     if (id === null || this.current === null) return;
     if (id === this.current.providerId) return;
+    // A station streams its constituent songs as a rolling nowPlayingItem —
+    // Cadence keeps it as ONE queue item; item changes inside the stream are
+    // not promotions and must not end the queue item.
+    if (this.current.station) return;
     const hit = this.mirrored.findIndex((m) => m.providerId === id);
     if (hit === -1) {
       // Something else started inside the provider queue (leftover state,

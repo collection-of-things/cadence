@@ -35,6 +35,25 @@ export interface ProviderSessionOptions {
   onEvent?: (event: { name: string; data: unknown }) => void;
 }
 
+/** Which hosts a given provider partition may navigate/popup to. */
+function hostAllowedFor(partition: string, hostname: string): boolean {
+  if (partition.includes("apple")) {
+    return hostname.endsWith(".apple.com") || hostname === "apple.com";
+  }
+  if (partition.includes("youtube")) {
+    return (
+      hostname.endsWith(".youtube.com") ||
+      hostname === "youtube.com" ||
+      hostname.endsWith(".google.com") ||
+      hostname.endsWith(".googleusercontent.com")
+    );
+  }
+  if (partition.includes("spotify")) {
+    return hostname.endsWith(".spotify.com") || hostname === "spotify.com";
+  }
+  return false;
+}
+
 export class ProviderSession {
   readonly partition: string;
   private win: BrowserWindow | null = null;
@@ -102,9 +121,35 @@ export class ProviderSession {
         });
       }
 
+      // Keep the provider page inside its own service: sign-in popups and
+      // navigations may only go to the provider's family of hosts.
+      const hostAllowed = (raw: string): boolean => {
+        try {
+          const u = new URL(raw);
+          return u.protocol === "https:" && hostAllowedFor(this.partition, u.hostname);
+        } catch {
+          return false;
+        }
+      };
+      win.webContents.on("will-navigate", (event, url) => {
+        if (!hostAllowed(url)) event.preventDefault();
+      });
       win.webContents.setWindowOpenHandler(({ url }) => {
+        if (!hostAllowed(url)) return { action: "deny" };
         // Provider sign-in popups must open in the same account partition.
         return { action: "allow", overrideBrowserWindowOptions: { show: true } };
+      });
+      // Sign-in popups get their own windows — keep those inside the
+      // provider's hosts too.
+      win.webContents.on("did-create-window", (child) => {
+        child.webContents.on("will-navigate", (event, url) => {
+          if (!hostAllowed(url)) event.preventDefault();
+        });
+        child.webContents.setWindowOpenHandler(({ url }) =>
+          hostAllowed(url)
+            ? { action: "allow", overrideBrowserWindowOptions: { show: true } }
+            : { action: "deny" },
+        );
       });
 
       // Assign before loadURL: reveal() and eval() see the window even while
@@ -128,16 +173,26 @@ export class ProviderSession {
   }
 
   /** Run a command inside the page world. Serialized + validated strings only. */
-  async eval<T = unknown>(expression: string): Promise<T> {
+  async eval<T = unknown>(expression: string, timeoutMs = 10_000): Promise<T> {
     if (!this.alive) throw new Error(`provider session ${this.partition} is not alive`);
     // A wedged provider page must not stall the coordinator chain.
     const result = await Promise.race([
       this.win!.webContents.executeJavaScript(expression, true),
       new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`provider eval timed out on ${this.partition}`)), 10_000),
+        setTimeout(() => rej(new Error(`provider eval timed out on ${this.partition}`)), timeoutMs),
       ),
     ]);
     return result as T;
+  }
+
+  /**
+   * Destroy the view and drop the pending-load promise — used on sign-out so
+   * the live in-page instance (and its MusicKit auth) is fully gone.
+   */
+  reset(): void {
+    if (this.win && !this.win.isDestroyed()) this.win.destroy();
+    this.win = null;
+    this.readyPromise = null;
   }
 
   onEvent(cb: (e: { name: string; data: unknown }) => void): () => void {
