@@ -533,19 +533,13 @@ struct Feed<T> {
     /// graph doesn't state a request (mpv caps the same way).
     latency_frames: usize,
     /// Frames pulled from staging into the most recent cycle buffer —
-    /// HELD, not cleared on hand-back: a queued-but-unprocessed buffer
-    /// is unheard but invisible to `pw_time.delay` (and `queued` is
-    /// unreachable — pipewire-rs exposes no pw_buffer.size setter).
-    /// Keeping the last pull counted errs toward replay on a rebuild,
+    /// HELD, never cleared: a queued-but-unprocessed buffer is unheard
+    /// but invisible to `pw_time.delay` (`queued` is unreachable —
+    /// pipewire-rs exposes no pw_buffer.size setter — and no other API
+    /// exposes per-buffer consumption). Holding the last pull is a
+    /// bounded replay bias of at most one pull on a rebuild; provably
     /// never a skip. Written only by the process callback.
     inflight: Arc<AtomicU64>,
-    /// Span of the last silence buffer handed back. The driver queue
-    /// is FIFO: a completed paused callback PROVES the previously
-    /// queued silence played — that span is the stream-specific
-    /// consumption evidence for decrementing `inflight`. Unlike the
-    /// driver timeline, it can't advance while this stream is
-    /// suspended (no callback runs, nothing decrements).
-    last_silence_frames: u64,
     /// Distinct from last_process_ms (which is reseeded at negotiation
     /// end): set only by an actual process callback — the watchdog's
     /// "never scheduled" arm keys on this.
@@ -708,7 +702,6 @@ impl PipeWireCaps {
                     last_process_ms: Arc::clone(&last_process_ms),
                     latency_frames: latency as usize,
                     inflight: Arc::clone(&inflight),
-                    last_silence_frames: 0,
                     processed_once: Arc::clone(&processed_once),
                     t0,
                 })
@@ -865,20 +858,13 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         *chunk.offset_mut() = 0;
         *chunk.stride_mut() = stride as _;
         *chunk.size_mut() = size as _;
-        // Consumption evidence: this callback completed because the
-        // PREVIOUS silence buffer finished playing. Its span is the
-        // measured consumption — decrement by it, never by this
-        // cycle's request (an unstated request can span the whole
-        // mapped region). A suspended stream runs no callback, so a
-        // stale span can't decrement anything. The FIRST paused
-        // callback after real playback decrements 0: the real buffer
-        // may still be playing.
-        let consumed = feed.last_silence_frames;
-        feed.last_silence_frames = (size / stride) as u64;
+        // The held pull is NOT decremented here: no API exposes
+        // per-buffer consumption (pw_buffer.size is unreachable,
+        // ticks measure the graph not this stream, and callback
+        // completion doesn't identify which buffer played). Holding
+        // the last pull is a bounded replay bias of at most one pull
+        // on a later rebuild — safe direction, provably never a skip.
         drop(buffer);
-        let cur = feed.inflight.load(Ordering::Acquire);
-        feed.inflight
-            .store(cur.saturating_sub(consumed), Ordering::Release);
         return;
     }
     let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -929,9 +915,7 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
         }
         None => 0,
     };
-    // A real pull interrupts the silence span — the next paused cycle
-    // must not subtract stale silence as if the pull already played.
-    feed.last_silence_frames = 0;
+
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as _;
