@@ -384,9 +384,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       return;
     }
     // A second Sign-in click while a flow is live doesn't stack another
-    // authorize() or popup — it just brings the existing one forward.
+    // authorize() or popup — it raises the existing one (the popup itself
+    // when there is one).
     if (this.signInPending) {
-      this.session.reveal();
+      if (!this.session.focusPopup()) this.session.reveal();
       return;
     }
     this.signInPending = true;
@@ -482,8 +483,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       }
       // 'timeout': if the popup really is still open, keep the attempt owned
       // — its 'closed' event releases it. If no popup exists, the flow is
-      // dead; release now or the Sign-in button stays locked forever.
-      if (ok === "timeout" && !this.session.hasOpenPopups) {
+      // dead; release now or the Sign-in button stays locked forever. The
+      // attempt check keeps a stale eval from releasing a newer flow.
+      if (
+        ok === "timeout" &&
+        attempt === this.signInAttempt &&
+        !this.session.hasOpenPopups
+      ) {
         endAttempt();
         this.emit({ kind: "capabilitiesChanged" });
       }

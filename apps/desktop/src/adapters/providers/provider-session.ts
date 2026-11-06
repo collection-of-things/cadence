@@ -246,14 +246,18 @@ export class ProviderSession {
    */
   reset(): void {
     if (this.win && !this.win.isDestroyed()) this.win.destroy();
-    // Popups outlive the parent — a sign-in window surviving teardown could
-    // re-seed auth into a wiped partition. Kill them too.
+    this.destroyPopups();
+    this.win = null;
+    this.readyPromise = null;
+  }
+
+  /** Popups outlive the parent — an auth window surviving teardown could
+   * re-seed auth into a wiped partition. Every teardown path kills them. */
+  private destroyPopups(): void {
     for (const p of this.popups) {
       if (!p.isDestroyed()) p.destroy();
     }
     this.popups.clear();
-    this.win = null;
-    this.readyPromise = null;
   }
 
   onEvent(cb: (e: { name: string; data: unknown }) => void): () => void {
@@ -281,6 +285,16 @@ export class ProviderSession {
   /** Whether a provider popup (e.g. the sign-in window) is still open. */
   get hasOpenPopups(): boolean {
     return this.popups.size > 0;
+  }
+
+  /** Raise the newest open popup — a sign-in retry should surface it, not
+   * the parent view. */
+  focusPopup(): boolean {
+    const last = [...this.popups].at(-1);
+    if (!last || last.isDestroyed()) return false;
+    last.show();
+    last.focus();
+    return true;
   }
 
   /**
@@ -319,10 +333,12 @@ export class ProviderSession {
     const win = this.win!;
     this.win = null;
     if (!win.isDestroyed()) win.destroy();
+    this.destroyPopups();
   }
 
   async dispose(): Promise<void> {
     await this.release();
+    this.destroyPopups();
     this.listeners.clear();
   }
 

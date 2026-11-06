@@ -50,6 +50,9 @@ class FakeSession {
     for (const h of [...this.popupOpenHandlers]) h();
   }
   hasOpenPopups = false;
+  focusPopup(): boolean {
+    return this.hasOpenPopups;
+  }
   emit(name: string, data: unknown): void {
     this.onEvent?.({ name, data });
   }
@@ -241,17 +244,17 @@ describe("apple adapter page events", () => {
   it("signIn calls MusicKit authorize() and hides when already authorized", async () => {
     (adapter as any).authorized = true;
     await adapter.signIn();
-    expect(sess.evals.some((e) => e.includes("authorize()"))).toBe(false);
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(false);
     (adapter as any).authorized = false;
     await adapter.signIn();
-    expect(sess.evals.some((e) => e.includes("authorize()"))).toBe(true);
+    expect(sess.evals.some((e) => e.includes("cadenceCtl.authorize()"))).toBe(true);
   });
 
   it("signIn falls back to the DOM click when authorize() rejects", async () => {
     const orig = sess.eval.bind(sess);
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
-      return expr.includes("authorize()") ? Promise.reject(new Error("nope")) : Promise.resolve(true);
+      return expr.includes("cadenceCtl.authorize()") ? Promise.reject(new Error("nope")) : Promise.resolve(true);
     };
     await adapter.signIn();
     expect(sess.evals.some((e) => e.includes("clickSignIn()"))).toBe(true);
@@ -271,7 +274,7 @@ describe("apple adapter page events", () => {
     const orig = sess.eval.bind(sess);
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
-      if (expr.includes("authorize()")) return Promise.reject(new Error("dead"));
+      if (expr.includes("cadenceCtl.authorize()")) return Promise.reject(new Error("dead"));
       if (expr.includes("clickSignIn()")) return Promise.resolve(false);
       return Promise.resolve(true);
     };
@@ -285,7 +288,7 @@ describe("apple adapter page events", () => {
     (sess as any).hide = () => { hideCount++; };
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
-      return expr.includes("authorize()") ? Promise.reject(new ProviderEvalTimeout("test")) : Promise.resolve(true);
+      return expr.includes("cadenceCtl.authorize()") ? Promise.reject(new ProviderEvalTimeout("test")) : Promise.resolve(true);
     };
     await adapter.signIn();
     await new Promise((r) => setTimeout(r, 20));
@@ -298,12 +301,12 @@ describe("apple adapter page events", () => {
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
       // authorize() stays pending — the popup is open, user typing.
-      return expr.includes("authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+      return expr.includes("cadenceCtl.authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
     };
     await adapter.signIn();
-    const authCalls = sess.evals.filter((e) => e.includes("authorize()")).length;
+    const authCalls = sess.evals.filter((e) => e.includes("cadenceCtl.authorize()")).length;
     await adapter.signIn(); // second click — must not stack another authorize()
-    expect(sess.evals.filter((e) => e.includes("authorize()")).length).toBe(authCalls);
+    expect(sess.evals.filter((e) => e.includes("cadenceCtl.authorize()")).length).toBe(authCalls);
     (sess as any).eval = orig;
   });
 
@@ -313,7 +316,7 @@ describe("apple adapter page events", () => {
     (sess as any).hide = () => hides++;
     (sess as any).eval = (expr: string) => {
       sess.evals.push(expr);
-      return expr.includes("authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+      return expr.includes("cadenceCtl.authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
     };
     await adapter.signIn();
     sess.openPopup();
@@ -323,6 +326,31 @@ describe("apple adapter page events", () => {
     expect(hides).toBe(0);
     await new Promise((r) => setTimeout(r, 2_700));
     expect(hides).toBe(1);
+    expect((adapter as any).signInPending).toBe(false);
+    (sess as any).eval = orig;
+  });
+
+  it("sign-out while a sign-in is pending releases the attempt", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("cadenceCtl.authorize()") ? new Promise<boolean>(() => {}) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    expect((adapter as any).signInPending).toBe(true);
+    await adapter.signOut();
+    expect((adapter as any).signInPending).toBe(false);
+    (sess as any).eval = orig;
+  });
+
+  it("a timed-out authorize() with no popup releases the attempt", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("cadenceCtl.authorize()") ? Promise.reject(new ProviderEvalTimeout("test")) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    await new Promise((r) => setTimeout(r, 20));
     expect((adapter as any).signInPending).toBe(false);
     (sess as any).eval = orig;
   });
