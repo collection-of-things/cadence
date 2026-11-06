@@ -263,8 +263,8 @@ describe("coordinator: persistence", () => {
     registry.register(local2);
     registry.register(new FakeAdapter("youtube-music"));
     const c2 = new Coordinator({ registry, store: new SettingsStore(r.storePath), persistDebounceMs: 0 });
-    // The bare transport Play (no queueId) must continue the restored item —
-    // not restart queue[0] at 0.
+    // The bare Play (no queueId) — what OS media keys send — must continue
+    // the restored item, not restart queue[0] at 0.
     await c2.handleCommand({ kind: "play" });
     expect(local2.playedItems).toHaveLength(1);
     expect(local2.playedItems[0]?.queueId).toBe(c2.getQueue().items[1]?.queueId);
@@ -287,6 +287,9 @@ describe("coordinator: transport", () => {
     expect(r.coordinator.getSnapshot().status).toBe("paused");
     expect(r.local.playedItems).toHaveLength(1);
 
+    // `play` is the spelling OS media keys and IPC clients dispatch for a
+    // paused session (media-keys.ts); the coordinator must map it to a
+    // resume, not a reload.
     await r.coordinator.handleCommand({ kind: "play" });
     const snap = r.coordinator.getSnapshot();
     expect(snap.status).toBe("playing");
