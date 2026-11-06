@@ -1720,8 +1720,38 @@ impl Engine {
         if compatible {
             // Via the fallback so a failed native open is cached here too
             // (no retry — the boundary reopen handles an open failure).
-            let (reader, handle, _dur, _bypass, _info) = self
-                .spawn_with_native_fallback(queue_id, src.clone(), 0, rg_db, false, plan, Some((seq, generation)))?;
+            let spawned = self.spawn_with_native_fallback(
+                queue_id,
+                src.clone(),
+                0,
+                rg_db,
+                false,
+                plan,
+                Some((seq, generation)),
+            );
+            let (reader, handle, _dur, _bypass, _info) = match spawned {
+                Ok(v) => v,
+                Err(e) => {
+                    // Nothing verified renderable — arm for the boundary
+                    // reopen without claiming readiness, same as
+                    // respawn_prefetch, then report the failure.
+                    let core = self.core.lock().unwrap();
+                    let mut st = self.state.lock().unwrap();
+                    if core.boundary_seq == seq
+                        && !core.ended_pending
+                        && st.generation == generation
+                    {
+                        st.prefetch = Some(PrefetchState {
+                            queue_id: queue_id.to_string(),
+                            source: src.clone(),
+                            replay_gain_db: rg_db,
+                            ready: Arc::new(AtomicBool::new(false)),
+                        });
+                        st.reported_prefetch_ready = false;
+                    }
+                    return Err(e);
+                }
+            };
             let ready = reader.ready.clone();
             // Check + install in one critical section — a boundary landing
             // mid-spawn must not leave this track installed as its own
@@ -1730,6 +1760,7 @@ impl Engine {
             let mut st = self.state.lock().unwrap();
             let stale = core.boundary_seq != seq
                 || core.ended_pending
+                || st.generation != generation
                 || core
                     .active
                     .as_ref()
@@ -1761,7 +1792,10 @@ impl Engine {
             // slot and never reopen this successor — the caller retries.
             let core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
-            if core.boundary_seq != seq || core.ended_pending {
+            if core.boundary_seq != seq
+                || core.ended_pending
+                || st.generation != generation
+            {
                 bail!("track boundary landed during prefetch — retry");
             }
             st.prefetch = Some(PrefetchState {
