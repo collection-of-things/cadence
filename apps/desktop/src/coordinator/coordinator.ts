@@ -841,6 +841,18 @@ export class Coordinator {
         }
         return;
       }
+      case "stopped": {
+        // Provider tore its playback down (sign-out) — drop the lease
+        // without treating it as a track end: no advance, no guard window.
+        this.clearPromotionWait();
+        this.pendingPrefetch = null;
+        this.status = "stopped";
+        this.lease = null;
+        this.activeAdapter = null;
+        this.emitSnapshot();
+        this.persistSoon();
+        return;
+      }
       case "queueChanged": {
         // Explicit reconcile of provider-owned queue truth.
         const items = parseProviderQueue(e.providerQueue, (it) => this.stampQueueId(it));

@@ -285,6 +285,9 @@ export type AdapterEvent =
       gapless?: boolean;
     }
   | { kind: "queueChanged"; generationId: number; providerQueue?: unknown }
+  /** The provider stopped playback unconditionally (sign-out, teardown) —
+   *  the coordinator drops the lease; this is not a queue-advance signal. */
+  | { kind: "stopped"; generationId: number }
   | { kind: "error"; message: string; retriable: boolean; code?: string }
   | { kind: "capabilitiesChanged" };
 

@@ -395,9 +395,12 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.session.reset();
     this.installed = false;
     if (this.current !== null) {
-      this.emit({ kind: "ended", generationId: this.generation, queueId: this.current.queueId });
+      // 'stopped' — an unconditional teardown, not a queue-advance signal.
+      this.emit({ kind: "stopped", generationId: this.generation });
       this.current = null;
       this.mirrored = [];
+      this.unknownNpId = null;
+      this.tailStuckSince = 0;
     }
     let clearFailed = false;
     try {
@@ -537,12 +540,25 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       } else {
         this.unknownNpId = id;
         // The controller only emits on change — a stable unrecognized item
-        // gets one sighting, so probe once to confirm persistence.
+        // gets one sighting, so probe once to confirm persistence. Bind the
+        // probe to the generation+item that scheduled it; a late response
+        // must never act on a newer playback request.
+        const gen = this.generation;
+        const qid = this.current.queueId;
         setTimeout(() => {
-          if (this.destroyed || this.unknownNpId !== id || this.current === null) return;
+          if (
+            this.destroyed ||
+            this.unknownNpId !== id ||
+            this.current === null ||
+            this.current.queueId !== qid ||
+            this.generation !== gen
+          ) {
+            return;
+          }
           void this.session
             .eval<{ id: string | null }>(`window.__cadenceCtl.npId()`)
             .then((np) => {
+              if (this.generation !== gen || this.current?.queueId !== qid) return;
               if (np.id === id) this.onNowPlaying(id);
               else if (this.unknownNpId === id) this.unknownNpId = null;
             })
