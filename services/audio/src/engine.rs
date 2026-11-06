@@ -991,19 +991,39 @@ impl Engine {
         rebuild_ok: bool,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let plan = self.plan_track(&src, seek_ms)?;
+        self.spawn_with_native_fallback(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+    }
+
+    /// Try a planned spawn. On a failed NATIVE stream open (sink left
+    /// absent) the negotiated format is cached in `native_failed` so later
+    /// plans skip it; with `rebuild_ok` the spawn retries once at the
+    /// device default. Other errors propagate unchanged.
+    fn spawn_with_native_fallback(
+        &self,
+        queue_id: &str,
+        src: SourceSpec,
+        seek_ms: u64,
+        rg_db: Option<f64>,
+        rebuild_ok: bool,
+        plan: TrackPlan,
+    ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let native = plan.native;
         let attempted = plan.neg.clone();
         let res =
             self.spawn_pipeline_planned(queue_id, src.clone(), seek_ms, rg_db, rebuild_ok, plan);
         match res {
-            // Only retry when the stream itself failed to open (sink is
+            // Only act when the stream itself failed to open (sink is
             // absent) — pipeline-construction errors propagate honestly.
-            Err(e) if native && rebuild_ok && self.sink.lock().unwrap().is_none() => {
+            Err(e) if native && self.sink.lock().unwrap().is_none() => {
                 // A device may advertise the source format yet fail to open
                 // a stream at it — remember the failure so later spawns
                 // (seeks, respawns, boundary reopens) go straight to the
-                // device default instead of a doomed open every time.
+                // device default instead of a doomed open every time. A
+                // later successful open at the same format clears this.
                 self.state.lock().unwrap().native_failed = Some(attempted);
+                if !rebuild_ok {
+                    return Err(e);
+                }
                 eprintln!(
                     "native stream negotiation failed ({e:#}); retrying at device default"
                 );
@@ -1064,6 +1084,14 @@ impl Engine {
                     );
                 }
                 self.rebuild_stream(&neg)?;
+                // The open just proved this format works — drop any
+                // remembered native-open failure for it (transient
+                // contention shouldn't downgrade the format forever).
+                let mut st = self.state.lock().unwrap();
+                if st.native_failed.as_ref() == Some(&neg) {
+                    st.native_failed = None;
+                }
+                drop(st);
             }
         }
 
@@ -1316,40 +1344,42 @@ impl Engine {
         if let Some((qid, src, rg)) = prefetch {
             // A format-mismatched prefetch can't render on the rebuilt
             // stream — check BEFORE spawning so it stays armed for the
-            // boundary reopen instead of surfacing a spurious error.
-            let compatible = self
-                .plan_track(&src, 0)
-                .map(|p| p.neg == self.core.lock().unwrap().negotiated)
-                .unwrap_or(false);
-            if compatible {
-                match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
-                    Ok((reader, handle, _dur, _bypass, _info)) => {
-                        let ready = reader.ready.clone();
-                        self.core.lock().unwrap().set_next(reader);
-                        *self.prefetch_producer.lock().unwrap() = Some(handle);
-                        let mut st = self.state.lock().unwrap();
-                        st.prefetch = Some(PrefetchState {
-                            queue_id: qid,
-                            source: src,
-                            replay_gain_db: rg,
-                            ready,
-                        });
-                        st.reported_prefetch_ready = false;
-                    }
-                    Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
-                }
-            } else {
+            // boundary reopen instead of surfacing a spurious error. One
+            // plan serves the check and the spawn (no double ffprobe).
+            let arm_for_boundary = |st: &mut EngineState| {
                 // Armed for the boundary reopen, not as a live pipeline:
-                // refresh the state — the old one carries a dead producer's
+                // fresh state — the old one carries a dead producer's
                 // ready flag, so prefetchReady would never emit.
-                let mut st = self.state.lock().unwrap();
                 st.prefetch = Some(PrefetchState {
-                    queue_id: qid,
-                    source: src,
+                    queue_id: qid.clone(),
+                    source: src.clone(),
                     replay_gain_db: rg,
                     ready: Arc::new(AtomicBool::new(true)),
                 });
                 st.reported_prefetch_ready = false;
+            };
+            match self.plan_track(&src, 0) {
+                Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
+                    match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan) {
+                        Ok((reader, handle, _dur, _bypass, _info)) => {
+                            let ready = reader.ready.clone();
+                            self.core.lock().unwrap().set_next(reader);
+                            *self.prefetch_producer.lock().unwrap() = Some(handle);
+                            let mut st = self.state.lock().unwrap();
+                            st.prefetch = Some(PrefetchState {
+                                queue_id: qid,
+                                source: src,
+                                replay_gain_db: rg,
+                                ready,
+                            });
+                            st.reported_prefetch_ready = false;
+                        }
+                        Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
+                    }
+                }
+                // Incompatible format, or the file can't be probed now —
+                // the boundary reopen decides honestly either way.
+                Ok(_) | Err(_) => arm_for_boundary(&mut self.state.lock().unwrap()),
             }
         }
     }
@@ -1472,8 +1502,10 @@ impl Engine {
         let plan = self.plan_track(&src, 0)?;
         let compatible = self.core.lock().unwrap().negotiated == plan.neg;
         if compatible {
-            let (reader, handle, _dur, _bypass, _info) =
-                self.spawn_pipeline_planned(queue_id, src.clone(), 0, rg_db, false, plan)?;
+            // Via the fallback so a failed native open is cached here too
+            // (no retry — the boundary reopen handles an open failure).
+            let (reader, handle, _dur, _bypass, _info) = self
+                .spawn_with_native_fallback(queue_id, src.clone(), 0, rg_db, false, plan)?;
             let ready = reader.ready.clone();
             {
                 let mut core = self.core.lock().unwrap();

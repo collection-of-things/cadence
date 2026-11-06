@@ -282,7 +282,7 @@ fn failed_native_open_retries_at_device_default() {
     struct FlakyCaps {
         inner: NullCaps,
         fail_rate: u32,
-        opens: Arc<std::sync::atomic::AtomicU64>,
+        opens: Arc<Mutex<Vec<u32>>>,
     }
     impl DeviceCaps for FlakyCaps {
         fn name(&self) -> String {
@@ -307,8 +307,7 @@ fn failed_native_open_retries_at_device_default() {
             neg: &Negotiated,
             core: Arc<Mutex<OutputCore>>,
         ) -> Result<Box<dyn Sink>, anyhow::Error> {
-            self.opens
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.opens.lock().unwrap().push(neg.rate);
             if neg.rate == self.fail_rate {
                 anyhow::bail!("device refused {fail_rate}", fail_rate = neg.rate);
             }
@@ -320,7 +319,7 @@ fn failed_native_open_retries_at_device_default() {
     let path = dir.join("stereo-44k1-16.flac");
     let dump = std::env::temp_dir().join(format!("cadence-flaky-{}.f32le", std::process::id()));
     let _ = std::fs::remove_file(&dump);
-    let opens = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let opens = Arc::new(Mutex::new(Vec::<u32>::new()));
     let caps = Arc::new(FlakyCaps {
         inner: NullCaps {
             rate: 48000,
@@ -353,9 +352,34 @@ fn failed_native_open_retries_at_device_default() {
             "fallback did not land on the device default"
         );
     }
-    assert!(
-        opens.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-        "expected a failed native open + a successful default open"
+    {
+        let seen = opens.lock().unwrap();
+        assert!(
+            seen.iter().filter(|r| **r == 44100).count() == 1
+                && seen.iter().filter(|r| **r == 48000).count() >= 2,
+            "expected one failed native open + default opens, got {seen:?}"
+        );
+    }
+
+    // The failed format is remembered: a second 44.1k load must skip the
+    // native attempt and go straight to the device default.
+    events.lock().unwrap().clear();
+    load_file(&engine, &path, "q2", 2, None);
+    let ended = wait_for(
+        &events,
+        |v| is_method(v, "event.trackEnded"),
+        Duration::from_secs(20),
+    );
+    assert!(ended, "second load must also succeed on the default");
+    assert_eq!(
+        opens
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| **r == 44100)
+            .count(),
+        1,
+        "native_failed cache was not consulted on the second load"
     );
     engine.shutdown();
 }
