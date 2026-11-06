@@ -41,6 +41,14 @@ interface Real {
   yt: FakeAdapter;
   /** Adapters whose engine currently has output started. */
   sounding: Map<RouteId, boolean>;
+  /** Adapter calls currently in flight (the model's handoff phases). */
+  adapterInFlight: number;
+  /** Command promises currently in flight. */
+  commandsInFlight: number;
+  /** Routes with a stop call in flight (spec's stopout/resile phases). */
+  stopPending: Set<RouteId>;
+  /** Routes whose stop teardown failure was reported (spec's stoppedBad). */
+  stopFailed: Set<RouteId>;
   /** One-shot injected faults, keyed `route:method`. */
   inject: Map<string, "fail" | "delay">;
   /** Command promises still in flight. */
@@ -62,16 +70,43 @@ function realRig(): Real {
     ["youtube-music", false],
   ]);
   const inject = new Map<string, "fail" | "delay">();
+  const real: Real = {
+    coordinator: undefined as unknown as Coordinator,
+    local,
+    yt,
+    sounding,
+    adapterInFlight: 0,
+    commandsInFlight: 0,
+    stopPending: new Set(),
+    stopFailed: new Set(),
+    inject,
+    pending: [],
+  };
   for (const a of [local, yt]) {
     const origPlay = a.play.bind(a);
     const origStop = a.stop.bind(a);
-    a.play = (item, lease, opts) => {
-      sounding.set(a.route, true);
-      return origPlay(item, lease, opts);
-    };
+    a.play = (item, lease, opts) =>
+      // physical truth: the engine is audible only once play RESOLVES —
+      // a rejected play produced no output
+      origPlay(item, lease, opts).then((v) => {
+        sounding.set(a.route, true);
+        return v;
+      });
     a.stop = (lease) => {
-      sounding.set(a.route, false);
-      return origStop(lease);
+      real.stopPending.add(a.route);
+      return origStop(lease).then(
+        (v) => {
+          sounding.set(a.route, false);
+          real.stopPending.delete(a.route);
+          real.stopFailed.delete(a.route);
+          return v;
+        },
+        (err) => {
+          real.stopPending.delete(a.route);
+          real.stopFailed.add(a.route);
+          throw err;
+        },
+      );
     };
     // Outermost: one-shot injected faults — a failed call never reaches
     // the adapter; a delayed call resolves on a 25ms engine stall.
@@ -80,36 +115,75 @@ function realRig(): Real {
       (a as unknown as Record<string, unknown>)[m] = (...args: unknown[]) => {
         const key = `${a.route}:${m}`;
         const mode = inject.get(key);
+        real.adapterInFlight += 1;
+        const settle = () => {
+          real.adapterInFlight -= 1;
+        };
         if (mode === "fail") {
           inject.delete(key);
-          return Promise.reject(new Error(`injected ${m} failure`));
+          if (m === "stop") real.stopFailed.add(a.route);
+          return Promise.reject(new Error(`injected ${m} failure`)).finally(settle);
         }
         if (mode === "delay") {
           inject.delete(key);
-          return new Promise((res) => setTimeout(() => res(inner(...args)), 25));
+          return new Promise((res) => setTimeout(() => res(inner(...args)), 25)).finally(settle);
         }
-        return inner(...args);
+        return inner(...args).finally(settle);
       };
     }
-    // The engine's own reports move physical truth too: a `started` means
-    // output began, an `ended` means it stopped on its own.
+    // The engine's own reports move physical truth — under the adapter
+    // contract a `started` is authoritative only for the live lease's
+    // generation (a stale `started` is a gated-out stale report; the
+    // model's env has the same scope). An `ended` always means silence.
     a.onEvent((e) => {
-      if (e.kind === "started") sounding.set(a.route, true);
+      const live = real.coordinator.getSnapshot().lease;
+      if (
+        e.kind === "started" &&
+        live !== null &&
+        live.generationId === e.generationId &&
+        live.route === a.route
+      ) {
+        sounding.set(a.route, true);
+      }
       if (e.kind === "ended") sounding.set(a.route, false);
     });
   }
   registry.register(local);
   registry.register(yt);
-  const coordinator = new Coordinator({ registry, store, persistDebounceMs: 0 });
-  return { coordinator, local, yt, sounding, inject, pending: [] };
+  real.coordinator = new Coordinator({ registry, store, persistDebounceMs: 0 });
+  return real;
 }
 
-/** The spec's settled-state invariant, checked on the real snapshot. */
+/** The spec's invariants, checked on the real snapshot with the same
+ * scoping the model uses: SingleAudible tolerates routes with a stop
+ * call in flight or a reported teardown failure; PlayingLeaseSound is
+ * only asserted on settled states — nothing in flight and no handoff
+ * running (the spec's `si.phase = "idle"`). */
 function checkInvariants(real: Real): void {
   const snap = real.coordinator.getSnapshot();
-  const soundingCount = [...real.sounding.values()].filter(Boolean).length;
+  const soundingCount = [...real.sounding.entries()].filter(
+    ([route, on]) => on && !real.stopPending.has(route) && !real.stopFailed.has(route),
+  ).length;
+  if (soundingCount > 1) {
+    console.log("DUAL", JSON.stringify({
+      sounding: [...real.sounding],
+      stopPending: [...real.stopPending],
+      stopFailed: [...real.stopFailed],
+      status: snap.status,
+      lease: snap.lease,
+      idx: real.coordinator.getQueue().currentIndex,
+      localCalls: real.local.calls,
+      ytCalls: real.yt.calls,
+      aif: real.adapterInFlight,
+      cif: real.commandsInFlight,
+    }));
+  }
   expect(soundingCount).toBeLessThanOrEqual(1);
-  if (snap.status === "playing") {
+  const settled =
+    real.adapterInFlight === 0 &&
+    real.commandsInFlight === 0 &&
+    snap.status !== "loading";
+  if (settled && snap.status === "playing") {
     expect(snap.lease).not.toBeNull();
     // The lease must name the current item — unless the engine reported a
     // foreign promotion: a queueId the queue does not contain (the spec's
