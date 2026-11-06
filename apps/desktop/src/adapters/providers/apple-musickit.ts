@@ -394,27 +394,43 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // Don't await the popup — it can stay open minutes while the user types;
     // auth completion arrives through playerState → capabilitiesChanged.
     this.session.reveal();
-    const authed = this.session
-      .eval<boolean>(`window.__cadenceCtl.authorize().then(() => true).catch(() => false)`, 120_000)
-      .catch(() => false);
-    const early = await Promise.race([
-      authed,
-      new Promise<boolean>((r) => setTimeout(() => r(true), 5_000)),
-    ]);
-    let usedFallback = false;
-    if (early === false) {
-      // authorize() rejected immediately (no controller, dead page) — try
-      // the page's own button before giving up.
-      usedFallback = true;
-      await this.session.eval(`window.__cadenceCtl.clickSignIn()`).catch(() => {});
+    // 'timeout' is not a dismissal — the popup may still be open while the
+    // user types; only a real rejection/false means the flow ended.
+    const authed: Promise<true | false | "timeout"> = this.session
+      .eval<boolean | false>(
+        `window.__cadenceCtl.authorize().then((r) => r !== false).catch(() => false)`,
+        120_000,
+      )
+      .catch((e) => (/timed out/i.test((e as Error).message) ? "timeout" : false));
+    // Give authorize() a short window to fail fast — an immediate rejection
+    // (no mk.authorize, dead page) needs a different recovery than a popup
+    // that's simply waiting on the user.
+    const SETTLED = Symbol("settled");
+    const settledEarly =
+      (await Promise.race([
+        authed.then(() => SETTLED),
+        new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
+      ])) === SETTLED;
+    if (settledEarly && (await authed) === false) {
+      // authorize() rejected immediately — try the page's own button; if
+      // even that can't run, fail loudly so the UI can toast it.
+      const clicked = await this.session
+        .eval<boolean>(`window.__cadenceCtl.clickSignIn()`)
+        .catch(() => false);
+      this.signInPending = false;
+      if (!clicked) {
+        this.session.hide();
+        throw new Error("couldn't open Apple sign-in — try again");
+      }
+      this.emit({ kind: "capabilitiesChanged" });
+      return;
     }
     void authed.then((ok) => {
       this.signInPending = false;
-      // A stale attempt must not hide the window a newer sign-in is using,
-      // and the fallback needs the window to stay visible to be usable.
+      // A stale attempt must not hide the window a newer sign-in is using;
+      // 'timeout' leaves the popup open — don't hide on a guess.
       if (
         ok === false &&
-        !usedFallback &&
         attempt === this.signInAttempt &&
         !this.authorized &&
         !this.destroyed

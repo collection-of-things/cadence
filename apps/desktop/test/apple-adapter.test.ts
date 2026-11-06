@@ -242,4 +242,30 @@ describe("apple adapter page events", () => {
     const caps2 = await adapter.capabilities();
     expect(caps2.state).toBe("ready");
   });
+
+  it("signIn throws when neither authorize() nor the fallback can open auth", async () => {
+    const orig = sess.eval.bind(sess);
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      if (expr.includes("authorize()")) return Promise.reject(new Error("dead"));
+      if (expr.includes("clickSignIn()")) return Promise.resolve(false);
+      return Promise.resolve(true);
+    };
+    await expect(adapter.signIn()).rejects.toThrow(/couldn't open/);
+    (sess as any).eval = orig;
+  });
+
+  it("a timed-out authorize() does not hide the window (popup may still be open)", async () => {
+    const orig = sess.eval.bind(sess);
+    let hideCount = 0;
+    (sess as any).hide = () => { hideCount++; };
+    (sess as any).eval = (expr: string) => {
+      sess.evals.push(expr);
+      return expr.includes("authorize()") ? Promise.reject(new Error("eval timed out")) : Promise.resolve(true);
+    };
+    await adapter.signIn();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(hideCount).toBe(0);
+    (sess as any).eval = orig;
+  });
 });
