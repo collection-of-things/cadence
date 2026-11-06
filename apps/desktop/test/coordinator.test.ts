@@ -247,6 +247,56 @@ describe("coordinator: persistence", () => {
     expect(local2.playedItems[0]?.positionMs).toBe(42_000);
     c2.dispose();
   });
+
+  it("play after a restored session continues the current item at its position", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a"), fakeItem("b")] });
+    // Pause mid-way through the SECOND item so a "restart queue[0] at 0"
+    // regression is visible.
+    const secondId = r.coordinator.getQueue().items[1]?.queueId ?? "";
+    await r.coordinator.handleCommand({ kind: "play", queueId: secondId });
+    await r.coordinator.handleCommand({ kind: "seek", positionMs: 42_000 });
+    r.coordinator.dispose();
+
+    const registry = new AdapterRegistry();
+    const local2 = new FakeAdapter("local");
+    registry.register(local2);
+    registry.register(new FakeAdapter("youtube-music"));
+    const c2 = new Coordinator({ registry, store: new SettingsStore(r.storePath), persistDebounceMs: 0 });
+    // The bare transport Play (no queueId) must continue the restored item —
+    // not restart queue[0] at 0.
+    await c2.handleCommand({ kind: "play" });
+    expect(local2.playedItems).toHaveLength(1);
+    expect(local2.playedItems[0]?.queueId).toBe(c2.getQueue().items[1]?.queueId);
+    expect(local2.playedItems[0]?.positionMs).toBe(42_000);
+    expect(c2.getSnapshot().status).toBe("playing");
+    c2.dispose();
+  });
+});
+
+describe("coordinator: transport", () => {
+  it("play after pause resumes the adapter — the item is not reloaded", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({
+      kind: "setQueue",
+      items: [fakeItem("a"), fakeItem("b")],
+      startIndex: 1,
+    });
+    await r.coordinator.handleCommand({ kind: "seek", positionMs: 42_000 });
+    await r.coordinator.handleCommand({ kind: "pause" });
+    expect(r.coordinator.getSnapshot().status).toBe("paused");
+    expect(r.local.playedItems).toHaveLength(1);
+
+    await r.coordinator.handleCommand({ kind: "play" });
+    const snap = r.coordinator.getSnapshot();
+    expect(snap.status).toBe("playing");
+    // Resume continues the loaded item: a resume on the same lease, not a
+    // second play that would restart it (or queue[0]) at position 0.
+    expect(r.local.calls).toContain(`resume:g${snap.lease?.generationId}`);
+    expect(r.local.playedItems).toHaveLength(1);
+    expect(snap.current?.queueId).toBe(r.coordinator.getQueue().items[1]?.queueId);
+    expect(snap.positionMs).toBe(42_000);
+  });
 });
 
 describe("coordinator: engine restart", () => {

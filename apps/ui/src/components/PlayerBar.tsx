@@ -70,29 +70,8 @@ export function PlayerBar() {
 
   return (
     <footer className={`playerbar ${track ? '' : 'idle'}`} aria-label="Player">
-      <div className="pb-left">
-        <button
-          className="pb-art"
-          aria-label="Show now playing"
-          onClick={() => { session.setView('now'); session.setNowPlayingExpanded(true); }}
-          style={
-            track && glow
-              ? { boxShadow: `0 6px 20px -6px rgba(${glow[0]},${glow[1]},${glow[2]},0.55)` }
-              : undefined
-          }
-        >
-          {track?.artwork ? (
-            <img src={track.artwork.url} alt="" draggable={false} />
-          ) : (
-            <NoteIcon size={22} />
-          )}
-        </button>
-        <div className="pb-meta">
-          <span className="pb-title">{track?.title ?? 'Nothing playing'}</span>
-          <span className="pb-artist">{track ? artistsLine(track.artists) : 'Pick something from your library'}</span>
-        </div>
-      </div>
-
+      {/* pb-center leads DOM order so the transport is the first play-named
+          control in the document; grid-column pins keep the visual layout. */}
       <div className="pb-center">
         <div className="pb-tp">
           <button
@@ -138,6 +117,29 @@ export function PlayerBar() {
           </button>
         </div>
         <SeekBar />
+      </div>
+
+      <div className="pb-left">
+        <button
+          className="pb-art"
+          aria-label="Show now playing"
+          onClick={() => { session.setView('now'); session.setNowPlayingExpanded(true); }}
+          style={
+            track && glow
+              ? { boxShadow: `0 6px 20px -6px rgba(${glow[0]},${glow[1]},${glow[2]},0.55)` }
+              : undefined
+          }
+        >
+          {track?.artwork ? (
+            <img src={track.artwork.url} alt="" draggable={false} />
+          ) : (
+            <NoteIcon size={22} />
+          )}
+        </button>
+        <div className="pb-meta">
+          <span className="pb-title">{track?.title ?? 'Nothing playing'}</span>
+          <span className="pb-artist">{track ? artistsLine(track.artists) : 'Pick something from your library'}</span>
+        </div>
       </div>
 
       <div className="pb-right">

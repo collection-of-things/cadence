@@ -32,6 +32,13 @@
   }
 }
 
+/* DOM order inside the bar is center/left/right (transport first for
+   accessible-name resolution); the pins below keep the visual zones
+   left/center/right regardless. */
+.pb-left { grid-column: 1; }
+.pb-center { grid-column: 2; }
+.pb-right { grid-column: 3; }
+
 /* --- left: artwork + meta + love --- */
 
 .pb-left {
