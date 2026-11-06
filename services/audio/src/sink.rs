@@ -247,9 +247,13 @@ impl DeviceCaps for CpalCaps {
             Some(c) => c.as_slice(),
             None => {
                 let it = self.device.supported_output_configs().ok()?;
-                self.cfgs
-                    .get_or_init(|| it.collect::<Vec<_>>())
-                    .as_slice()
+                // An empty result isn't a capability answer — leave the
+                // cache unset so a later call can re-query.
+                let cfgs_vec: Vec<_> = it.collect();
+                if cfgs_vec.is_empty() {
+                    return None;
+                }
+                self.cfgs.get_or_init(|| cfgs_vec).as_slice()
             }
         };
         let mut fallback_f32 = false;
