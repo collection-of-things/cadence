@@ -54,6 +54,7 @@ fn spa_format(kind: PcmKind) -> spa::param::audio::AudioFormat {
 /// Channel ordinals from `spa_audio_channel` (spa/param/audio/raw.h) —
 /// libspa doesn't re-export a typed constant for them.
 mod pos {
+    // spa_audio_channel ordinals (spa/param/audio/raw.h).
     pub const MONO: u32 = 2;
     pub const FL: u32 = 3;
     pub const FR: u32 = 4;
@@ -67,11 +68,18 @@ mod pos {
     pub const RL: u32 = 12;
     pub const RR: u32 = 13;
     pub const TFL: u32 = 15;
+    pub const TFC: u32 = 16;
     pub const TFR: u32 = 17;
-    pub const TBL: u32 = 18;
-    pub const TBC: u32 = 19;
-    pub const TBR: u32 = 20;
-    pub const LFE2: u32 = 23;
+    // ffmpeg "top back" ↔ spa "top rear" (TRL/TRC/TRR).
+    pub const TRL: u32 = 18;
+    pub const TRC: u32 = 19;
+    pub const TRR: u32 = 20;
+    // ffmpeg WL/WR ↔ spa FLW/FRW.
+    pub const FLW: u32 = 23;
+    pub const FRW: u32 = 24;
+    pub const LFE2: u32 = 25;
+    pub const TSL: u32 = 31;
+    pub const TSR: u32 = 32;
 }
 
 /// Speaker positions for an ffmpeg channel-order layout — the decoder
@@ -111,17 +119,28 @@ fn layout_named(name: &str) -> Option<Vec<u32>> {
         "7.1(wide-side)" => vec![FL, FR, FC, LFE, FLC, FRC, SL, SR],
         "5.1.2" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR],
         "5.1.2(back)" => vec![FL, FR, FC, LFE, RL, RR, TFL, TFR],
-        "5.1.4" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR, TBL, TBR],
+        "5.1.4" => vec![FL, FR, FC, LFE, SL, SR, TFL, TFR, TRL, TRR],
         "7.1.2" => vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR],
         "7.1.4" => {
-            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TBL, TBR]
+            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRL, TRR]
         }
         "7.2.3" => {
-            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TBC, LFE2]
+            vec![FL, FR, FC, LFE, RL, RR, SL, SR, TFL, TFR, TRC, LFE2]
         }
         "hexagonal" => vec![FL, FR, FC, RL, RR, RC],
         "octagonal" => vec![FL, FR, FC, RL, RR, RC, SL, SR],
-        "cube" => vec![FL, FR, RL, RR, TFL, TFR, TBL, TBR],
+        "cube" => vec![FL, FR, RL, RR, TFL, TFR, TRL, TRR],
+        "9.1.4" => vec![
+            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
+        ],
+        "9.1.6" => vec![
+            FL, FR, FC, LFE, RL, RR, FLC, FRC, SL, SR, TFL, TFR, TRL, TRR,
+            TSL, TSR,
+        ],
+        "hexadecagonal" => vec![
+            FL, FR, FC, RL, RR, RC, SL, SR, TFL, TFC, TFR, TRL, TRC, TRR,
+            FLW, FRW,
+        ],
         _ => return None,
     })
 }
@@ -784,6 +803,7 @@ impl PipeWireCaps {
             t0,
             staged,
             inflight,
+            bytes_per_frame: (T::BYTES * neg.channels as usize) as u64,
             device_delay_frames: latency as u64,
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
@@ -970,6 +990,9 @@ pub struct PipeWireSink {
     /// Frames currently pulled into the cycle buffer, shared with the
     /// feed — see Feed::inflight.
     inflight: Arc<AtomicU64>,
+    /// Bytes per interleaved frame (kind size × channels) — converts
+    /// pw_time.queued (bytes) into frames.
+    bytes_per_frame: u64,
     /// Caps' shared error cell — the watchdog writes here (not just the
     /// dead flag) so a mid-playback stall reaches the monitor's
     /// device_error poll, not only the next open.
@@ -1134,8 +1157,12 @@ impl Sink for PipeWireSink {
                 // CURRENT cycle's buffer — unheard, but briefly in
                 // neither `staged` nor `delay` — a snapshot between
                 // would let a rebuild skip them. Zero outside process.
+                // + queued: buffers handed back but not yet consumed —
+                // pw_time.queued is BYTES, converted via the negotiated
+                // bytes-per-frame.
                 (delay_secs * self.rate_hz as f64).round() as u64
                     + t.buffered()
+                    + t.queued() / self.bytes_per_frame
                     + self.inflight.load(Ordering::Acquire)
             })
             .unwrap_or(self.device_delay_frames)
