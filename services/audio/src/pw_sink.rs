@@ -904,7 +904,14 @@ impl Sink for PipeWireSink {
     }
 
     fn device_delay_frames(&self) -> u64 {
-        self.device_delay_frames
+        // Real graph-side queueing, not the negotiated estimate: pw_time's
+        // `queued` counts samples the graph is holding right now. Fall
+        // back to the latency quantum if the query fails.
+        let _g = self.tl.lock();
+        self.stream
+            .time()
+            .map(|t| t.queued())
+            .unwrap_or(self.device_delay_frames)
     }
 }
 

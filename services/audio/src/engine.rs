@@ -209,8 +209,9 @@ pub struct OutputCore {
     /// the last track ended with nothing behind it — set by advance_track,
     /// cleared when a new track is installed. Distinguishes "active is
     /// None because playback ended" from "active is None because a
-    /// rebuild cleared it".
-    ended_pending: bool,
+    /// rebuild cleared it". pub(crate) so the feeder can stop topping
+    /// the staging ring with post-EOF silence.
+    pub(crate) ended_pending: bool,
     /// a stream rebuild is between clear_all and the negotiated commit —
     /// readers spawned or installed in this window would attach to a
     /// format that is about to change.
@@ -2707,9 +2708,12 @@ impl Engine {
         // reports once per sink instance, not a probing/event storm
         // every tick.
         let mut sink_dead_reported: Option<usize> = None;
-        // A non-gapless Ended parked while the staged tail plays out —
-        // see the Ended arm below.
-        let mut pending_end: Option<(String, u64, std::time::Instant)> = None;
+        // Non-gapless Ended events parked while the staged tail plays
+        // out — queued because a fast user load can END a successor
+        // before the predecessor's drain finishes; each entry carries
+        // its own rate-scaled deadline.
+        let mut pending_ends: std::collections::VecDeque<(String, u64, std::time::Instant, u64)> =
+            std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2806,34 +2810,73 @@ impl Engine {
                     }
                     CoreEvent::Ended { queue_id, instance } => {
                         // Park the end until the staging ring drains —
-                        // the last ~186ms of the track is still audible
+                        // the last chunk of the track is still audible
                         // in the ring. Handling it now would clear the
                         // tail unplayed (mpv drains via ao_drain;
-                        // GStreamer waits on EOS). Bounded so a stalled
-                        // callback can't hang the transition.
-                        if pending_end.is_none() {
-                            pending_end =
-                                Some((queue_id, instance, std::time::Instant::now()));
-                        }
+                        // GStreamer waits on EOS). The deadline scales
+                        // with the staged tail at park time so long
+                        // low-rate rings get their full drain; a paused
+                        // track keeps its tail until resume.
+                        let (staged, rate) = {
+                            let staged = self
+                                .sink
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .map(|s| s.staged_frames())
+                                .unwrap_or(0);
+                            let rate = self
+                                .core
+                                .lock()
+                                .unwrap()
+                                .negotiated
+                                .rate
+                                .max(1) as u64;
+                            (staged, rate)
+                        };
+                        let deadline_ms = staged * 1000 / rate + 500;
+                        pending_ends.push_back((
+                            queue_id,
+                            instance,
+                            std::time::Instant::now(),
+                            deadline_ms,
+                        ));
                     }
                 }
             }
-            // A parked non-gapless end: wait out the staged tail before
-            // emitting trackEnded / respawning the successor.
-            if let Some((qid, inst, since)) = pending_end.take() {
-                let staged = self
-                    .sink
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|s| s.staged_frames())
-                    .unwrap_or(0);
+            // Parked non-gapless ends: the head waits for its staged
+            // tail to drain (bounded by its own deadline); while paused
+            // the deadline doesn't tick — the tail belongs to the user.
+            while let Some((qid, inst, since, deadline_ms)) = pending_ends.pop_front() {
+                let (staged, paused_now) = {
+                    let staged = self
+                        .sink
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|s| s.staged_frames())
+                        .unwrap_or(0);
+                    let paused = self.state.lock().unwrap().state == PlayState::Paused;
+                    (staged, paused)
+                };
+                if paused_now {
+                    // Reset the deadline base so the pause doesn't eat it.
+                    pending_ends.push_front((
+                        qid,
+                        inst,
+                        std::time::Instant::now(),
+                        deadline_ms,
+                    ));
+                    break;
+                }
                 if staged == 0
-                    || since.elapsed() > std::time::Duration::from_millis(400)
+                    || since.elapsed()
+                        > std::time::Duration::from_millis(deadline_ms)
                 {
                     self.handle_track_end(qid, inst);
                 } else {
-                    pending_end = Some((qid, inst, since));
+                    pending_ends.push_front((qid, inst, since, deadline_ms));
+                    break;
                 }
             }
             // underrun -> buffering (once per stall), then a state=playing

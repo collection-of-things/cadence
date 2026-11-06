@@ -142,6 +142,15 @@ pub fn spawn_feed<T: PcmSample>(
                         std::thread::sleep(std::time::Duration::from_millis(5));
                         continue;
                     }
+                    if c.ended_pending {
+                        // Track ended: stop topping the ring up with
+                        // pull-side silence so staged_frames() can reach
+                        // zero — the monitor parks the end until the
+                        // tail actually plays out.
+                        drop(c);
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        continue;
+                    }
                     if prod.free_space() < scratch.len() {
                         drop(c);
                         std::thread::sleep(std::time::Duration::from_millis(2));
