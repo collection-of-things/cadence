@@ -2715,8 +2715,14 @@ impl Engine {
         // out — queued because a fast user load can END a successor
         // before the predecessor's drain finishes; each entry carries
         // its own rate-scaled deadline.
-        let mut pending_ends: std::collections::VecDeque<(String, u64, std::time::Instant, u64)> =
-            std::collections::VecDeque::new();
+        // (queue_id, instance, parked_at, deadline_ms, drain_issued)
+        let mut pending_ends: std::collections::VecDeque<(
+            String,
+            u64,
+            std::time::Instant,
+            u64,
+            bool,
+        )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2843,6 +2849,7 @@ impl Engine {
                             instance,
                             std::time::Instant::now(),
                             deadline_ms,
+                            false,
                         ));
                     }
                 }
@@ -2850,39 +2857,91 @@ impl Engine {
             // Parked non-gapless ends: the head waits for its staged
             // tail to drain (bounded by its own deadline); while paused
             // the deadline doesn't tick — the tail belongs to the user.
-            while let Some((qid, inst, since, deadline_ms)) = pending_ends.pop_front() {
-                let (drained, paused_now) = {
-                    let d = self
-                        .sink
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|s| s.staged_frames() + s.device_delay_frames())
-                        .unwrap_or(0);
-                    let paused = self.state.lock().unwrap().state == PlayState::Paused;
-                    (d, paused)
-                };
-                if paused_now {
-                    // Reset the deadline base so the pause doesn't eat it.
-                    pending_ends.push_front((
-                        qid,
-                        inst,
-                        std::time::Instant::now(),
-                        deadline_ms,
-                    ));
-                    break;
+            // staged==0 alone only means the callback COPIED the tail
+            // into a PipeWire buffer — the graph can still hold a
+            // quantum. Issue a drain and wait for the `drained` event
+            // (mpv's pw_stream_flush model); the deadline bounds a
+            // stalled graph.
+            while let Some((qid, inst, since, deadline_ms, issued)) =
+                pending_ends.pop_front()
+            {
+                enum Gate {
+                    Playing,
+                    Drained,
+                    WaitDrain,
+                    Paused,
                 }
-                // staged==0 alone only means the callback COPIED the
-                // tail into a PipeWire buffer — device_delay_frames
-                // covers what's still queued downstream of it.
-                if drained == 0
-                    || since.elapsed()
-                        > std::time::Duration::from_millis(deadline_ms)
-                {
-                    self.handle_track_end(qid, inst);
-                } else {
-                    pending_ends.push_front((qid, inst, since, deadline_ms));
-                    break;
+                let gate = {
+                    let g = self.sink.lock().unwrap();
+                    let sd = g
+                        .as_ref()
+                        .map(|s| (s.staged_frames(), s.downstream_drained()));
+                    let paused =
+                        self.state.lock().unwrap().state == PlayState::Paused;
+                    match sd {
+                        _ if paused => Gate::Paused,
+                        None => Gate::Drained,
+                        Some((0, true)) => Gate::Drained,
+                        Some((0, false)) if !issued => Gate::WaitDrain,
+                        Some((0, false)) => Gate::Playing,
+                        Some(_) => Gate::Playing,
+                    }
+                };
+                match gate {
+                    Gate::Paused => {
+                        // Deadline doesn't tick while paused.
+                        pending_ends.push_front((
+                            qid,
+                            inst,
+                            std::time::Instant::now(),
+                            deadline_ms,
+                            issued,
+                        ));
+                        break;
+                    }
+                    Gate::WaitDrain => {
+                        // staged hit 0 — flush once and wait for the
+                        // `drained` event next ticks.
+                        let ok = self
+                            .sink
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|s| s.request_drain())
+                            .unwrap_or(false);
+                        if ok {
+                            pending_ends.push_front((
+                                qid,
+                                inst,
+                                since,
+                                deadline_ms,
+                                true,
+                            ));
+                            break;
+                        }
+                        // Backend can't drain-report — fall through to
+                        // handling (the staged tail already played).
+                        self.handle_track_end(qid, inst);
+                    }
+                    Gate::Drained => {
+                        self.handle_track_end(qid, inst);
+                    }
+                    Gate::Playing => {
+                        if since.elapsed()
+                            > std::time::Duration::from_millis(deadline_ms)
+                        {
+                            self.handle_track_end(qid, inst);
+                        } else {
+                            pending_ends.push_front((
+                                qid,
+                                inst,
+                                since,
+                                deadline_ms,
+                                issued,
+                            ));
+                            break;
+                        }
+                    }
                 }
             }
             // underrun -> buffering (once per stall), then a state=playing

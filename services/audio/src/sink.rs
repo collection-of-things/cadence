@@ -258,6 +258,15 @@ pub trait Sink: Send {
     fn device_delay_frames(&self) -> u64 {
         0
     }
+    /// Ask the backend to drain its downstream queue; returns false if
+    /// unsupported. Used at end-of-track so the tail plays out fully.
+    fn request_drain(&self) -> bool {
+        false
+    }
+    /// True once a request_drain() has completed downstream.
+    fn downstream_drained(&self) -> bool {
+        true
+    }
 }
 
 // ------------------------------- null device -------------------------------

@@ -460,6 +460,10 @@ struct StreamErr {
     dead: Arc<AtomicBool>,
     state: Arc<std::sync::atomic::AtomicU8>,
     suppress: Arc<AtomicBool>,
+    /// set by the `drained` stream event after a flush(true) — the
+    /// engine's end-of-track drain waits on this instead of guessing
+    /// at graph queueing (mpv flushes the same way).
+    drained: Arc<AtomicBool>,
 }
 
 impl PipeWireCaps {
@@ -496,6 +500,7 @@ impl PipeWireCaps {
         let dead = Arc::new(AtomicBool::new(false));
         let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let suppress = Arc::new(AtomicBool::new(false));
+        let drained = Arc::new(AtomicBool::new(false));
         // Spawn before the thread loop; FeedGuard::drop stops+joins on
         // every subsequent failure path.
         let (cons, feed) = spawn_feed(
@@ -550,6 +555,7 @@ impl PipeWireCaps {
                     dead: Arc::clone(&dead),
                     state: Arc::clone(&state),
                     suppress: Arc::clone(&suppress),
+                    drained: Arc::clone(&drained),
                 })
                 .state_changed(|_s, ud, old, new| {
                     if ud.suppress.load(Ordering::Relaxed) {
@@ -584,6 +590,9 @@ impl PipeWireCaps {
                         }
                         ud.dead.store(true, Ordering::Relaxed);
                     }
+                })
+                .drained(|_s, ud| {
+                    ud.drained.store(true, Ordering::Relaxed);
                 })
                 .register()?;
             let process_listener = stream
@@ -697,10 +706,10 @@ impl PipeWireCaps {
             t0,
             staged,
             device_delay_frames: latency as u64,
-            frame_bytes: (T::BYTES * neg.channels.max(1) as usize) as u64,
             rate_hz: neg.rate as u64,
             error: Arc::clone(&self.error),
             state,
+            drained,
             wd_paused: AtomicBool::new(paused_flag),
         }))
     }
@@ -820,8 +829,6 @@ pub struct PipeWireSink {
     /// Negotiated latency quantum — the device-side delay not included
     /// in `staged` (samples already handed to the graph).
     device_delay_frames: u64,
-    /// Bytes per frame — pw_time.queued counts bytes, not frames.
-    frame_bytes: u64,
     /// Negotiated rate — pw_time.delay is in `rate` ticks, converted
     /// back to frames at the stream's own rate.
     rate_hz: u64,
@@ -840,6 +847,10 @@ pub struct PipeWireSink {
     /// reseeds the grace window so a resume can't false-trip on a
     /// timestamp that went stale DURING the pause.
     wd_paused: AtomicBool,
+    /// Set by the `drained` event after request_drain() flushes the
+    /// downstream queue — the stream event's own signal that the tail
+    /// has actually played out (mpv's pw_stream_flush model).
+    drained: Arc<AtomicBool>,
 }
 
 // StreamRc/ThreadLoopRc are Rc-based (!Send) — the same portability
@@ -911,12 +922,13 @@ impl Sink for PipeWireSink {
     }
 
     fn device_delay_frames(&self) -> u64 {
-        // Real graph-side queueing, not the negotiated estimate:
-        // pw_time.queued is BYTES in the stream, buffered adds the
-        // converter-level backlog (frames), and delay is the remaining
-        // downstream graph/device latency in `rate` ticks (usually
-        // 1/samplerate — the docs' formula is delay*num/denom seconds).
-        // Fall back to the negotiated quantum if the query fails.
+        // The same accounting mpv's ao_pipewire does: `delay` is the
+        // stream-to-device latency in `rate` ticks (usually 1/rate —
+        // docs: delay*num/denom seconds) and `buffered` is the
+        // converter's own backlog in frames. `queued` is not usable
+        // here — it sums pw_buffer.size values the app must set, and
+        // pipewire-rs exposes no size setter. Fall back to the
+        // negotiated quantum if the query fails.
         // tl.lock() on the 20ms monitor path — a bounded struct read
         // only. This MUST stay non-blocking: it's the only monitor →
         // thread-loop-lock edge, so nothing inside may wait on the
@@ -928,10 +940,22 @@ impl Sink for PipeWireSink {
                 let rate = t.rate();
                 let delay_secs =
                     t.delay().max(0) as f64 * rate.num as f64 / rate.denom.max(1) as f64;
-                let delay_frames = (delay_secs * self.rate_hz as f64).round() as u64;
-                t.queued() / self.frame_bytes.max(1) + t.buffered() + delay_frames
+                (delay_secs * self.rate_hz as f64).round() as u64 + t.buffered()
             })
             .unwrap_or(self.device_delay_frames)
+    }
+
+    fn request_drain(&self) -> bool {
+        // flush(drain=true) → the `drained` event fires once the
+        // downstream queue has played out. Reset the flag first so a
+        // stale event can't short the wait.
+        self.drained.store(false, Ordering::Relaxed);
+        let _g = self.tl.lock();
+        self.stream.flush(true).is_ok()
+    }
+
+    fn downstream_drained(&self) -> bool {
+        self.drained.load(Ordering::Relaxed)
     }
 }
 
