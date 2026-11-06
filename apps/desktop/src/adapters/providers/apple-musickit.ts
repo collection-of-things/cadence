@@ -126,6 +126,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       return await this.session.eval<T>(`window.__cadenceCtl.${call}`);
     } catch (e) {
       if (opts.retry === false) throw e;
+      // A timed-out page gets no retry — probing it costs another timeout.
+      if (/timed out/i.test((e as Error).message)) throw e;
       // Retry only when the controller is actually missing — never on a call
       // that merely failed (a retried POST would run twice).
       const present = await this.session
@@ -244,6 +246,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     this.generation = lease.generationId;
     // Suppress stale boundary 'ended' events while the new item starts.
     this.promotedAt = Date.now();
+    this.installBackoffUntil = 0; // a real play request waits for install
     await this.prepare();
     const spec = specFor(item.track);
     try {
@@ -288,14 +291,35 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     return this.enqueueMirror(async () => {
       // Only the real successor may be mirrored — a replaced one must leave
       // the provider queue or it could still promote and play.
-      if (this.mirrored.length > 0 && !this.mirrored.some((m) => m.providerId === spec.id)) {
+      const prior = this.mirrored.findIndex((m) => m.providerId === spec.id);
+      if (prior >= 0) {
+        // Same song under a new queueId — keep the provider-queue entry but
+        // re-point bookkeeping at the new queue item.
+        this.mirrored = this.mirrored.slice(prior);
+        this.mirrored[0]!.queueId = item.queueId;
+        if (this.mirrored.length > 1) {
+          this.mirrored = this.mirrored.slice(0, 1);
+          await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
+        }
+        return;
+      }
+      if (this.mirrored.length > 0) {
         this.mirrored = [];
         await this.session.eval(`window.__cadenceCtl.clearPlayLater()`).catch(() => {});
       }
       // A station has no track boundary — mirroring gains nothing and
       // MusicKit would report the stream's song id (not the station id).
-      if (spec.type === "station") return;
-      if (this.mirrored.some((m) => m.providerId === spec.id)) return;
+      // While a station is current, the provider queue is the stream —
+      // a mirrored song would play INSIDE it invisibly.
+      if (spec.type === "station" || this.current?.station) return;
+      // A second copy of the currently-playing song: don't append — if the
+      // provider queue already holds one (it was in the loaded set) the
+      // position-change promotion path adopts it; if not, the coordinator's
+      // end-fallback plays it. Appending would add a third copy.
+      if (spec.id === this.current?.providerId) {
+        this.mirrored.push({ queueId: item.queueId, providerId: spec.id, station: false });
+        return;
+      }
       try {
         await this.session.eval(
           `window.__cadenceCtl.playLater(${JSON.stringify(spec)})`,
@@ -346,6 +370,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
 
   async signIn(): Promise<void> {
     this.signedOut = false;
+    this.installBackoffUntil = 0; // explicit user action clears backoff
     await this.prepare();
     // The user signs into music.apple.com on Apple's own page — our window,
     // their site, their credentials. MusicKit auth follows the site session.
@@ -461,7 +486,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
    * a gapless end + promoted start so the coordinator adopts the lease.
    */
   private onNowPlaying(id: string | null, queuePos?: number): void {
-    if (id === null || this.current === null) return;
+    if (id === null) return;
+    if (this.current === null) {
+      // Playback started inside the page itself (user clicked play during
+      // sign-in) — nothing owns it, so pause it before the window hides.
+      void this.session.eval(`window.__cadenceCtl.pause()`).catch(() => {});
+      return;
+    }
     if (id === this.current.providerId) {
       // Same id at a NEW queue position = MusicKit promoted a second copy
       // of the song (a duplicate entry) — treat it as a mirror promotion.

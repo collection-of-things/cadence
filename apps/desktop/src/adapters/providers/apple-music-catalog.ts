@@ -242,7 +242,6 @@ export function stationTrackRef(station: {
 
 // --- TTML -> LRC ---------------------------------------------------------------
 
-const LRC_TIME = /(?:\d+:)?(\d+):(\d+(?:\.\d+)?)/;
 
 function ttmlTimeToSeconds(v: string): number | null {
   const m = v.trim().match(/^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$|^(\d+(?:\.\d+)?)s$/);

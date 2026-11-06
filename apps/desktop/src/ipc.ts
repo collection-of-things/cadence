@@ -111,6 +111,11 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   });
   ipcMain.handle(C.routeSignOut, async (_e, route: unknown) => {
     const r = assertOk(parseRouteId(route));
+    const adapter = registry.get(r);
+    if (adapter?.signOut === undefined) {
+      throw new Error(`sign-out is not available for route "${r}"`);
+    }
+    await adapter.signOut();
     if (deps.routeSignOut !== undefined) await deps.routeSignOut(r);
   });
 
@@ -126,7 +131,7 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     return Promise.race([
       adapter.search(text),
       new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`search on route "${route}" timed out`)), 15_000),
+        setTimeout(() => rej(new Error(`search on route "${route}" timed out`)), 30_000),
       ),
     ]);
   });

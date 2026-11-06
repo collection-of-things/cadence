@@ -331,9 +331,6 @@ export function parsePlaybackCommand(u: unknown): Result<PlaybackCommand, Invali
   }
 }
 
-function isOk_<T>(r: Result<T, InvalidIpcPayload>): r is { _tag: "ok"; value: T } {
-  return r._tag === "ok";
-}
 
 function parseQueueItemArray(u: unknown): Result<QueueItem[], InvalidIpcPayload> {
   if (!Array.isArray(u)) return fail("items must be an array");

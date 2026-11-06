@@ -280,8 +280,9 @@ async function main(): Promise<void> {
       if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
       await adapter.signIn();
     },
-    routeSignOut: async (route) => {
-      await registry.get(route)?.signOut?.();
+    routeSignOut: async (_route) => {
+      // Signing out of the provider drops the platform back to local.
+      store.saveSection("platform", { active: "local" });
     },
     platform: {
       // One streaming platform at a time; "local" means none is active.

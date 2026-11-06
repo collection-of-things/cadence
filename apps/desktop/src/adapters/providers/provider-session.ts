@@ -142,8 +142,11 @@ export class ProviderSession {
       win.webContents.on("will-redirect", (event, url) => {
         if (!hostAllowed(url)) event.preventDefault();
       });
+      let rollbackCount = 0;
       win.webContents.on("did-navigate", (_e, url) => {
         if (!hostAllowed(url)) {
+          if (rollbackCount++ >= 3) return; // offline error pages — don't loop
+          setTimeout(() => (rollbackCount = 0), 30_000);
           void win.webContents.loadURL(this.opts.url).catch(() => undefined);
         }
       });
@@ -153,38 +156,43 @@ export class ProviderSession {
         return { action: "allow", overrideBrowserWindowOptions: { show: true } };
       });
       // Sign-in popups get their own windows — keep those inside the
-      // provider's hosts too.
-      win.webContents.on("did-create-window", (child) => {
-        child.webContents.on("will-navigate", (event, url) => {
+      // provider's hosts too. Recursive: grandchildren get the same guards.
+      const guardPopup = (wc: WebContents) => {
+        wc.on("will-navigate", (event, url) => {
           if (!hostAllowed(url)) event.preventDefault();
         });
-        child.webContents.on("will-redirect", (event, url) => {
+        wc.on("will-redirect", (event, url) => {
           if (!hostAllowed(url)) event.preventDefault();
         });
-        child.webContents.setWindowOpenHandler(({ url }) =>
+        wc.setWindowOpenHandler(({ url }) =>
           hostAllowed(url)
             ? { action: "allow", overrideBrowserWindowOptions: { show: true } }
             : { action: "deny" },
         );
-      });
+        wc.on("did-create-window", (grand) => guardPopup(grand.webContents));
+      };
+      win.webContents.on("did-create-window", (child) => guardPopup(child.webContents));
 
       // Assign before loadURL: reveal() and eval() see the window even while
-      // the page is still loading (or the load fails).
+      // the page is still loading (or the load fails). A reset() during the
+      // load must not let the stale attempt overwrite the fresh state.
+      const attempt = { win };
       this.win = win;
       try {
         await win.loadURL(this.opts.url);
       } catch (e) {
         // Don't leak the failed hidden window — destroy so a retry starts clean.
-        this.win = null;
+        if (this.win === attempt.win) this.win = null;
         if (!win.isDestroyed()) win.destroy();
         throw e;
       }
     })();
 
+    const pending = this.readyPromise;
     try {
-      await this.readyPromise;
+      await pending;
     } finally {
-      this.readyPromise = null;
+      if (this.readyPromise === pending) this.readyPromise = null;
     }
   }
 

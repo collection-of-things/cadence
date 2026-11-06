@@ -200,14 +200,10 @@ export function App() {
     openArtist: (artist) => navigate({ page: 'artist', artist }),
   };
   const isApple = platform === 'apple';
-  const activePage: Extract<ShellPage, 'home' | 'library' | 'sources' | 'now'> =
+  const activePage: ShellPage =
     location.page === 'album' || location.page === 'playlist' || location.page === 'detail' || location.page === 'artist'
       ? 'library'
-      : location.page === 'now'
-        ? 'now'
-        : location.page === 'sources'
-          ? 'sources'
-          : 'home';
+      : location.page;
 
   return (
     <div className={`app app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
@@ -218,7 +214,11 @@ export function App() {
       />
       <div className="shell-stage">
         <TopBar
-          activePage={activePage}
+          activePage={
+            activePage === 'home' || activePage === 'library' || activePage === 'sources' || activePage === 'now'
+              ? activePage
+              : 'home'
+          }
           canGoBack={backStack.length > 0}
           canGoForward={forwardStack.length > 0}
           sidebarCollapsed={sidebarCollapsed}

@@ -146,6 +146,20 @@ describe("apple adapter page events", () => {
     expect((adapter as any).mirrored[0]?.providerId).toBe("sB");
   });
 
+  it("prefetch re-points a same-song mirror at the new queueId", async () => {
+    (adapter as any).mirrored = [{ queueId: "q1", providerId: "sB", station: false }];
+    await adapter.prefetch(item("q2", "sB"));
+    expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
+    expect((adapter as any).mirrored[0]?.queueId).toBe("q2");
+  });
+
+  it("prefetch skips mirroring while a station is playing", async () => {
+    (adapter as any).current = { queueId: "qSt", providerId: "ra1", station: true };
+    await adapter.prefetch(item("q2", "sB"));
+    expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
+    expect((adapter as any).mirrored).toHaveLength(0);
+  });
+
   it("prefetch to a station still clears the previous mirror", async () => {
     (adapter as any).mirrored = [{ queueId: "qA", providerId: "sA", station: false }];
     await adapter.prefetch(item("qSt", "ra1", "am:station:ra1"));

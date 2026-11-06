@@ -114,6 +114,17 @@ export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
             <div className="sidebar-divider" aria-hidden="true" />
             {navRow('localfiles', 'Local Files', 'localfiles')}
             {navRow('sources', 'Sources', 'sources')}
+            <button
+              className="sidebar-nav-row sidebar-platform-switch"
+              title={collapsed ? 'Back to local music' : undefined}
+              onClick={() => {
+                session.setPlatform('local');
+                onNavigate('home');
+              }}
+            >
+              <span className="sidebar-row-icon"><Glyph name="library" size={16} /></span>
+              {!collapsed && <span className="sidebar-row-label">My Music</span>}
+            </button>
           </>
         ) : (
           <>
