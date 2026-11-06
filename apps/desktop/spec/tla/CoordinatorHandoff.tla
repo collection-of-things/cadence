@@ -161,13 +161,16 @@ BeginStart ==
         /\ IF target = 0
              THEN \* the ended item has no successor when the link runs —
                   \* the session stops; the lease dies with the output
-                  \* (same teardown as the event-time no-successor path)
+                  \* (same teardown as the event-time no-successor path),
+                  \* and the adapter is told to stop — a resurrected
+                  \* engine must not out-sound the session
                   /\ status' = "stopped"
+                  /\ sounding' = [sounding EXCEPT ![lease.route] = FALSE]
                   /\ lease' = NoLease
                   /\ active' = "none"
                   /\ si' = si
                   /\ advanceDue' = dueLeft
-                  /\ UNCHANGED <<generation, currentIndex, sounding,
+                  /\ UNCHANGED <<generation, currentIndex,
                                  pendingPrefetch, armedGen, armedQid,
                                  inFlight, handledEnded,
                                  stoppedBad, staleStomp, movedAdvance>>
@@ -465,7 +468,9 @@ TimerFire ==
     /\ armedQid' = 0
     /\ pendingPrefetch' = NoPf
     \* staleness checked at fire too: the lease must still name the ended
-    \* track before an advance link is even queued
+    \* track before an advance link is even queued. The timer's decision
+    \* resolves the obligation — only already-queued advance links can
+    \* keep it alive.
     /\ IF lease.g = armedGen /\ lease.qid = armedQid
          THEN IF Len(startQueue) < 3
                 THEN startQueue' = Append(startQueue,
@@ -473,8 +478,9 @@ TimerFire ==
                          endedQid |-> armedQid])
                 ELSE UNCHANGED startQueue
          ELSE UNCHANGED startQueue
+    /\ advanceDue' = (\E i \in DOMAIN startQueue' : startQueue'[i].advance)
     /\ UNCHANGED <<generation, lease, status, currentIndex, active, sounding,
-                   inFlight, si, userStarts, handledEnded, advanceDue, stoppedBad,
+                   inFlight, si, userStarts, handledEnded, stoppedBad,
                    staleStomp, movedAdvance>>
 
 \* A prefetch call resolves. The buggy code records it unconditionally;

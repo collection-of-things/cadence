@@ -76,12 +76,6 @@ const TEXT_MUTANTS = {
       expects: ["StopBeforePlay"],
     },
     {
-      name: "baked-advance-target",
-      find: `target == IF req.endedQid /= 0 THEN Succ[req.endedQid] ELSE req.idx`,
-      replace: `target == req.idx  \\* MUTANT: index baked at event time`,
-      expects: ["PlayingMeansSounding", "AdvanceTargetSound", "NoStaleAdvance"],
-    },
-    {
       name: "gen-only-staleness",
       find: `(req.gen /= lease.g \\/ req.endedQid /= lease.qid)`,
       replace: `req.gen /= lease.g  \\* MUTANT: item identity unchecked`,

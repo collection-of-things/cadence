@@ -479,14 +479,23 @@ export class Coordinator {
         currentIndex: endedIdx,
       });
       if (nextIdx === null) {
-        // The ended item has no successor NOW — same teardown as the
-        // event-time no-successor path; the lease dies with the output.
+        // The ended item has no successor NOW — the session stops. Tell
+        // the adapter to stop too: an engine whose `ended` was followed
+        // by a resurrecting `started` must not keep sounding after the
+        // session dies.
+        const adapter = this.activeAdapter;
+        const lease = this.lease;
         this.status = "stopped";
         this.lease = null;
         this.activeAdapter = null;
         this.positionMs = 0;
         this.emitSnapshot();
         this.persistSoon();
+        if (adapter !== null && lease !== null) {
+          return this.withTimeout(adapter.stop(lease), 8_000, "end-of-queue.stop").catch(
+            () => undefined,
+          );
+        }
         return Promise.resolve();
       }
       return this.startItem(nextIdx, opts);
