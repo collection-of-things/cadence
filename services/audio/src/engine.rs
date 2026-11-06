@@ -2876,15 +2876,45 @@ impl Engine {
                 pending_ends.pop_front()
             {
                 // Ownership first: a parked end superseded by a load
-                // must never flush the NEW track's stream — drop it
-                // (the handler's own guard returns immediately).
+                // must never flush the NEW track's stream.
                 let owned = {
                     let st = self.state.lock().unwrap();
                     st.queue_id.as_deref() == Some(qid.as_str())
                         && st.current_instance == inst
                 };
                 if !owned {
-                    self.handle_track_end(qid, inst);
+                    if !issued {
+                        // Never touched the sink — drop outright.
+                        self.handle_track_end(qid, inst);
+                        continue;
+                    }
+                    // Its drain IS in flight on the reused stream: when
+                    // it lands, the stream deactivates — so wait for
+                    // the `drained` event, then reactivate, or the new
+                    // track plays silence (bounded by the deadline).
+                    let done = {
+                        let g = self.sink.lock().unwrap();
+                        let d = g
+                            .as_ref()
+                            .map(|s| s.downstream_drained())
+                            .unwrap_or(true);
+                        if d
+                            || since.elapsed()
+                                > std::time::Duration::from_millis(deadline_ms)
+                        {
+                            if let Some(s) = g.as_ref() {
+                                s.resume();
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if done {
+                        self.handle_track_end(qid, inst); // stale → bails
+                    } else {
+                        pending_ends.push_back((qid, inst, since, deadline_ms, issued));
+                    }
                     continue;
                 }
                 enum Gate {
@@ -2894,16 +2924,23 @@ impl Engine {
                     DrainUnsupported,
                     Paused,
                 }
-                // Check + drain-request under ONE sink lock — the sink
-                // can't be swapped between observation and action, and
-                // a stale `drained` flag can't satisfy an end that
-                // never issued a flush (request_drain clears it first).
+                // Check + drain-request under ONE sink lock, with the
+                // ownership re-validation INSIDE it — a same-format
+                // load can't slip between observing ownership and
+                // flushing. A stale `drained` flag can't satisfy an end
+                // that never issued a flush (request_drain clears it).
                 let paused =
                     self.state.lock().unwrap().state == PlayState::Paused;
                 let gate = {
                     let g = self.sink.lock().unwrap();
+                    let still_owned = {
+                        let st = self.state.lock().unwrap();
+                        st.queue_id.as_deref() == Some(qid.as_str())
+                            && st.current_instance == inst
+                    };
                     match g.as_ref() {
                         _ if paused => Gate::Paused,
+                        _ if !still_owned => Gate::Playing,
                         None => Gate::Drained,
                         Some(s) if s.staged_frames() > 0 => Gate::Playing,
                         Some(s) if !issued => {
@@ -2954,6 +2991,14 @@ impl Engine {
                         if since.elapsed()
                             > std::time::Duration::from_millis(deadline_ms)
                         {
+                            // Issued-but-unfinished drain: reactivate so
+                            // a drain landing after the deadline can't
+                            // leave the reused stream inactive.
+                            if issued {
+                                if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                                    s.resume();
+                                }
+                            }
                             self.handle_track_end(qid, inst);
                         } else {
                             pending_ends.push_front((
