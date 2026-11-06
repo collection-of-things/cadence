@@ -71,7 +71,7 @@ export function PlayerBar() {
   return (
     <footer className={`playerbar ${track ? '' : 'idle'}`} aria-label="Player">
       {/* pb-center leads DOM order so the transport is the first play-named
-          control in the document; grid-column pins keep the visual layout. */}
+          control in the document; grid-area pins keep the visual layout. */}
       <div className="pb-center">
         <div className="pb-tp">
           <button
