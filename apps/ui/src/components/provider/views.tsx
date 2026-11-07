@@ -234,10 +234,13 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The sidebar carries its query in the search location — adopt it. A new
-  // submission (new query or nonce) re-submits without a remount, and an
-  // absent query clears the field (Back, blank Search).
+  // submission (new query or nonce) applies immediately: an explicit submit
+  // shouldn't wait out the typing debounce. An absent query clears the field
+  // (Back, blank Search).
   useEffect(() => {
-    setText(query ?? '');
+    const q = query ?? '';
+    setText(q);
+    setDebounced(q.trim());
   }, [query, nonce]);
 
   useEffect(() => {
@@ -249,7 +252,9 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
   }, [text]);
 
   const request: CatalogRequest | null = debounced ? { kind: 'search', text: debounced, limit: 10 } : null;
-  const { page, error, loading } = useCatalogPage(route, request);
+  // nonce in deps: resubmitting an unchanged query must retry the fetch —
+  // the serialized request is identical, so reqKey alone wouldn't refetch.
+  const { page, error, loading } = useCatalogPage(route, request, [nonce]);
 
   return (
     <div className="home-view">

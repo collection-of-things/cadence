@@ -105,7 +105,7 @@ describe('catalog search handoff', () => {
   it('clears the field when the location query goes absent (Back, blank Search)', () => {
     // No DOM harness in this suite (environment: 'node'), so the adopt
     // effect is asserted on source: an absent query must reset text to ''.
-    const effect = viewsSource.match(/useEffect\(\(\) => \{\s*setText\(query \?\? ''\);\s*\}, \[query, nonce\]\)/);
+    const effect = viewsSource.match(/useEffect\(\(\) => \{\s*const q = query \?\? '';\s*setText\(q\);\s*setDebounced\(q\.trim\(\)\);\s*\}, \[query, nonce\]\)/);
     expect(effect).not.toBeNull();
   });
 
