@@ -246,6 +246,12 @@ export class Coordinator {
         }
         if (this.queue.currentIndex >= 0) {
           await this.startItem(this.queue.currentIndex, { positionMs: this.positionMs });
+        } else {
+          // An idle queue — "Play next" additions with nothing selected yet,
+          // or that state restored after relaunch — starts at the top of the
+          // play order, the same place a manual `next` would.
+          const idx = QueueOps.nextIndexManual(this.queue);
+          if (idx !== null) await this.startItem(idx, {});
         }
         return;
       }
@@ -389,6 +395,11 @@ export class Coordinator {
   }
 
   notifyEngineRestarted(route: RouteId): void {
+    // Only engine-backed routes died with the shared service. Provider DOM
+    // engines (a hidden music.apple.com view, say) keep playing through its
+    // restart — clearing their lease here would detach live audio: no pause
+    // or mute would reach the page and its later events would be gated out.
+    if (route !== "local" && route !== "spotify-librespot") return;
     // Route through the serialized chain — a startItem in flight must not
     // see generation/lease mutated underneath it.
     this.extendChain(() => this.restoreAfterRestart(route));
@@ -541,9 +552,9 @@ export class Coordinator {
       queueId: item.queueId,
       issuedAtMs: this.now(),
     };
-    this.leaseStartPositionMs = opts.positionMs ?? 0;
     if (adapter === undefined) {
       this.lease = lease;
+      this.leaseStartPositionMs = opts.positionMs ?? 0;
       this.status = "error";
       this.lastError = { route, queueId: item.queueId, message: `no adapter registered for route "${route}"`, retriable: false };
       this.emitError(route, item.queueId, this.lastError.message, false);
@@ -616,8 +627,11 @@ export class Coordinator {
 
     // The incoming route is ready and the outgoing one silent — commit the
     // lease only now, so a failed prepare above left the old route intact.
+    // The stale-end baseline commits with it: while preparation was
+    // provisional the baseline still described the OUTGOING lease's start.
     this.handledEnded.clear();
     this.lease = lease;
+    this.leaseStartPositionMs = opts.positionMs ?? 0;
     // A self-promotion on the outgoing engine may have moved queue intent
     // while the awaits above were in flight — re-assert the committed item.
     if (this.queue.currentIndex !== index) {

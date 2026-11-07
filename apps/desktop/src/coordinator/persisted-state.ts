@@ -69,11 +69,10 @@ function isQueueState(u: unknown): u is QueueState {
   if (q.owner !== "coordinator" && q.owner !== "provider") return false;
   if (!Array.isArray(q.items)) return false;
   if (typeof q.currentIndex !== "number" || !Number.isInteger(q.currentIndex)) return false;
-  // Empty queues carry -1; a non-empty queue must index a real item.
-  if (q.items.length === 0 && q.currentIndex !== -1) return false;
-  if (q.items.length > 0 && (q.currentIndex < 0 || q.currentIndex >= q.items.length)) {
-    return false;
-  }
+  // -1 means "nothing selected": the only legal index on an empty queue,
+  // and legitimate on a nonempty one too — insertNext/append on an idle
+  // queue leave the index at -1 until the user starts playback.
+  if (q.currentIndex < -1 || q.currentIndex >= q.items.length) return false;
   for (const item of q.items) {
     if (typeof item !== "object" || item === null) return false;
     const it = item as Record<string, unknown>;
