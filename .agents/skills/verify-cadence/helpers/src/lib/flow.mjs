@@ -13,13 +13,23 @@ import * as api from "./api.mjs";
  * platform move together; the bare platform.setActive bridge would leave
  * the store on 'apple' until reload. */
 export async function ensureLocalPlatform(ctx) {
-  const active = await ctx.page
-    .evaluate(() => window.cadence?.platform?.active?.() ?? "local")
+  // The UI store leads the bridge: setPlatform flips it synchronously while
+  // platform.setActive persists asynchronously, so an attach mid-switch can
+  // see store='apple' with bridge still 'local'.
+  const platform = await ctx.page
+    .evaluate(() =>
+      window.__cadenceSession?.store?.getState?.().platform
+      ?? window.cadence?.platform?.active?.()
+      ?? "local")
     .catch(() => "local");
-  if (active === "local") return;
-  ctx.ev.step("platform", `active=${active} — switching to local`);
+  if (platform === "local") return;
+  ctx.ev.step("platform", `active=${platform} — switching to local`);
   await ctx.page.evaluate(() => window.__cadenceSession?.setPlatform("local"));
-  await ctx.page.waitForSelector('.side-row[aria-label="Albums"]', { timeout: 8_000 });
+  await ctx.page.waitForFunction(
+    () => window.__cadenceSession?.store?.getState?.().platform === "local",
+    undefined,
+    { timeout: 8_000 },
+  );
 }
 
 /** Scan the checked-in fixture library; returns the indexed tracks.
@@ -65,8 +75,15 @@ export async function dumpState(ctx, name) {
  * label (Sidebar.tsx). Pass row names — a section head like "Library" is a
  * collapse toggle, not a destination. */
 export async function navTo(ctx, label, expect = null) {
-  const btn = ctx.page.locator(`.side-row[aria-label="${label}"]`).first();
-  await btn.click();
+  const row = ctx.page.locator(`.side-row[aria-label="${label}"]`).first();
+  if (!(await row.isVisible().catch(() => false))) {
+    // The row can sit in a collapsed sidebar section — its rows aren't
+    // rendered until the section head is expanded.
+    for (const head of await ctx.page.locator('.side-section-head[aria-expanded="false"]').all()) {
+      await head.click();
+    }
+  }
+  await row.click();
   ctx.ev.step("nav", label);
   if (expect) {
     await ctx.page.waitForSelector(expect, { timeout: 8_000 });
