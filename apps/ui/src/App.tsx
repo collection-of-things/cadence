@@ -33,9 +33,9 @@ export type Location =
   | { page: 'home' }
   | { page: 'browse' }
   | { page: 'radio' }
-  | { page: 'search' }
+  | { page: 'search'; query?: string; nonce?: number }
   | { page: 'library'; tab: LibraryTab }
-  | { page: 'localfiles' }
+  | { page: 'localfiles'; tab: LibraryTab }
   | { page: 'favorites' }
   | { page: 'sources' }
   | { page: 'album'; album: LibraryAlbum }
@@ -46,7 +46,9 @@ const TABS_MAX = 6;
 
 export function sameLocation(a: Location, b: Location): boolean {
   if (a.page !== b.page) return false;
+  if (a.page === 'search' && b.page === 'search') return a.query === b.query;
   if (a.page === 'library' && b.page === 'library') return a.tab === b.tab;
+  if (a.page === 'localfiles' && b.page === 'localfiles') return a.tab === b.tab;
   if (a.page === 'album' && b.page === 'album') return a.album.id === b.album.id;
   if (a.page === 'detail' && b.page === 'detail') return a.container.id === b.container.id;
   if (a.page === 'artist' && b.page === 'artist') return a.artist.id === b.artist.id;
@@ -58,9 +60,9 @@ function pageKey(location: Location): string {
   if (location.page === 'album') return `album:${location.album.id}`;
   if (location.page === 'detail') return `detail:${location.container.id}`;
   if (location.page === 'artist') return `artist:${location.artist.id}`;
-  // One key for every Library tab: search can switch tabs while typing, and
-  // a remount would drop the query and focus.
-  if (location.page === 'library') return 'library';
+  // One key for every Library/Local Files tab: search can switch tabs while
+  // typing, and a remount would drop the query and focus.
+  if (location.page === 'library' || location.page === 'localfiles') return location.page;
   return location.page;
 }
 
@@ -69,7 +71,7 @@ export function App() {
   const viewNonce = useUi((s) => s.viewNonce);
   const platform = useUi((s) => s.platform);
   const hasTrack = useUi((s) => s.snapshot.current !== null);
-  const expanded = useUi((s) => s.nowPlayingExpanded) && hasTrack;
+  const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const track = useUi((s) => s.snapshot.current?.track);
   const [location, setLocation] = useState<Location>({ page: 'home' });
   const [backStack, setBackStack] = useState<Location[]>([]);
@@ -80,11 +82,8 @@ export function App() {
   const [railOpen, setRailOpen] = useState(false);
   const locationRef = useRef(location);
   locationRef.current = location;
+  const searchNonce = useRef(0);
   useMediaSession();
-
-  useEffect(() => {
-    if (!hasTrack && expanded) session.setNowPlayingExpanded(false);
-  }, [hasTrack, expanded]);
 
   useEffect(() => {
     if (track) recordPlayed(track);
@@ -107,6 +106,19 @@ export function App() {
 
   const navigate = useCallback((next: Location) => {
     const current = locationRef.current;
+    if (next.page === 'search') {
+      // Every explicit submission lands — even a repeat of the current query —
+      // so the view can reset its field to what was submitted. The nonce is
+      // the submission signal; identical resubmits update in place rather than
+      // growing the back stack.
+      const target: Location = { ...next, nonce: ++searchNonce.current };
+      if (!sameLocation(next, current)) {
+        setBackStack((stack) => [...stack, current]);
+        setForwardStack([]);
+      }
+      setLocation(target);
+      return;
+    }
     if (sameLocation(next, current)) return;
     setBackStack((stack) => [...stack, current]);
     setForwardStack([]);
@@ -251,14 +263,14 @@ export function App() {
           {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
           {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
           {location.page === 'radio' && <ProviderRadioView nav={catalogNav} />}
-          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} /> : <SourcesView />)}
+          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} query={location.query} nonce={location.nonce} /> : <SourcesView />)}
           {location.page === 'library' && (isApple ? (
             <ProviderLibraryView nav={catalogNav} />
           ) : (
             <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
           ))}
           {location.page === 'localfiles' && (
-            <LibraryView tab="albums" onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
+            <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'localfiles', tab })} />
           )}
           {location.page === 'favorites' && <FavoritesView />}
           {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}

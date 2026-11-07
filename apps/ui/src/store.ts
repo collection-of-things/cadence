@@ -246,7 +246,14 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         // route must not reclaim playback after a handoff.
         if (e.snapshot.lease && e.snapshot.lease.generationId < s.generationId) break;
         const gen = e.snapshot.lease?.generationId ?? s.generationId;
-        set({ snapshot: e.snapshot, generationId: Math.max(gen, s.generationId) });
+        set({
+          snapshot: e.snapshot,
+          generationId: Math.max(gen, s.generationId),
+          // Expanded now-playing only exists while a track is loaded. Clearing
+          // it here keeps a dropped queue from resurrecting the overlay when
+          // the next track starts.
+          ...(e.snapshot.current === null ? { nowPlayingExpanded: false } : {}),
+        });
         syncClock(e.snapshot);
         break;
       }
@@ -399,7 +406,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     },
     setView: (view) => set({ view, viewNonce: get().viewNonce + 1 }),
     setLibraryQuery: (libraryQuery) => set({ libraryQuery }),
-    setNowPlayingExpanded: (nowPlayingExpanded) => set({ nowPlayingExpanded }),
+    setNowPlayingExpanded: (expanded) =>
+      set({ nowPlayingExpanded: expanded && get().snapshot.current !== null }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
     setPalette: (palette) => set({ palette }),
     dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
