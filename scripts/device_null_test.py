@@ -14,8 +14,10 @@ Per file:
   4. null-test: cadence vs mpv, cadence vs ffmpeg, mpv vs ffmpeg
      + zero-run (dropout) and stream format/rate report
 
-Verdict requires all three comparisons bit-exact — a silent pair can no
-longer pass.
+Verdict requires all comparisons to match within bounded f32 conversion
+noise (<=32 samples at <=1 eps) with full coverage and no dropouts; the
+`*_exact` keys report literal zero-diff separately. A silent pair cannot
+pass.
 
 Usage:
   device_null_test.py --bin target/debug/cadence-audio <audio-file> [--keep]

@@ -66,6 +66,8 @@ fn main() {
     s = s.replace("use std::sync::atomic::{", "use loom::sync::atomic::{");
     s = s.replace("use std::sync::Arc;", "use loom::sync::Arc;");
     s = s.replace("std::sync::atomic::fence", "loom::sync::atomic::fence");
+    assert!(s.contains("loom::sync::atomic::"), "atomics not substituted");
+    assert!(!s.contains("std::sync::atomic"), "std atomics remain in model");
     s = s.replace("Arc::", "Arc::"); // loom::sync::Arc alias already
     let dst = Path::new(&env::var("OUT_DIR").unwrap()).join("ringbuf.rs");
     fs::write(&dst, s).unwrap();

@@ -94,29 +94,44 @@ def main():
     workdir = tempfile.mkdtemp(prefix="cadence-trans-")
     print(f"A: {a.name} | B: {b.name} ({rate_a} Hz) | workdir {workdir}")
 
-    mod_id, sink_id = make_null_sink("cadence-tap", rate_a, 2)
-    monitor = []
-    for _ in range(20):
-        monitor = node_ports(sink_id, "output")
-        if len(monitor) >= 2:
-            break
-        time.sleep(0.25)
-    tap = (sink_id, monitor)
-    out = subprocess.run(
-        ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
-        capture_output=True, text=True,
-    ).stdout
-    m = re.search(r"key:'clock\.force-rate'\s+value:'([^']*)'", out)
-    prev_force = m.group(1) if m else "0"
-    subprocess.run(
-        ["pw-metadata", "-n", "settings", "0", "clock.force-rate",
-         str(rate_a)],
-        capture_output=True,
-    )
-
+    # Setup lives inside try/finally — a raise before the try would
+    # leak the null sink into the user's session and strand the
+    # forced graph clock.
+    mod_id, sink_id, monitor = None, None, []
+    prev_force = "0"
     cap_proc = None
     results = {}
     try:
+        mod_id, sink_id = make_null_sink("cadence-tap", rate_a, 2)
+        for _ in range(20):
+            monitor = node_ports(sink_id, "output")
+            if len(monitor) >= 2:
+                break
+            time.sleep(0.25)
+        tap = (sink_id, monitor)
+        out = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+            capture_output=True, text=True,
+        ).stdout
+        m = re.search(r"key:'clock\.force-rate'\s+value:'([^']*)'", out)
+        if m:
+            prev_force = m.group(1)
+        r = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate",
+             str(rate_a)],
+            capture_output=True,
+        )
+        verify = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate"],
+            capture_output=True, text=True,
+        ).stdout
+        mv = re.search(r"key:'clock\.force-rate'\s+value:'([^']*)'", verify)
+        if r.returncode != 0 or not mv or mv.group(1) != str(rate_a):
+            print("ERROR: could not force the graph clock — the tap "
+                  "adapter would rate-match and the numbers are "
+                  "meaningless")
+            sys.exit(3)
+
         print("[cadence] loading A paused into tap")
         cap_proc, req, evr = drive_cadence(
             args.bin, a, device="cadence-tap", start_paused=True)

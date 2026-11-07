@@ -617,7 +617,14 @@ impl CpalCaps {
             PcmKind::S16 => BitDepth::Int(16),
         };
         if let Some(kind) = self.accepts(neg.rate, neg.channels, depth) {
-            return Negotiated { kind, ..neg.clone() };
+            return Negotiated {
+                kind,
+                // `neg` is the PipeWire-side plan — its device_name is the
+                // pw node. Commit the CPAL name so equality against the
+                // next plan doesn't force a rebuild.
+                device_name: self.name(),
+                ..neg.clone()
+            };
         }
         let d = &self.default_cfg;
         Negotiated {

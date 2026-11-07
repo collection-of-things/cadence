@@ -2452,15 +2452,19 @@ impl Engine {
             self.respawn_prefetch(qid, src, rg);
             // A boundary may have promoted the tagged successor while we
             // respawned it — converge any track that crossed the boundary.
-            if self.core.lock().unwrap().ended_pending
-                || {
-                    let core = self.core.lock().unwrap();
-                    let st = self.state.lock().unwrap();
-                    core.active.as_ref().is_some_and(|r| {
-                        Some(r.instance) != Some(st.current_instance)
-                    })
-                }
-            {
+            // One lock scope — a `||` operand would hold the first core
+            // guard alive into the second lock() and self-deadlock.
+            let converged = {
+                let core = self.core.lock().unwrap();
+                core.ended_pending
+                    || {
+                        let st = self.state.lock().unwrap();
+                        core.active.as_ref().is_some_and(|r| {
+                            Some(r.instance) != Some(st.current_instance)
+                        })
+                    }
+            };
+            if converged {
                 let pos = self.audible_position_ms();
                 self.respawn_pipelines(pos);
             }
