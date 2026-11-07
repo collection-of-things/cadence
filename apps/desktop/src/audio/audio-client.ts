@@ -273,6 +273,11 @@ export class AudioServiceClient implements PcmStreamSink {
     return this.request("audio.setFidelityMode", { enabled });
   }
 
+  /** Toggle ReplayGain application (tag gains apply only when enabled). */
+  async setReplayGain(enabled: boolean): Promise<unknown> {
+    return this.request("audio.setReplayGain", { enabled });
+  }
+
   /** Set the parametric EQ band gains. */
   async setEq(bands: { freqHz: number; gainDb: number }[]): Promise<unknown> {
     return this.request("audio.setEq", { bands });

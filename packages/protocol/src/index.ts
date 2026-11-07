@@ -174,6 +174,8 @@ export interface PlaybackSnapshot {
   muted: boolean;
   /** The user's fidelity-mode toggle (independent of what the engine negotiated). */
   fidelityMode?: boolean;
+  /** The user's ReplayGain toggle — tag gains apply only when enabled. */
+  replayGain?: boolean;
   output?: ActiveOutput;
   /** Per-route error, kept local to the route — never takes others down. */
   lastError?: { route: RouteId; queueId: string; message: string; retriable: boolean };
@@ -199,7 +201,8 @@ export type PlaybackCommand =
   | { kind: "setRepeat"; repeat: QueueState["repeat"] }
   | { kind: "setShuffle"; shuffle: boolean }
   | { kind: "switchRoute"; queueId: string; route: RouteId } // deliberate fallback on route failure
-  | { kind: "setFidelityMode"; enabled: boolean };
+  | { kind: "setFidelityMode"; enabled: boolean }
+  | { kind: "setReplayGain"; enabled: boolean };
 
 // Events coordinator -> UI ----------------------------------------------------
 
@@ -246,6 +249,8 @@ export interface RouteAdapter {
   releaseIdle?(): Promise<void>;
   /** Apply the user's fidelity-mode preference (no-op where unsupported). */
   setFidelityMode?(enabled: boolean): Promise<void>;
+  /** Apply the user's ReplayGain preference (no-op where unsupported). */
+  setReplayGain?(enabled: boolean): Promise<void>;
   /**
    * Search the provider's catalog. Adapters without a catalog integration
    * omit this — callers must treat its absence as "search not available".

@@ -1,0 +1,10 @@
+[package]
+name = "cadence-ring-litmus"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+loom = "0.7"
+
+[workspace]

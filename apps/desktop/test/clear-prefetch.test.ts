@@ -42,6 +42,7 @@ function rig() {
       "audio.stop",
       "audio.setVolume",
       "audio.setFidelityMode",
+      "audio.setReplayGain",
       "audio.seek",
     ]) {
       s.handlers.set(m, () => ({ ok: true }));

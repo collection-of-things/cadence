@@ -326,6 +326,10 @@ export function parsePlaybackCommand(u: unknown): Result<PlaybackCommand, Invali
       if (typeof u.enabled !== "boolean") return fail("setFidelityMode.enabled must be a boolean");
       return ok({ kind: "setFidelityMode", enabled: u.enabled });
     }
+    case "setReplayGain": {
+      if (typeof u.enabled !== "boolean") return fail("setReplayGain.enabled must be a boolean");
+      return ok({ kind: "setReplayGain", enabled: u.enabled });
+    }
     default:
       return fail(`unknown command kind ${JSON.stringify(u.kind)}`);
   }

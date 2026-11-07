@@ -57,6 +57,8 @@ pub struct StreamingResampler {
     delay: usize,
     /// delay frames dropped so far
     skipped: usize,
+    /// exact output:input ratio (to/from — the resampler's fixed rate)
+    ratio: f64,
 }
 
 impl StreamingResampler {
@@ -72,14 +74,13 @@ impl StreamingResampler {
             produced: 0,
             delay,
             skipped: 0,
+            ratio: to as f64 / from as f64,
         })
     }
 
     /// Total output frames implied by `input_frames` at the fixed ratio.
     pub fn expected_output_for(&self, input_frames: u64) -> u64 {
-        let ratio = self.inner.output_frames_next() as f64
-            / self.inner.input_frames_next().max(1) as f64;
-        (input_frames as f64 * ratio).round() as u64
+        (input_frames as f64 * self.ratio).round() as u64
     }
 
     /// Push interleaved source frames; returns interleaved output frames.
@@ -197,6 +198,70 @@ mod tests {
     fn decision_different_rates_resamples() {
         let (p, _) = plan(44100, 48000, false, false);
         assert_eq!(p, ResamplePlan::Resample { from: 44100, to: 48000 });
+    }
+
+    /// The total output must be exactly the source duration at the output
+    /// rate — the tail flush emits the whole filter tail, nothing more.
+    #[test]
+    fn resampled_output_length_is_exact() {
+        for (from, to) in [(44100u32, 48000u32), (96000, 48000), (48000, 44100), (192000, 48000)] {
+            let n_in = from as usize / 4; // 250ms
+            let input: Vec<f32> = (0..n_in)
+                .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / from as f64).sin() as f32)
+                .collect();
+            let mut rs = StreamingResampler::new(from, to, 1).unwrap();
+            let mut out = Vec::new();
+            rs.push(&input, &mut out).unwrap();
+            rs.finish(&mut out).unwrap();
+            let expected = (n_in as f64 * to as f64 / from as f64).round() as usize;
+            assert_eq!(
+                out.len(),
+                expected,
+                "{from}->{to}: {} frames vs expected {expected}",
+                out.len()
+            );
+        }
+    }
+
+    /// A clean tone through the resampler must stay a tone: no image or
+    /// harmonic spur above -80 dBc in steady state. The tone is exactly
+    /// bin-centered in the analysis window so leakage doesn't mask spurs.
+    #[test]
+    fn resampled_tone_has_no_strong_spurs() {
+        const N: usize = 16384;
+        let (from, to) = (44100u32, 48000u32);
+        let f0 = 512.0 * to as f64 / N as f64; // 1500 Hz -> bin 512 exactly
+        let n_in = from as usize / 2; // 500ms
+        let input: Vec<f32> = (0..n_in)
+            .map(|i| (2.0 * std::f64::consts::PI * f0 * i as f64 / from as f64).sin() as f32)
+            .collect();
+        let mut rs = StreamingResampler::new(from, to, 1).unwrap();
+        let mut out = Vec::new();
+        rs.push(&input, &mut out).unwrap();
+        rs.finish(&mut out).unwrap();
+
+        // steady-state middle: skip the resampler's edge transient
+        let seg = &out[4096..4096 + N];
+        let mut planner = rustfft::FftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(N);
+        let mut buf: Vec<rustfft::num_complex::Complex64> = seg
+            .iter()
+            .map(|s| rustfft::num_complex::Complex64::new(*s as f64, 0.0))
+            .collect();
+        fft.process(&mut buf);
+        let mags: Vec<f64> = buf[..=N / 2].iter().map(|c| c.norm()).collect();
+        let fund = mags[512];
+        let top_spur = mags
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (*i as i64 - 512).abs() > 4)
+            .map(|(_, m)| *m)
+            .fold(0f64, f64::max);
+        let spur_db = 20.0 * (top_spur / fund).log10();
+        assert!(
+            spur_db < -80.0,
+            "resampler spur at {spur_db:.1} dBc (limit -80)"
+        );
     }
 
     #[test]

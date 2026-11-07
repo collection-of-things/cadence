@@ -189,18 +189,33 @@ fn serve(cli: Cli) -> Result<i32> {
         channels: caps.default_channels(),
         kind: caps.default_kind(),
         device_name: caps.name(),
+        positions: cadence_audio::sink::resolve_positions(None, caps.default_channels()),
     };
     let (core, _tap, fft_cons) = Engine::make_core(initial_neg.clone(), cfg.null_dump.clone());
     // Open the output stream up front. If it fails (no usable device), the
     // engine stays alive: loads error honestly via event.error and a later
     // audio.setDevice can recover.
-    let sink_obj: Box<dyn sink::Sink> = match caps.open_stream(&initial_neg, Arc::clone(&core)) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("audio: output stream unavailable ({e:#})");
-            Box::new(sink::DeadSink)
-        }
-    };
+    let mut caps = caps;
+    let sink_obj: Box<dyn sink::Sink> =
+        match sink::open_sink(&cfg, caps.clone(), &initial_neg, &core) {
+            Ok(opened) => {
+                // A CPAL fallback re-negotiates against its own device
+                // — commit the format and caps it actually opened, or
+                // the core renders at the wrong rate.
+                {
+                    let mut c = core.lock().unwrap();
+                    c.negotiated = opened.negotiated;
+                }
+                if let Some(new_caps) = opened.caps {
+                    caps = new_caps;
+                }
+                opened.sink
+            }
+            Err(e) => {
+                eprintln!("audio: output stream unavailable ({e:#})");
+                Box::new(sink::DeadSink)
+            }
+        };
 
     let emit = rpc::stdout_emitter();
     let engine = Engine::new(

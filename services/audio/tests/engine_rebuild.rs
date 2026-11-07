@@ -12,7 +12,7 @@ mod common;
 
 use cadence_audio::decode::PcmKind;
 use cadence_audio::engine::{Engine, EngineConfig, LoadParams, SourceSpec};
-use cadence_audio::sink::{DeviceCaps, Negotiated, NullCaps};
+use cadence_audio::sink::{DeviceCaps, Negotiated, NullCaps, resolve_positions};
 use common::fixtures_dir;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,7 @@ fn make_engine(rate: u32) -> (Arc<Engine>, Arc<Mutex<Vec<Value>>>) {
         channels: 2,
         kind: PcmKind::F32,
         device_name: "null-sink".into(),
+        positions: resolve_positions(None, 2),
     };
     let cfg = EngineConfig {
         null_sink: true,

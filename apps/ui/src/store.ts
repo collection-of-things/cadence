@@ -165,6 +165,7 @@ export interface UiSession {
   signOutRoute(route: RouteId): void;
   setPlatform(platform: PlatformId): void;
   setFidelityMode(enabled: boolean): void;
+  setReplayGain(enabled: boolean): void;
   setEq(bands: EqBand[]): void;
   listDevices(): Promise<AudioDevice[]>;
   setDevice(name: string | null): void;
@@ -376,6 +377,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       void api.platform?.setActive(platform).catch(() => undefined);
     },
     setFidelityMode: (enabled) => cmd({ kind: 'setFidelityMode', enabled }),
+    setReplayGain: (enabled) => cmd({ kind: 'setReplayGain', enabled }),
     setEq(bands) {
       if (!api.audio) return;
       const route = get().snapshot.lease?.route ?? 'local';

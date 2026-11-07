@@ -20,6 +20,10 @@ apps/desktop/release/
 *.key
 id_*
 credentials*
+target-review/
+prototypes/
+scripts/__pycache__/
+services/audio/loom-check/target/
 
 # e2e verification artifacts
 verify-runs/

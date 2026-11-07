@@ -6,7 +6,7 @@ mod common;
 
 use cadence_audio::decode::PcmKind;
 use cadence_audio::engine::{Engine, EngineConfig, LoadParams, SourceSpec};
-use cadence_audio::sink::{DeviceCaps, Negotiated, NullCaps};
+use cadence_audio::sink::{DeviceCaps, Negotiated, NullCaps, resolve_positions};
 use common::{decode_all, fixtures_dir, longest_zero_run};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -29,6 +29,7 @@ fn make_engine(dump: PathBuf, rate: u32) -> (Arc<Engine>, Arc<Mutex<Vec<Value>>>
         channels: 2,
         kind: PcmKind::F32,
         device_name: "null-sink".into(),
+        positions: resolve_positions(None, 2),
     };
     let cfg = EngineConfig {
         null_sink: true,
@@ -131,8 +132,19 @@ fn gapless_prefetched_boundary_is_sample_contiguous() {
         dump_pcm.pop();
     }
 
-    let (dec_a, _) = decode_all(&a, Some(2)).unwrap();
-    let (dec_b, _) = decode_all(&b, Some(2)).unwrap();
+    // Decode the references at the channel count the engine actually
+    // negotiated (source-native channels since the null device accepts
+    // them — these mono fixtures now render as a mono stream).
+    let out_ch = events
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|v| is_method(v, "event.output"))
+        .and_then(|v| v["params"]["channels"].as_u64())
+        .unwrap_or(1) as u32;
+    let (dec_a, _) = decode_all(&a, Some(out_ch)).unwrap();
+    let (dec_b, _) = decode_all(&b, Some(out_ch)).unwrap();
 
     // The rendered stream must equal decode(a) ++ decode(b) sample-exactly.
     let expected: Vec<f32> = dec_a.iter().chain(dec_b.iter()).copied().collect();

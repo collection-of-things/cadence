@@ -14,10 +14,19 @@ step "tla+ specs (model check + mutants)" && {
 } || fail=1
 step "cargo build" && timeout 600 cargo build --manifest-path services/audio/Cargo.toml || fail=1
 step "cargo test" && timeout 600 cargo test --manifest-path services/audio/Cargo.toml || fail=1
+step "loom ring model" && timeout 600 cargo run --manifest-path services/audio/loom-check/Cargo.toml --release || fail=1
 step "audio fixtures + headless playback probe" && \
   timeout 300 bash scripts/gen-fixtures.sh && \
   timeout 300 bash scripts/probe-audio.sh || fail=1
 step "e2e smoke (real app, private PipeWire tap)" && \
-  timeout 420 .agents/skills/verify-cadence/helpers/cadence-verify run smoke || fail=1
+  if command -v Xvfb >/dev/null 2>&1 && command -v pactl >/dev/null 2>&1 \
+     && command -v pw-dump >/dev/null 2>&1 && command -v wireplumber >/dev/null 2>&1; then
+    timeout 420 .agents/skills/verify-cadence/helpers/cadence-verify run smoke || fail=1
+  else
+    # The e2e skill needs a private X display + PipeWire session stack +
+    # the Electron binary — present on dev machines, absent on CI
+    # runners. Skip loudly rather than fake-pass.
+    echo "SKIP — Xvfb/pactl/pw-dump/wireplumber absent (run locally for e2e)"
+  fi
 echo
 if [ "$fail" -eq 0 ]; then echo "VERIFY: PASS"; else echo "VERIFY: FAIL"; exit 1; fi

@@ -5,8 +5,10 @@
 //!
 //! The output callback only pops samples, applies volume, and taps the
 //! FFT/dump rings. Decode/DSP/resample/alloc all happen on producer threads.
-//! The device callback takes the core lock with try_lock + a silent fallback;
-//! control threads never hold `core` across device opens (rebuild_stream
+//! Device callbacks never take the core lock: a feeder thread pulls into a
+//! lock-free staging ring that the callback drains (paused_flag silences
+//! without draining; clear_epoch drops staged PCM on seek/clear/load).
+//! Control threads never hold `core` across device opens (rebuild_stream
 //! drops/opens sinks outside the lock), so the callback's worst-case wait is
 //! one brief critical section — bounded, documented, non-allocating.
 
@@ -113,6 +115,13 @@ struct TrackReader {
     /// source-time offset this pipeline decodes from (for position math)
     seek_offset_ms: u64,
     pipe: PipeReader,
+    /// this reader's own fidelity-bypass flag — promotion must adopt it
+    /// (the successor may be non-bypass on the same stream format)
+    bypass: bool,
+    /// the negotiated format this reader renders — installs verify the
+    /// stream still matches so a concurrent rebuild can't pin an
+    /// old-format reader onto a new stream
+    neg: Negotiated,
     /// set by producer once it has buffered data or finished
     ready: Arc<AtomicBool>,
 }
@@ -128,6 +137,8 @@ enum CoreEvent {
         started_instance: u64,
         started_duration_ms: u64,
         started_seek_offset_ms: u64,
+        /// the promoted reader's own fidelity-bypass flag
+        started_bypass: bool,
     },
     /// Active track drained with nothing behind it.
     Ended { queue_id: String, instance: u64 },
@@ -191,11 +202,44 @@ pub struct OutputCore {
     underrun: bool,
     /// currently inside a stall episode (latch, avoids event spam)
     stalled: bool,
+    /// bumped on every pull-side track boundary (promotion or end) —
+    /// command paths use it to detect a boundary landing mid-respawn,
+    /// including ones whose event is still in flight to the monitor
+    boundary_seq: u64,
+    /// the last track ended with nothing behind it — set by advance_track,
+    /// cleared when a new track is installed. Distinguishes "active is
+    /// None because playback ended" from "active is None because a
+    /// rebuild cleared it". pub(crate) so the feeder can stop topping
+    /// the staging ring with post-EOF silence.
+    pub(crate) ended_pending: bool,
+    /// a stream rebuild is between clear_all and the negotiated commit —
+    /// readers spawned or installed in this window would attach to a
+    /// format that is about to change.
+    rebuilding: bool,
     fft_tap: Producer<f32>,
     /// optional f32le dump tap of everything rendered (null-sink diagnostics)
     dump: Option<Dump>,
     /// reusable f32 scratch for pull_s16 (preallocated, grows once)
     scratch16: Vec<f32>,
+    /// Bumped on control changes that invalidate already-pulled PCM
+    /// (seek/clear/load). Device callbacks poll it and flush their
+    /// staging rings so stale samples can't play past the control point.
+    /// Pause does NOT bump: the ring keeps the pre-pause tail so resume
+    /// continues seamlessly — callbacks zero-fill via paused_flag instead.
+    pub clear_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// Atomic mirror of `paused` for device callbacks, which can't lock
+    /// the core. Paused callbacks output silence WITHOUT draining the
+    /// staging ring — the pre-pause tail plays on resume.
+    pub paused_flag: Arc<AtomicBool>,
+}
+
+impl OutputCore {
+    /// Invalidate staged PCM: every staging ring fed from this core
+    /// drops its queued samples on the next callback.
+    pub fn flush_output(&self) {
+        self.clear_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl OutputCore {
@@ -204,7 +248,7 @@ impl OutputCore {
     /// blocking I/O — safe to call on the device callback thread. Zero-fills
     /// on underrun/pause.
     pub fn pull_f32(&mut self, out: &mut [f32]) {
-        if self.paused {
+        if self.paused || self.rebuilding {
             out.fill(0.0);
             return;
         }
@@ -216,15 +260,15 @@ impl OutputCore {
                 break;
             };
             let n = match &track.pipe {
-                PipeReader::F32(c) => c.read(&mut out[filled..]),
+                PipeReader::F32(c) => c.read_aligned(&mut out[filled..], ch as usize),
                 PipeReader::S32(c) => {
                     // Defensive: s32 pipe into f32 sink shouldn't happen
                     // (pipelines are built for the negotiated format).
                     let mut tmp = [0i32; 2048];
                     let want = (out.len() - filled).min(tmp.len());
-                    let got = c.read(&mut tmp[..want]);
+                    let got = c.read_aligned(&mut tmp[..want], ch as usize);
                     for i in 0..got {
-                        out[filled + i] = tmp[i] as f32 / i32::MAX as f32;
+                        out[filled + i] = tmp[i] as f32 / 2147483648.0f32;
                     }
                     got
                 }
@@ -267,7 +311,7 @@ impl OutputCore {
 
     /// Fill `out` with s32 output samples (fidelity-bypass streams).
     pub fn pull_s32(&mut self, out: &mut [i32]) {
-        if self.paused {
+        if self.paused || self.rebuilding {
             out.fill(0);
             return;
         }
@@ -279,13 +323,16 @@ impl OutputCore {
                 break;
             };
             let n = match &track.pipe {
-                PipeReader::S32(c) => c.read(&mut out[filled..]),
+                PipeReader::S32(c) => c.read_aligned(&mut out[filled..], ch as usize),
                 PipeReader::F32(c) => {
                     let mut tmp = [0f32; 2048];
                     let want = (out.len() - filled).min(tmp.len());
-                    let got = c.read(&mut tmp[..want]);
+                    let got = c.read_aligned(&mut tmp[..want], ch as usize);
                     for i in 0..got {
-                        out[filled + i] = (tmp[i] * i32::MAX as f32) as i32;
+                        out[filled + i] = (tmp[i] as f64 * 2147483648.0)
+                            .round()
+                            .clamp(i32::MIN as f64, i32::MAX as f64)
+                            as i32;
                     }
                     got
                 }
@@ -319,7 +366,7 @@ impl OutputCore {
         while i < out.len() {
             let n = (out.len() - i).min(tap.len());
             for j in 0..n {
-                tap[j] = out[i + j] as f32 / i32::MAX as f32;
+                tap[j] = out[i + j] as f32 / 2147483648.0f32;
             }
             let _ = self.fft_tap.write(&tap[..n]);
             i += n;
@@ -327,7 +374,9 @@ impl OutputCore {
         let vol = self.volume;
         if (vol - 1.0).abs() > f32::EPSILON {
             for s in out.iter_mut() {
-                *s = (*s as f64 * vol as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+                *s = (*s as f64 * vol as f64)
+                    .round()
+                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
             }
         }
         if let Some(d) = &self.dump {
@@ -335,7 +384,7 @@ impl OutputCore {
             while i < out.len() {
                 let n = (out.len() - i).min(tap.len());
                 for j in 0..n {
-                    tap[j] = out[i + j] as f32 / i32::MAX as f32;
+                    tap[j] = out[i + j] as f32 / 2147483648.0f32;
                 }
                 let _ = d.tap.write(&tap[..n]);
                 i += n;
@@ -356,7 +405,11 @@ impl OutputCore {
         }
         self.pull_f32(&mut tmp[..out.len()]);
         for (i, s) in tmp[..out.len()].iter().enumerate() {
-            out[i] = (*s * i16::MAX as f32).round().clamp(-32768.0, 32767.0) as i16;
+            // ffmpeg's s16<->f32 convention scales by 2^15: s16-representable
+            // values round-trip exactly. (32768.0, not i16::MAX.)
+            out[i] = (*s * 32768.0)
+                .round()
+                .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
         }
         self.scratch16 = tmp;
     }
@@ -364,6 +417,7 @@ impl OutputCore {
     /// Active track drained: promote `next` (gapless) or end. Returns true if
     /// a new track took over on the same stream.
     fn advance_track(&mut self) -> bool {
+        self.boundary_seq += 1;
         let mut ended = self.active.take().unwrap();
         // Move the queue id into the event without cloning (no RT alloc)
         // and park the reader for the monitor to reclaim.
@@ -378,12 +432,14 @@ impl OutputCore {
                 started_instance: next.instance,
                 started_duration_ms: next.duration_ms,
                 started_seek_offset_ms: next.seek_offset_ms,
+                started_bypass: next.bypass,
             });
             self.frames_played = 0;
             self.active = Some(next);
             self.underrun = false;
             true
         } else {
+            self.ended_pending = true;
             self.push_event(CoreEvent::Ended {
                 queue_id: ended_queue_id,
                 instance: ended_instance,
@@ -411,14 +467,20 @@ impl OutputCore {
         }
     }
 
-    /// Swap in a new render track (load / seek rebuild).
+    /// Swap in a new render track (load / seek rebuild / reopen).
+    /// Staged PCM from the previous reader is stale — flush it.
+    /// (Gapless promotions in `advance_track` assign `self.active`
+    /// directly and deliberately skip this: the pull sequence is
+    /// already seamless.)
     fn set_active(&mut self, track: TrackReader) {
+        self.flush_output();
         if let Some(old) = self.active.take() {
             old.pipe.abort();
         }
         self.frames_played = 0;
         self.stalled = false;
         self.underrun = false;
+        self.ended_pending = false;
         self.active = Some(track);
     }
 
@@ -440,6 +502,7 @@ impl OutputCore {
         self.frames_played = 0;
         self.stalled = false;
         self.underrun = false;
+        self.flush_output();
     }
 
     fn position_ms(&self) -> u64 {
@@ -586,7 +649,15 @@ struct EngineState {
     duration_ms: u64,
     fidelity: bool,
     eq_bands: Vec<(f64, f64)>,
+    /// ReplayGain user toggle — tag gains are only applied when enabled.
+    /// Off by default: mpv-style transparent loudness.
+    replay_gain: bool,
     replay_gain_db: Option<f64>,
+    /// A native-format stream that failed to open once on this device —
+    /// plans skip it until the backoff expires (a transient failure
+    /// shouldn't downgrade the format for the whole session). Also
+    /// cleared on set_device and on a successful open at the same format.
+    native_failed: Option<(Negotiated, std::time::Instant)>,
     /// honesty flag for the current render track
     fidelity_bypass: bool,
     feeds: HashMap<String, Arc<Feed>>,
@@ -599,6 +670,9 @@ struct PrefetchState {
     source: SourceSpec,
     replay_gain_db: Option<f64>,
     ready: Arc<AtomicBool>,
+    /// the generation that armed it — a slot from an older generation
+    /// must never reopen against a newer track's end
+    generation: u64,
 }
 
 /// Producer thread bookkeeping (join handle kept so abort can detach cleanly).
@@ -616,6 +690,10 @@ struct TrackPlan {
     neg: Negotiated,
     rplan: ResamplePlan,
     bypass: bool,
+    /// True when `neg` came from the device's native acceptance of the
+    /// source format (not the device default). Lets the spawn path fall
+    /// back to the default negotiation if that stream won't open.
+    native: bool,
     /// Probe result for file sources — threaded into DecodeRequest so the
     /// producer's ffmpeg spawn doesn't re-run ffprobe.
     info: Option<AudioInfo>,
@@ -631,6 +709,10 @@ pub struct Engine {
     /// Serializes stream rebuilds (set_device / fidelity / format mismatch)
     /// so two of them can never interleave a sink swap.
     stream_mu: Mutex<()>,
+    /// Monotonic install generation — bumps on every sink install so the
+    /// monitor's dead-report latch keys on identity, not a heap address
+    /// the allocator can hand out again.
+    sink_gen: std::sync::atomic::AtomicU64,
     caps: Mutex<Arc<dyn DeviceCaps>>,
     monitor_stop: Arc<AtomicBool>,
     producer: Mutex<Option<ProducerHandle>>,
@@ -661,7 +743,9 @@ impl Engine {
                 duration_ms: 0,
                 fidelity: false,
                 eq_bands: Vec::new(),
+                replay_gain: false,
                 replay_gain_db: None,
+                native_failed: None,
                 fidelity_bypass: false,
                 feeds: HashMap::new(),
                 prefetch: None,
@@ -669,6 +753,7 @@ impl Engine {
             }),
             sink: Mutex::new(Some(sink)),
             stream_mu: Mutex::new(()),
+            sink_gen: std::sync::atomic::AtomicU64::new(1),
             caps: Mutex::new(caps),
             monitor_stop: Arc::new(AtomicBool::new(false)),
             producer: Mutex::new(None),
@@ -700,9 +785,14 @@ impl Engine {
                 retired: VecDeque::with_capacity(MAX_RETIRED_READERS),
                 underrun: false,
                 stalled: false,
+                boundary_seq: 0,
+                ended_pending: false,
+                rebuilding: false,
                 fft_tap: tap_p.clone(),
                 dump,
                 scratch16: Vec::new(),
+                clear_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                paused_flag: Arc::new(AtomicBool::new(true)),
             })),
             tap_p,
             tap_c,
@@ -825,7 +915,21 @@ impl Engine {
     // ------------------------- pipeline construction ----------------------
 
     /// Negotiate stream params for a source; returns (negotiated, bypass).
-    fn negotiate(&self, src_rate: u32, src_channels: u32, src_depth: BitDepth) -> (Negotiated, bool) {
+    ///
+    /// When `prefer_native` and the device can run the source's native
+    /// rate/channels in a depth-preserving format, open the stream at those
+    /// parameters — no in-graph resample and no bit-depth loss. This is the
+    /// DEFAULT path too (mpv-style): rendering is transparent unless the
+    /// device can't take the source format. `bypass` is still only reported
+    /// for strict fidelity mode.
+    fn negotiate(
+        &self,
+        src_rate: u32,
+        src_channels: u32,
+        src_depth: BitDepth,
+        src_layout: Option<&str>,
+        prefer_native: bool,
+    ) -> (Negotiated, bool) {
         let caps = self.caps.lock().unwrap().clone();
         let fidelity = self.state.lock().unwrap().fidelity;
         if fidelity {
@@ -833,12 +937,57 @@ impl Engine {
                 return (
                     Negotiated {
                         rate: src_rate,
-                        channels: src_channels.min(caps.max_channels()),
+                        // accepts() validated exactly this channel count —
+                        // open it, not a clamped guess at a different one.
+                        channels: src_channels,
                         kind,
                         device_name: caps.name(),
+                        // Native path: the stream carries the source's
+                        // channel order — resolved positions, not the
+                        // name, so Negotiated equality compares what
+                        // the stream actually does.
+                        positions: crate::sink::resolve_positions(
+                            src_layout, src_channels),
                     },
                     true,
                 );
+            }
+        } else if prefer_native {
+            // Default path: run the stream at the source's native
+            // rate/channels when the device can carry them — no in-graph
+            // resample, no double resample at the OS mixer. DSP still
+            // applies (this is not fidelity bypass). "Depth-preserving"
+            // is scoped to the f32 graph: it carries <=24-bit integer and
+            // float sources exactly; a 32-bit-INTEGER source can only be
+            // rendered bit-exact by the fidelity bypass s32 pipe, so its
+            // S32-accepting devices get the native rate but lose the low
+            // byte through f32 like every other format.
+            if let Some(kind) = caps.accepts(src_rate, src_channels, src_depth) {
+                if src_depth.preserved_by(kind) {
+                    let neg = Negotiated {
+                        rate: src_rate,
+                        channels: src_channels,
+                        kind,
+                        device_name: caps.name(),
+                        positions: crate::sink::resolve_positions(
+                            src_layout, src_channels),
+                    };
+                    // Skip a format this device recently failed to open.
+                    const NATIVE_RETRY_BACKOFF: std::time::Duration =
+                        std::time::Duration::from_secs(60);
+                    let failed = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .native_failed
+                        .as_ref()
+                        .is_some_and(|(f, t)| {
+                            *f == neg && t.elapsed() < NATIVE_RETRY_BACKOFF
+                        });
+                    if !failed {
+                        return (neg, false);
+                    }
+                }
             }
         }
         (
@@ -847,12 +996,26 @@ impl Engine {
                 channels: caps.default_channels(),
                 kind: caps.default_kind(),
                 device_name: caps.name(),
+                // Resolved like any other negotiation — a device-default
+                // stereo stream IS FL/FR, and comparing None here would
+                // force a spurious rebuild against a native-labeled one.
+                positions: crate::sink::resolve_positions(
+                    None, caps.default_channels()),
             },
             false,
         )
     }
 
     fn plan_track(&self, src: &SourceSpec, seek_ms: u64) -> Result<TrackPlan> {
+        self.plan_track_opts(src, seek_ms, true)
+    }
+
+    fn plan_track_opts(
+        &self,
+        src: &SourceSpec,
+        seek_ms: u64,
+        prefer_native: bool,
+    ) -> Result<TrackPlan> {
         let (src_rate, src_channels, src_depth, duration_ms, info) = match src {
             SourceSpec::File { path } => {
                 let info = self.decoder.probe(path)?;
@@ -871,7 +1034,34 @@ impl Engine {
             } => (*sample_rate_hz, *channels, *bit_depth, 0, None),
         };
 
-        let (neg, mut bypass) = self.negotiate(src_rate, src_channels, src_depth);
+        let src_layout = info
+            .as_ref()
+            .and_then(|i| i.channel_layout.clone());
+        let (neg, mut bypass) = self.negotiate(
+            src_rate,
+            src_channels,
+            src_depth,
+            src_layout.as_deref(),
+            prefer_native,
+        );
+        // Track whether the negotiation landed on the device's native
+        // acceptance of the source format vs. its default — the spawn path
+        // falls back to the default when a native stream won't open.
+        let native = {
+            let caps = self.caps.lock().unwrap().clone();
+            let fidelity = self.state.lock().unwrap().fidelity;
+            let default_neg = Negotiated {
+                rate: caps.default_rate(),
+                channels: caps.default_channels(),
+                kind: caps.default_kind(),
+                device_name: caps.name(),
+                positions: crate::sink::resolve_positions(
+                    None, caps.default_channels()),
+            };
+            // Only the non-fidelity preference falls back to the device
+            // default — strict fidelity stays honest about what it took.
+            prefer_native && !fidelity && neg != default_neg
+        };
         if !src_depth.preserved_by(neg.kind) {
             // negotiated format can't carry source bit-exactly -> not bypass
             bypass = false;
@@ -887,6 +1077,7 @@ impl Engine {
             neg,
             rplan,
             bypass,
+            native,
             info,
         })
     }
@@ -904,9 +1095,75 @@ impl Engine {
         seek_ms: u64,
         rg_db: Option<f64>,
         rebuild_ok: bool,
+        expected: Option<(u64, u64)>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let plan = self.plan_track(&src, seek_ms)?;
-        self.spawn_pipeline_planned(queue_id, src, seek_ms, rg_db, rebuild_ok, plan)
+        self.spawn_with_native_fallback(
+            queue_id,
+            src,
+            seek_ms,
+            rg_db,
+            rebuild_ok,
+            plan,
+            expected,
+        )
+    }
+
+    /// Try a planned spawn. On a failed NATIVE stream open (sink left
+    /// absent) the negotiated format is cached in `native_failed` so later
+    /// plans skip it; with `rebuild_ok` the spawn retries once at the
+    /// device default. Other errors propagate unchanged.
+    fn spawn_with_native_fallback(
+        &self,
+        queue_id: &str,
+        src: SourceSpec,
+        seek_ms: u64,
+        rg_db: Option<f64>,
+        rebuild_ok: bool,
+        plan: TrackPlan,
+        expected: Option<(u64, u64)>,
+    ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
+        let native = plan.native;
+        let attempted = plan.neg.clone();
+        let res = self.spawn_pipeline_planned(
+            queue_id,
+            src.clone(),
+            seek_ms,
+            rg_db,
+            rebuild_ok,
+            plan,
+            expected,
+        );
+        match res {
+            // Only act when the stream itself failed to open (sink is
+            // absent) — pipeline-construction errors propagate honestly.
+            Err(e) if native && self.sink.lock().unwrap().is_none() => {
+                // A device may advertise the source format yet fail to open
+                // a stream at it — remember the failure so later spawns
+                // (seeks, respawns, boundary reopens) go straight to the
+                // device default instead of a doomed open every time. A
+                // later successful open at the same format clears this.
+                self.state.lock().unwrap().native_failed =
+                    Some((attempted, std::time::Instant::now()));
+                if !rebuild_ok {
+                    return Err(e);
+                }
+                eprintln!(
+                    "native stream negotiation failed ({e:#}); retrying at device default"
+                );
+                let plan = self.plan_track_opts(&src, seek_ms, false)?;
+                self.spawn_pipeline_planned(
+                    queue_id,
+                    src,
+                    seek_ms,
+                    rg_db,
+                    rebuild_ok,
+                    plan,
+                    expected,
+                )
+            }
+            other => other,
+        }
     }
 
     /// spawn_pipeline over a caller-computed plan — lets prefetch() reuse
@@ -919,12 +1176,20 @@ impl Engine {
         rg_db: Option<f64>,
         rebuild_ok: bool,
         plan: TrackPlan,
+        expected: Option<(u64, u64)>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
         let duration_ms = plan.duration_ms;
-        let neg = plan.neg;
-        let rplan = plan.rplan;
-        let bypass = plan.bypass;
+        let mut neg = plan.neg;
+        let mut rplan = plan.rplan;
+        let mut bypass = plan.bypass;
         let info = plan.info;
+        // ReplayGain is opt-in: tagged gains only reach DSP when the user
+        // enabled them. Off by default = mpv-style transparent loudness.
+        let rg_db = if self.state.lock().unwrap().replay_gain {
+            rg_db
+        } else {
+            None
+        };
 
         {
             // A missing/dead sink (open failed earlier) must retry the open —
@@ -951,14 +1216,63 @@ impl Engine {
                         cur_kind
                     );
                 }
-                self.rebuild_stream(&neg)?;
+                let committed = self.rebuild_stream(&neg, expected, None)?;
+                // The open just proved this format works — drop any
+                // remembered native-open failure for it (transient
+                // contention shouldn't downgrade the format forever).
+                let mut st = self.state.lock().unwrap();
+                if st.native_failed.as_ref().is_some_and(|(f, _)| *f == neg) {
+                    st.native_failed = None;
+                }
+                drop(st);
+                if committed != neg {
+                    // A CPAL fallback opened its own format — the reader
+                    // must be replanned for the REAL stream rate/kind or
+                    // the source plays at the wrong speed/pitch (and a
+                    // stale bypass could claim transparency it can't
+                    // deliver). Bypass requires the source's EXACT
+                    // format: a rate- or channel-changing fallback is
+                    // never transparent.
+                    let fmt_match = committed.rate == plan.src_rate
+                        && committed.channels == plan.src_channels
+                        && plan.src_depth.preserved_by(committed.kind);
+                    if !fmt_match {
+                        bypass = false;
+                    }
+                    let (rp, pb) = resample_plan(
+                        plan.src_rate,
+                        committed.rate,
+                        self.state.lock().unwrap().fidelity,
+                        bypass,
+                    );
+                    rplan = rp;
+                    bypass = bypass && pb;
+                    neg = committed;
+                }
+            }
+        }
+
+        // Another rebuild may have committed a different format while we
+        // planned — this reader is only valid for the adopted neg.
+        {
+            let core = self.core.lock().unwrap();
+            if core.rebuilding || core.negotiated != neg {
+                bail!("stream format changed during spawn — retry");
             }
         }
 
         let capacity = (neg.rate as f32 * self.cfg.buffer_secs) as usize * neg.channels as usize;
 
         let ready = Arc::new(AtomicBool::new(false));
-        let eq = self.state.lock().unwrap().eq_bands.clone();
+        // Fidelity bypass means NO DSP on ANY negotiated kind — only the
+        // s32 bypass runs a DSP-free producer, so the f32 bypass path must
+        // be starved of EQ/RG inputs to stay bit-transparent.
+        let eq = if bypass {
+            Vec::new()
+        } else {
+            self.state.lock().unwrap().eq_bands.clone()
+        };
+        let rg_db = if bypass { None } else { rg_db };
         let decoder = Arc::clone(&self.decoder);
         let src2 = src.clone();
         let neg2 = neg.clone();
@@ -1010,6 +1324,8 @@ impl Engine {
                         duration_ms,
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::F32(cons),
+                        bypass,
+                        neg: neg.clone(),
                         ready,
                     },
                     join,
@@ -1049,6 +1365,8 @@ impl Engine {
                         duration_ms,
                         seek_offset_ms: seek_ms,
                         pipe: PipeReader::S32(cons),
+                        bypass,
+                        neg: neg.clone(),
                         ready,
                     },
                     join,
@@ -1083,7 +1401,12 @@ impl Engine {
     /// so the RT callback never finds the mutex held across a device open.
     /// Pipelines are NOT preserved across a rate/format change — callers
     /// respawn them (see respawn_pipelines).
-    fn rebuild_stream(&self, neg: &Negotiated) -> Result<()> {
+    fn rebuild_stream(
+        &self,
+        neg: &Negotiated,
+        expected: Option<(u64, u64)>,
+        caps_override: Option<Arc<dyn DeviceCaps>>,
+    ) -> Result<Negotiated> {
         let _serial = self.stream_mu.lock().unwrap();
         // Another rebuild may have landed while we waited on the lock — only
         // skip when the format matches AND a healthy sink exists.
@@ -1095,55 +1418,188 @@ impl Engine {
             .map(|s| !s.is_dead())
             .unwrap_or(false);
         if self.core.lock().unwrap().negotiated == *neg && healthy {
-            return Ok(());
+            // Same-format reuse: a completed end-of-track drain leaves
+            // the stream deactivated — reactivate or it stays silent.
+            if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                s.resume();
+            }
+            return Ok(neg.clone());
         }
         if self.monitor_stop.load(Ordering::Acquire) {
             bail!("engine is shutting down");
         }
+        {
+            let mut core = self.core.lock().unwrap();
+            // Callers that captured (boundary_seq, generation) must not
+            // destroy a reader promoted or loaded AFTER the capture. The
+            // check runs BEFORE any destructive step: after clear_all no
+            // pull-side boundary is possible (nothing left to advance),
+            // and the sink is still live, so bailing loses nothing.
+            if let Some((seq, gen)) = expected {
+                let st = self.state.lock().unwrap();
+                if core.boundary_seq != seq
+                    || core.ended_pending
+                    || st.generation != gen
+                {
+                    bail!("track boundary landed mid-spawn — stale pipeline");
+                }
+            }
+            // From here until the negotiated commit, installs based on the
+            // OLD format are forbidden — the flag makes them bail instead
+            // of attaching a reader to a stream about to change.
+            core.rebuilding = true;
+            core.clear_all();
+        }
         let old = self.sink.lock().unwrap().take();
+        // Re-verify ownership before the irreversible stop — a load or
+        // boundary landing during our spawn makes this rebuild stale.
+        // The put-back keeps the old stream alive for the new owner.
+        if let Some((seq, gen)) = expected {
+            let stale = {
+                let core = self.core.lock().unwrap();
+                let st = self.state.lock().unwrap();
+                core.boundary_seq != seq
+                    || core.ended_pending
+                    || st.generation != gen
+            };
+            if stale {
+                if let Some(s) = old.as_ref() {
+                    // The put-back stream may have been drained —
+                    // reactivate so the new owner isn't silent.
+                    s.resume();
+                }
+                *self.sink.lock().unwrap() = old;
+                self.core.lock().unwrap().rebuilding = false;
+                bail!("ownership changed mid-rebuild — stale pipeline");
+            }
+        }
         if let Some(mut old) = old {
             old.stop();
         }
-        {
-            let mut core = self.core.lock().unwrap();
-            core.clear_all();
-        }
-        let caps = Arc::clone(&self.caps.lock().unwrap());
+        let caps = caps_override.unwrap_or_else(|| Arc::clone(&self.caps.lock().unwrap()));
         // Open BEFORE committing negotiated: on failure the core keeps the
         // old negotiation so the next load still attempts a rebuild instead
         // of rendering into a dead sink.
-        let new_sink = crate::sink::open_sink(&self.cfg, caps, neg, &self.core)?;
+        let opened = match crate::sink::open_sink(&self.cfg, caps.clone(), neg, &self.core) {
+            Ok(s) => s,
+            Err(e) => {
+                self.core.lock().unwrap().rebuilding = false;
+                return Err(e);
+            }
+        };
+        let committed = opened.negotiated;
         {
             let mut core = self.core.lock().unwrap();
-            core.negotiated = neg.clone();
+            // Commit the format the stream ACTUALLY opened — a CPAL
+            // fallback re-negotiates against its own capabilities and
+            // may land on a different rate/channels than requested.
+            core.negotiated = committed.clone();
+            core.rebuilding = false;
         }
-        *self.sink.lock().unwrap() = Some(new_sink);
-        Ok(())
+        // Commit the caps that actually serve this stream — the CPAL
+        // fallback's caps, or the requested/override caps. Doing it
+        // HERE keeps set_device_inner from overwriting a fallback with
+        // the PipeWire caps that just failed.
+        *self.caps.lock().unwrap() = opened.caps.unwrap_or(caps);
+        {
+            let mut g = self.sink.lock().unwrap();
+            *g = Some(opened.sink);
+            // Bump under the same guard — the monitor reads (sink, gen)
+            // atomically under it, so a rebuild can never tear the pair.
+            self.sink_gen.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(committed)
     }
 
     /// Rebuild caps for a device change and re-negotiate the stream, then
     /// respawn the current track at its position and the prefetch from 0.
     pub fn set_device(&self, name: Option<&str>) -> Result<Value> {
+        self.set_device_inner(name, None)
+    }
+
+    fn set_device_inner(&self, name: Option<&str>, owner_gen: Option<u64>) -> Result<Value> {
+        // Don't probe or commit anything while a boundary is un-adopted —
+        // the guarded rebuild would bail anyway and leave mixed state.
+        // Snapshot the entry tokens: a load or a gapless promotion
+        // racing the position read would otherwise apply the old
+        // track's position to its successor. Generation covers loads;
+        // boundary_seq + current_instance cover promotions (a promotion
+        // does NOT bump generation).
+        // Read position before staged — a publish landing between the
+        // two reads inflates staged → over-subtract → repeat ≤1 chunk,
+        // the safe direction. Locks never nest (see audible_position_ms).
+        let (gen0, bseq0, inst0, pos_pre, rate_pre) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            (
+                st.generation,
+                core.boundary_seq,
+                st.current_instance,
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
+            )
+        };
+        let (staged, delay) = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|sk| (sk.staged_frames(), sk.device_delay_frames()))
+            .unwrap_or((0, 0));
+        let (pos, expected) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            // The caller's ownership token (or the entry snapshot for
+            // owner_gen=None): a newer load or promotion supersedes
+            // the request entirely.
+            if st.generation != owner_gen.unwrap_or(gen0)
+                || core.boundary_seq != bseq0
+                || st.current_instance != inst0
+            {
+                bail!("device change superseded by a newer load");
+            }
+            if core.ended_pending
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            {
+                bail!("track boundary in flight — retry device change");
+            }
+            (
+                pos_pre.saturating_sub((staged + delay) * 1000 / rate_pre),
+                Some((core.boundary_seq, st.generation)),
+            )
+        };
         let new_caps: Arc<dyn DeviceCaps> = if self.cfg.null_sink {
             crate::sink::initial_caps(&self.cfg)?
         } else {
-            crate::sink::CpalCaps::new(name)?
+            crate::sink::device_caps(name)?
         };
-        *self.caps.lock().unwrap() = new_caps;
         // Default negotiated for the new device; next spawn refines it.
-        let neg = {
-            let caps = self.caps.lock().unwrap().clone();
-            Negotiated {
-                rate: caps.default_rate(),
-                channels: caps.default_channels(),
-                kind: caps.default_kind(),
-                device_name: caps.name(),
-            }
+        let neg = Negotiated {
+            rate: new_caps.default_rate(),
+            channels: new_caps.default_channels(),
+            kind: new_caps.default_kind(),
+            device_name: new_caps.name(),
+            positions: crate::sink::resolve_positions(
+                None, new_caps.default_channels()),
         };
-        // Capture position before the rebuild clears the pipeline —
-        // respawn resumes from there, not 0.
-        let pos = self.core.lock().unwrap().position_ms();
-        self.rebuild_stream(&neg)?;
+        // Rebuild under the new caps BEFORE committing them — a rejected
+        // rebuild leaves the old device caps and stream intact.
+        if let Err(e) = self.rebuild_stream(&neg, expected, Some(new_caps.clone())) {
+            // Guard rejections leave the sink alive; only an actual open
+            // failure leaves playback with no output — mark it honestly.
+            if self.sink.lock().unwrap().is_none() {
+                self.set_state(PlayState::Error);
+                self.emit_state(Some(&format!("{e:#}")));
+            }
+            return Err(e);
+        }
+        // Caps were committed by rebuild_stream (PW on success, CPAL
+        // on fallback) — overwriting here would clobber a fallback.
+        // New device: the cached native-open failure belongs to the old one.
+        self.state.lock().unwrap().native_failed = None;
         self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -1154,63 +1610,353 @@ impl Engine {
         json!({ "devices": caps.list() })
     }
 
+    /// Wait out an un-adopted pull-side boundary so callers reading
+    /// `state` metadata (bypass flag, prefetch slot, current track) see
+    /// the settled truth rather than the ended track's leftovers.
+    fn settle_boundary(&self) {
+        for _ in 0..4 {
+            let torn = {
+                let core = self.core.lock().unwrap();
+                let st = self.state.lock().unwrap();
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            };
+            if !torn {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     /// After a stream rebuild: restart the current track at `position_ms`
     /// and the prefetched successor from 0 (same device stream params
     /// permitting).
     fn respawn_pipelines(&self, position_ms: u64) {
-        let (cur, prefetch) = {
-            let st = self.state.lock().unwrap();
+        self.respawn_pipelines_inner(position_ms, true);
+    }
+
+    /// `follow_prefetch` tails into respawn_prefetch for the armed slot;
+    /// promoted-successor redirects pass false so the convergence can't
+    /// recurse unboundedly (fatal on the monitor thread, which can't
+    /// adopt a boundary while it's inside this function).
+    /// Pull position minus whatever the sink still holds staged — the
+    /// audible position. Respawn paths must resume from here or a rebuild
+    /// skips the staged tail (read BEFORE any flush: the staged value
+    /// disappears with the ring).
+    fn audible_position_ms(&self) -> u64 {
+        // Position first, then staged — a publish landing between the
+        // two reads makes staged *larger* than the snapshot warranted:
+        // over-subtract → the respawn REPEATS up to one chunk. The
+        // other order skips it — repeats are the safe failure direction.
+        // Neither lock is held across the other (shutdown holds `sink`
+        // while joining the feeder — a core→sink edge deadlocks).
+        let (pull, rate) = {
+            let core = self.core.lock().unwrap();
             (
-                st.queue_id.clone().zip(st.source.clone()),
-                st.prefetch.as_ref().map(|p| {
-                    (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)
-                }),
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
             )
         };
-        if let Some((qid, src)) = cur {
+        let (staged, delay) = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| (s.staged_frames(), s.device_delay_frames()))
+            .unwrap_or((0, 0));
+        pull.saturating_sub((staged + delay) * 1000 / rate)
+    }
+
+    fn respawn_pipelines_inner(&self, position_ms: u64, follow_prefetch: bool) {
+        // Bounded loop: a gapless promotion can land while we spawn — a
+        // stale install would overwrite the newly-active successor. A
+        // snapshot is only trustworthy when core and state agree on the
+        // current instance (a pending adoption shows them disagreeing);
+        // the install itself runs inside the `core` lock so the callback
+        // cannot promote between the check and set_active.
+        for attempt in 0..8 {
+            // Lock order: core first, then state (same as emit_position).
+            let (live_inst, seq, ended_pending) = {
+                let core = self.core.lock().unwrap();
+                (
+                    core.active.as_ref().map(|r| r.instance),
+                    core.boundary_seq,
+                    core.ended_pending,
+                )
+            };
+            let (cur, gen, cur_inst) = {
+                let st = self.state.lock().unwrap();
+                (
+                    st.queue_id.clone().zip(st.source.clone()),
+                    st.generation,
+                    st.current_instance,
+                )
+            };
+            let Some((qid, src)) = cur else { break };
+            // A pull-side boundary is waiting for the monitor to adopt it:
+            // either active and state disagree (promotion mid-flight), or
+            // playback already ended but state hasn't caught up. Wait for
+            // the adoption tick (~20ms) rather than act on a torn snapshot.
+            if (live_inst.is_some() && live_inst != Some(cur_inst)) || ended_pending {
+                if attempt == 7 {
+                    eprintln!("respawn: boundary adoption never settled");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                continue;
+            }
             // A live pcm-stream can't be respawned mid-flow — the byte source
-            // belongs to the original load. Report and leave the stream dead.
+            // belongs to the original load. Report and mark the dead stream
+            // Error rather than leave a silent "playing".
             if matches!(src, SourceSpec::PcmStream { .. }) {
                 self.emit_error(Some(&qid), "live stream cannot rebuild at position", true);
-                return;
+                // Paused streams are dead too — a later play() would set
+                // Playing with no reader and stay silent. Only mark Error
+                // when the rebuild actually destroyed the reader — a plain
+                // set_eq respawn leaves the stream's reader alive.
+                let was_live = {
+                    let core = self.core.lock().unwrap();
+                    let mut st = self.state.lock().unwrap();
+                    let ours = st.generation == gen
+                        && core.active.is_none()
+                        && (st.state == PlayState::Playing
+                            || st.state == PlayState::Paused);
+                    if ours {
+                        st.state = PlayState::Error;
+                    }
+                    ours
+                };
+                if was_live {
+                    self.emit_state(Some("live stream ended by device change"));
+                }
+                break;
             }
+            // Position is read FRESH per attempt: after a stale retry the
+            // track may be a different one — respawning it at the entry
+            // parameter's offset would skip or mis-place it.
             let (pos, rg) = {
+                let pos = if attempt == 0 {
+                    position_ms
+                } else {
+                    self.audible_position_ms()
+                };
                 let st = self.state.lock().unwrap();
-                (position_ms, st.replay_gain_db)
+                (pos, st.replay_gain_db)
             };
-            match self.spawn_pipeline(&qid, src, pos, rg, true) {
+            match self.spawn_pipeline(&qid, src.clone(), pos, rg, true, Some((seq, gen))) {
+                Err(e) if attempt < 7 && {
+                    // A boundary or in-flight rebuild failing the spawn
+                    // is transient — retry like the stale-install path.
+                    let core = self.core.lock().unwrap();
+                    core.rebuilding || core.boundary_seq != seq
+                } => {
+                    eprintln!("respawn: transient spawn failure: {e:#}");
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    continue;
+                }
                 Ok((reader, handle, dur, bypass, _info)) => {
                     let inst = reader.instance;
-                    self.core.lock().unwrap().set_active(reader);
-                    *self.producer.lock().unwrap() = Some(handle);
+                    // Check + install inside one `core` critical section —
+                    // the callback cannot advance a track while we hold it.
+                    let mut core = self.core.lock().unwrap();
                     let mut st = self.state.lock().unwrap();
+                    let stale = st.generation != gen
+                        || st.queue_id.as_deref() != Some(qid.as_str())
+                        || st.current_instance != cur_inst
+                        // a boundary (promotion or end) landed mid-spawn
+                        || core.boundary_seq != seq
+                        || core.ended_pending
+                        // a stream rebuild is mid-flight or already
+                        // committed a different format — attaching now
+                        // would pin this reader to the outgoing format
+                        || core.rebuilding
+                        || core.negotiated != reader.neg;
+                    if stale {
+                        drop(st);
+                        drop(core);
+                        reader.pipe.abort();
+                        drop(handle);
+                        // the boundary's adoption lands within a monitor
+                        // tick — retry against the settled state
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        continue;
+                    }
+                    core.set_active(reader);
                     st.current_instance = inst;
                     st.duration_ms = dur;
                     st.fidelity_bypass = bypass;
+                    drop(st);
+                    drop(core);
+                    *self.producer.lock().unwrap() = Some(handle);
                 }
-                Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
+                Err(e) => {
+                    self.emit_error(Some(&qid), &format!("{e:#}"), true);
+                    // When a rebuild already cleared the pipeline and this
+                    // file track can't respawn, nothing is playing — mark
+                    // it rather than stay silently Playing. Ownership and
+                    // the Error write must be one section: a newer load
+                    // must not be marked failed by a stale respawn.
+                    let dead = {
+                        let core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        let ours = st.generation == gen
+                            && st.queue_id.as_deref() == Some(qid.as_str())
+                            && st.current_instance == cur_inst;
+                        let dead = ours
+                            && core.active.is_none()
+                            && matches!(src, SourceSpec::File { .. });
+                        if dead {
+                            st.state = PlayState::Error;
+                        }
+                        dead
+                    };
+                    if dead {
+                        self.emit_state(Some(&format!("{e:#}")));
+                    }
+                }
+            }
+            break;
+        }
+        let prefetch = {
+            let st = self.state.lock().unwrap();
+            st.prefetch.as_ref().map(|p| {
+                (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)
+            })
+        };
+        if follow_prefetch {
+            if let Some((qid, src, rg)) = prefetch {
+                self.respawn_prefetch(qid, src, rg);
             }
         }
-        if let Some((qid, src, rg)) = prefetch {
-            // rebuild_ok:false — a format-mismatched prefetch must NOT swap
-            // the stream (that would erase the active track we just set);
-            // the boundary reopen path handles it honestly instead.
-            match self.spawn_pipeline(&qid, src.clone(), 0, rg, false) {
-                Ok((reader, handle, _dur, _bypass, _info)) => {
-                    let ready = reader.ready.clone();
-                    self.core.lock().unwrap().set_next(reader);
-                    *self.prefetch_producer.lock().unwrap() = Some(handle);
-                    let mut st = self.state.lock().unwrap();
-                    st.prefetch = Some(PrefetchState {
-                        queue_id: qid,
-                        source: src,
-                        replay_gain_db: rg,
-                        ready,
-                    });
-                    st.reported_prefetch_ready = false;
+    }
+
+    /// Re-arm the prefetched successor after a rebuild/toggle. The old
+    /// `next` reader is ALWAYS retired first — it was built under the
+    /// pre-respawn DSP state and must never be promoted as-is. A
+    /// format-mismatched successor stays armed for the boundary reopen;
+    /// only a probe failure refuses to claim readiness.
+    fn respawn_prefetch(&self, qid: String, src: SourceSpec, rg: Option<f64>) {
+        // Promotion check + retire + capture in ONE section — a promotion
+        // can't slip between them and leave the live track stale.
+        let step = {
+            let mut core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core
+                .active
+                .as_ref()
+                .is_some_and(|r| r.queue_id == qid)
+            {
+                Some(None)
+            } else if st.prefetch.as_ref().map(|p| p.queue_id.as_str())
+                != Some(qid.as_str())
+            {
+                None
+            } else {
+                if let Some(old) = core.next.take() {
+                    old.pipe.abort();
                 }
-                Err(e) => self.emit_error(Some(&qid), &format!("{e:#}"), true),
+                Some(Some((core.boundary_seq, st.generation)))
             }
+        };
+        let Some(step) = step else { return };
+        let Some((seq, gen)) = step else {
+            // Already promoted pull-side — respawn it as the ACTIVE track
+            // rather than dropping the install below. No prefetch tail —
+            // that would recurse back here unboundedly.
+            let pos = self.audible_position_ms();
+            self.respawn_pipelines_inner(pos, false);
+            return;
+        };
+        *self.prefetch_producer.lock().unwrap() = None;
+        // Re-arm only when the prefetch slot still describes THIS
+        // successor — a promotion (or a newer prefetch) may have claimed
+        // it while we planned.
+        let arm = |ready: bool, qid: &str, src: &SourceSpec, rg| {
+            let mut st = self.state.lock().unwrap();
+            if st.prefetch.as_ref().map(|p| p.queue_id.as_str()) == Some(qid) {
+                st.prefetch = Some(PrefetchState {
+                    queue_id: qid.to_string(),
+                    source: src.clone(),
+                    replay_gain_db: rg,
+                    ready: Arc::new(AtomicBool::new(ready)),
+                    generation: gen,
+                });
+                st.reported_prefetch_ready = false;
+            }
+        };
+        match self.plan_track(&src, 0) {
+            Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
+                match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan, Some((seq, gen))) {
+                    Ok((reader, handle, _dur, _bypass, _info)) => {
+                        let ready = reader.ready.clone();
+                        // Check + install in ONE critical section — a
+                        // boundary between them would either consume the
+                        // armed slot or install this track as its own
+                        // successor.
+                        let mut core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        let stale = core.boundary_seq != seq
+                            || core.ended_pending
+                            || core.rebuilding
+                            || core.negotiated != reader.neg
+                            || st.prefetch
+                                .as_ref()
+                                .map(|p| p.queue_id.as_str())
+                                != Some(qid.as_str())
+                            || core
+                                .active
+                                .as_ref()
+                                .is_some_and(|r| r.queue_id == qid);
+                        if stale {
+                            let promoted = core
+                                .active
+                                .as_ref()
+                                .is_some_and(|r| r.queue_id == qid);
+                            drop(st);
+                            drop(core);
+                            reader.pipe.abort();
+                            drop(handle);
+                            if promoted {
+                                // The successor is already live — respawn
+                                // it as the active track so the new DSP
+                                // settings actually apply. No prefetch
+                                // tail — bounded, non-recursive.
+                                let pos = self.audible_position_ms();
+                                self.respawn_pipelines_inner(pos, false);
+                            }
+                            return;
+                        }
+                        core.set_next(reader);
+                        st.prefetch = Some(PrefetchState {
+                            queue_id: qid,
+                            source: src,
+                            replay_gain_db: rg,
+                            ready,
+                            generation: gen,
+                        });
+                        st.reported_prefetch_ready = false;
+                        drop(st);
+                        drop(core);
+                        *self.prefetch_producer.lock().unwrap() = Some(handle);
+                    }
+                    // The plan validated but nothing verified renderable —
+                    // stay armed for the boundary reopen without claiming
+                    // readiness.
+                    Err(e) => {
+                        self.emit_error(Some(&qid), &format!("{e:#}"), true);
+                        arm(false, &qid, &src, rg);
+                    }
+                }
+            }
+            // Different stream format — armed for the boundary reopen,
+            // honestly "ready" in the control sense (validated).
+            Ok(_) => arm(true, &qid, &src, rg),
+            // Can't even probe the file — stay armed for the boundary
+            // reopen, but do NOT claim readiness it can't back.
+            Err(_) => arm(false, &qid, &src, rg),
         }
     }
 
@@ -1222,12 +1968,32 @@ impl Engine {
 
     pub fn load(&self, p: LoadParams) -> Result<Value> {
         {
+            // core first, then state — the monitor holds that order.
+            let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
             st.state = PlayState::Loading;
             st.generation = p.generation_id;
             st.queue_id = Some(p.queue_id.clone());
             st.source = Some(p.source.clone());
             st.replay_gain_db = p.replay_gain_db;
+            // The old reader's events must drop as stale — a same-track
+            // reload would otherwise let its own Ended pass the monitor's
+            // instance check and consume this load's queue_id.
+            st.current_instance = 0;
+            // A new generation obsoletes any un-adopted end — its event
+            // will be dropped as stale, so the flag would otherwise wedge.
+            core.ended_pending = false;
+            // A slot armed under a previous generation is retired here
+            // even when a promotion is pending — its adoption will drop
+            // as stale and the slot must not survive into this load.
+            if st
+                .prefetch
+                .as_ref()
+                .is_some_and(|pf| pf.generation != st.generation)
+            {
+                st.prefetch = None;
+                st.reported_prefetch_ready = false;
+            }
             // Unblock any producer still waiting on a previous feed.
             for (_, f) in st.feeds.drain() {
                 f.close();
@@ -1244,6 +2010,7 @@ impl Engine {
             p.position_ms,
             p.replay_gain_db,
             true,
+            None,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1255,15 +2022,24 @@ impl Engine {
         };
 
         let load_instance = reader.instance;
+        // Reader and state install in ONE critical section — a fast-ending
+        // track can't slip a boundary between them and be discarded, and a
+        // rebuild mid-spawn can't pin an old-format reader to the stream.
         {
             let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            if core.rebuilding || core.negotiated != reader.neg {
+                reader.pipe.abort();
+                st.state = PlayState::Error;
+                drop(st);
+                drop(core);
+                drop(handle);
+                self.emit_state(Some("stream rebuild in flight"));
+                bail!("stream rebuild in flight — retry load");
+            }
             core.set_active(reader);
             core.paused = p.start_paused;
-        }
-        *self.producer.lock().unwrap() = Some(handle);
-
-        {
-            let mut st = self.state.lock().unwrap();
+            core.paused_flag.store(p.start_paused, Ordering::Release);
             st.current_instance = load_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
@@ -1273,6 +2049,7 @@ impl Engine {
                 PlayState::Playing
             };
         }
+        *self.producer.lock().unwrap() = Some(handle);
         self.emit_state(None);
         self.emit_output();
         let gen = self.state.lock().unwrap().generation;
@@ -1317,6 +2094,27 @@ impl Engine {
         rg_db: Option<f64>,
     ) -> Result<Value> {
         self.check_gen(generation)?;
+        // A promotion the monitor hasn't adopted yet still needs the armed
+        // slot's metadata — refuse rather than overwrite it. The caller
+        // re-prefetches after the boundary settles.
+        let seq = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            if core.ended_pending
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            {
+                bail!("track boundary in flight — retry prefetch");
+            }
+            core.boundary_seq
+        };
+        // Replace any armed prefetch BEFORE planning: an incompatible new
+        // successor must never inherit a stale `next` reader — the
+        // boundary would promote the old track while the state names the
+        // new one.
+        self.abort_prefetch();
         let src = SourceSpec::File { path: PathBuf::from(path) };
         // If the successor negotiates a different stream format (strict
         // fidelity + a native format the stream can't take), it cannot
@@ -1327,30 +2125,97 @@ impl Engine {
         let plan = self.plan_track(&src, 0)?;
         let compatible = self.core.lock().unwrap().negotiated == plan.neg;
         if compatible {
-            let (reader, handle, _dur, _bypass, _info) =
-                self.spawn_pipeline_planned(queue_id, src.clone(), 0, rg_db, false, plan)?;
+            // Via the fallback so a failed native open is cached here too
+            // (no retry — the boundary reopen handles an open failure).
+            let spawned = self.spawn_with_native_fallback(
+                queue_id,
+                src.clone(),
+                0,
+                rg_db,
+                false,
+                plan,
+                Some((seq, generation)),
+            );
+            let (reader, handle, _dur, _bypass, _info) = match spawned {
+                Ok(v) => v,
+                Err(e) => {
+                    // Nothing verified renderable — arm for the boundary
+                    // reopen without claiming readiness, same as
+                    // respawn_prefetch, then report the failure.
+                    let core = self.core.lock().unwrap();
+                    let mut st = self.state.lock().unwrap();
+                    if core.boundary_seq == seq
+                        && !core.ended_pending
+                        && st.generation == generation
+                    {
+                        st.prefetch = Some(PrefetchState {
+                            queue_id: queue_id.to_string(),
+                            source: src.clone(),
+                            replay_gain_db: rg_db,
+                            ready: Arc::new(AtomicBool::new(false)),
+                            generation,
+                        });
+                        st.reported_prefetch_ready = false;
+                    }
+                    return Err(e);
+                }
+            };
             let ready = reader.ready.clone();
-            {
-                let mut core = self.core.lock().unwrap();
-                core.set_next(reader);
-            }
-            *self.prefetch_producer.lock().unwrap() = Some(handle);
+            // Check + install in one critical section — a boundary landing
+            // mid-spawn must not leave this track installed as its own
+            // successor or resurrect consumed prefetch state.
+            let mut core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
+            let stale = core.boundary_seq != seq
+                || core.ended_pending
+                || core.rebuilding
+                || core.negotiated != reader.neg
+                || st.generation != generation
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| r.queue_id == queue_id);
+            if stale {
+                // The boundary's adoption/reopen path owns the successor
+                // now — a fresh prefetch can re-arm the next one.
+                reader.pipe.abort();
+                drop(st);
+                drop(core);
+                drop(handle);
+                return Err(anyhow::anyhow!(
+                    "track boundary landed during prefetch — retry"
+                ));
+            }
+            core.set_next(reader);
             st.prefetch = Some(PrefetchState {
                 queue_id: queue_id.to_string(),
                 source: src,
                 replay_gain_db: rg_db,
                 ready,
+                generation,
             });
             st.reported_prefetch_ready = false;
+            drop(st);
+            drop(core);
+            *self.prefetch_producer.lock().unwrap() = Some(handle);
         } else {
+            // A boundary landing while we planned would consume the armed
+            // slot and never reopen this successor — the caller retries.
+            let core = self.core.lock().unwrap();
             let mut st = self.state.lock().unwrap();
+            if core.boundary_seq != seq
+                || core.ended_pending
+                || st.generation != generation
+            {
+                bail!("track boundary landed during prefetch — retry");
+            }
             st.prefetch = Some(PrefetchState {
                 queue_id: queue_id.to_string(),
                 source: src,
                 replay_gain_db: rg_db,
                 // "ready" in the control sense: validated and reproducible
                 ready: Arc::new(AtomicBool::new(true)),
+                generation,
             });
             st.reported_prefetch_ready = false;
         }
@@ -1359,20 +2224,28 @@ impl Engine {
 
     pub fn play(&self, generation: u64) -> Result<Value> {
         self.check_gen(generation)?;
-        let mut core = self.core.lock().unwrap();
-        core.paused = false;
-        drop(core);
-        self.set_state(PlayState::Playing);
+        // Flag and state together — a boundary reopen installing in the
+        // gap would otherwise see stale state and override the flag.
+        {
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            core.paused = false;
+            core.paused_flag.store(false, Ordering::Release);
+            st.state = PlayState::Playing;
+        }
         self.emit_state(None);
         Ok(json!({ "ok": true }))
     }
 
     pub fn pause(&self, generation: u64) -> Result<Value> {
         self.check_gen(generation)?;
-        let mut core = self.core.lock().unwrap();
-        core.paused = true;
-        drop(core);
-        self.set_state(PlayState::Paused);
+        {
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            core.paused = true;
+            core.paused_flag.store(true, Ordering::Release);
+            st.state = PlayState::Paused;
+        }
         self.emit_state(None);
         self.emit_position();
         Ok(json!({ "ok": true }))
@@ -1386,46 +2259,86 @@ impl Engine {
         }
         {
             let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
             core.clear_all();
             core.paused = true;
-        }
-        {
-            let mut st = self.state.lock().unwrap();
+            core.paused_flag.store(true, Ordering::Release);
+            // The stopped event supersedes the un-adopted end.
+            core.ended_pending = false;
             st.queue_id = None;
             st.source = None;
             st.duration_ms = 0;
+            st.state = PlayState::Stopped;
             for (_, f) in st.feeds.drain() {
                 f.close();
             }
         }
-        self.set_state(PlayState::Stopped);
         self.emit_state(None);
         Ok(json!({ "ok": true }))
     }
 
     pub fn seek(&self, generation: u64, position_ms: u64) -> Result<Value> {
         self.check_gen(generation)?;
-        let (queue_id, src, rg) = {
+        // core first, then state — same order as emit_position.
+        let (queue_id, src, rg, cur_inst, seq) = {
+            let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
+            // Torn snapshot: a boundary the monitor hasn't adopted yet —
+            // the track this seek targets is already gone.
+            let torn = core.ended_pending
+                || core
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| Some(r.instance) != Some(st.current_instance));
+            if torn {
+                bail!("track boundary in flight — retry seek");
+            }
             match (&st.queue_id, &st.source) {
-                (Some(q), Some(s)) => (q.clone(), s.clone(), st.replay_gain_db),
+                (Some(q), Some(s)) => {
+                    // A live pcm-stream can't seek — its byte source is
+                    // the original feed; respawning would drop buffered
+                    // bytes and report a lying position.
+                    if matches!(s, SourceSpec::PcmStream { .. }) {
+                        bail!("cannot seek a live pcm stream");
+                    }
+                    (
+                        q.clone(),
+                        s.clone(),
+                        st.replay_gain_db,
+                        st.current_instance,
+                        core.boundary_seq,
+                    )
+                }
                 _ => bail!("nothing loaded"),
             }
         };
         let (reader, handle, duration_ms, bypass, _info) =
-            self.spawn_pipeline(&queue_id, src, position_ms, rg, true)?;
+            self.spawn_pipeline(&queue_id, src, position_ms, rg, true, Some((seq, generation)))?;
         let seek_instance = reader.instance;
+        // Install atomically: a boundary landing mid-spawn made this seek
+        // moot — the successor owns the stream now.
         {
             let mut core = self.core.lock().unwrap();
-            core.set_active(reader);
-        }
-        *self.producer.lock().unwrap() = Some(handle);
-        {
             let mut st = self.state.lock().unwrap();
+            let stale = core.boundary_seq != seq
+                || core.ended_pending
+                || core.rebuilding
+                || core.negotiated != reader.neg
+                || st.generation != generation
+                || st.current_instance != cur_inst;
+            if stale {
+                reader.pipe.abort();
+                drop(handle);
+                bail!("track boundary landed during seek — retry");
+            }
+            // set_active flushes staged PCM (epoch bump) — no extra
+            // flush needed here.
+            core.set_active(reader);
             st.current_instance = seek_instance;
             st.duration_ms = duration_ms;
             st.fidelity_bypass = bypass;
         }
+        *self.producer.lock().unwrap() = Some(handle);
         self.emit_position();
         Ok(json!({ "ok": true, "positionMs": position_ms }))
     }
@@ -1440,8 +2353,11 @@ impl Engine {
         {
             self.state.lock().unwrap().fidelity = enabled;
         }
+        // Same settle as set_eq — a mid-flight boundary leaves stale
+        // current/prefetch metadata in state.
+        self.settle_boundary();
         // Rebuild current + prefetch pipelines under the new rules.
-        let pos = self.core.lock().unwrap().position_ms();
+        let pos = self.audible_position_ms();
         self.respawn_pipelines(pos);
         self.emit_output();
         Ok(json!({ "ok": true }))
@@ -1449,12 +2365,109 @@ impl Engine {
 
     pub fn set_eq(&self, bands: &[(f64, f64)]) -> Result<Value> {
         self.state.lock().unwrap().eq_bands = bands.to_vec();
+        // A boundary mid-flight would let the bypass/prefetch decisions
+        // read the ended track's metadata — wait for adoption first.
+        self.settle_boundary();
         // Pipelines read EQ at construction, so restart the current pipeline
         // at its position to apply changes immediately. Skipped on bypass.
-        let bypass = self.state.lock().unwrap().fidelity_bypass;
-        if !bypass {
-            let pos = self.core.lock().unwrap().position_ms();
+        let (bypass, seq, torn) = {
+            let core = self.core.lock().unwrap();
+            let st = self.state.lock().unwrap();
+            (
+                st.fidelity_bypass,
+                core.boundary_seq,
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance)),
+            )
+        };
+        // A promotion landing between settle and snapshot leaves state
+        // describing the ended track — converge through the respawn path
+        // which waits for adoption and re-reads settled state.
+        if torn || !bypass {
+            let pos = self.audible_position_ms();
             self.respawn_pipelines(pos);
+        } else {
+            // Bypass starves the current track's DSP anyway — but an armed
+            // prefetch may be non-bypass on the same stream and would keep
+            // the old EQ through promotion.
+            let pf = {
+                let st = self.state.lock().unwrap();
+                st.prefetch
+                    .as_ref()
+                    .map(|p| (p.queue_id.clone(), p.source.clone(), p.replay_gain_db))
+            };
+            if let Some((qid, src, rg)) = pf {
+                self.respawn_prefetch(qid, src, rg);
+            }
+            // A boundary landing between the snapshot and the respawn may
+            // have promoted a non-bypass successor — converge it here.
+            if self.core.lock().unwrap().boundary_seq != seq {
+                let pos = self.audible_position_ms();
+                self.respawn_pipelines(pos);
+            }
+        }
+        Ok(json!({ "ok": true }))
+    }
+
+    /// ReplayGain toggle: per-track tag gains are applied only when enabled
+    /// (off by default). A change mid-track respawns the affected
+    /// pipelines at position, like set_eq. The current track is skipped on
+    /// fidelity bypass (no DSP runs) and live pcm-streams (can't respawn);
+    /// an armed prefetch is still refreshed — a compatible non-bypass
+    /// successor would otherwise keep the old gain through promotion.
+    pub fn set_replay_gain(&self, enabled: bool) -> Result<Value> {
+        self.settle_boundary();
+        let (changed, live_stream, bypass, cur_tagged, pf_tagged, torn) = {
+            let core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            let was = st.replay_gain;
+            st.replay_gain = enabled;
+            (
+                was != enabled,
+                matches!(st.source, Some(SourceSpec::PcmStream { .. })),
+                st.fidelity_bypass,
+                st.replay_gain_db.is_some(),
+                st.prefetch
+                    .as_ref()
+                    .filter(|p| p.replay_gain_db.is_some())
+                    .map(|p| (p.queue_id.clone(), p.source.clone(), p.replay_gain_db)),
+                core.ended_pending
+                    || core
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| Some(r.instance) != Some(st.current_instance)),
+            )
+        };
+        if !changed {
+            return Ok(json!({ "ok": true }));
+        }
+        if torn || (cur_tagged && !bypass && !live_stream) {
+            // respawn_pipelines handles the prefetched successor too.
+            let pos = self.audible_position_ms();
+            self.respawn_pipelines(pos);
+        } else if let Some((qid, src, rg)) = pf_tagged {
+            self.respawn_prefetch(qid, src, rg);
+            // A boundary may have promoted the tagged successor while we
+            // respawned it — converge any track that crossed the boundary.
+            // One lock scope — a `||` operand would hold the first core
+            // guard alive into the second lock() and self-deadlock.
+            let converged = {
+                let core = self.core.lock().unwrap();
+                core.ended_pending
+                    || {
+                        let st = self.state.lock().unwrap();
+                        core.active.as_ref().is_some_and(|r| {
+                            Some(r.instance) != Some(st.current_instance)
+                        })
+                    }
+            };
+            if converged {
+                let pos = self.audible_position_ms();
+                self.respawn_pipelines(pos);
+            }
         }
         Ok(json!({ "ok": true }))
     }
@@ -1515,17 +2528,52 @@ impl Engine {
         if let Some(h) = self.prefetch_producer.lock().unwrap().take() {
             drop(h);
         }
+        // Clear the control slot except while a promotion is un-adopted —
+        // the monitor still needs its source/ReplayGain to adopt. For a
+        // pending END clearing is correct: the monitor takes the slot for
+        // the boundary reopen, and cancel means "no reopen". A slot from
+        // another generation is retired either way — its adoption drops
+        // as stale and it must not reopen later.
+        let core = self.core.lock().unwrap();
         let mut st = self.state.lock().unwrap();
-        st.prefetch = None;
-        st.reported_prefetch_ready = false;
+        let keep = core
+            .active
+            .as_ref()
+            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+            && st
+                .prefetch
+                .as_ref()
+                .is_some_and(|pf| pf.generation == st.generation);
+        if !keep {
+            st.prefetch = None;
+            st.reported_prefetch_ready = false;
+        }
     }
 
     fn emit_position(&self) {
-        let (pos, dur, gen) = {
+        // Report the AUDIBLE position, not the pull position — the
+        // staging ring can hold ~170ms of audio the listener hasn't
+        // heard yet (mpv does the same with audio-pts). Read position
+        // before staged: a publish between inflates staged →
+        // over-subtract → repeat, the safe direction. Locks never nest.
+        let (pull, rate, dur, gen) = {
             let core = self.core.lock().unwrap();
             let st = self.state.lock().unwrap();
-            (core.position_ms(), st.duration_ms, st.generation)
+            (
+                core.position_ms(),
+                core.negotiated.rate.max(1) as u64,
+                st.duration_ms,
+                st.generation,
+            )
         };
+        let (staged, delay) = self
+            .sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| (s.staged_frames(), s.device_delay_frames()))
+            .unwrap_or((0, 0));
+        let pos = pull.saturating_sub((staged + delay) * 1000 / rate);
         self.emit(
             "event.position",
             json!({
@@ -1535,6 +2583,185 @@ impl Engine {
                 "atMs": now_ms(),
             }),
         );
+    }
+
+    /// Handle a non-gapless track end AFTER the staging ring has
+    /// drained — see the parked-end logic in monitor_loop. The staged
+    /// tail must play out before we emit trackEnded or respawn, or the
+    /// last ~186ms of audio is cut (mpv drains via ao_drain).
+    fn handle_track_end(&self, queue_id: String, instance: u64) {
+        // Take the armed successor in the SAME critical section as the
+        // adoption — a write in between would be stolen by the boundary.
+        let (gen, pf) = {
+            // core first, then state.
+            let mut core = self.core.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            // Ignore an end for a track no longer current
+            // (a concurrent load already replaced it).
+            if st.queue_id.as_deref() != Some(queue_id.as_str())
+                || st.current_instance != instance
+            {
+                return;
+            }
+            // The monitor owns this end now — pending-end
+            // is resolved, not "in flight" for respawns.
+            core.ended_pending = false;
+            st.current_instance = 0;
+            st.queue_id = None;
+            // A slot armed under another generation must
+            // not reopen against THIS track's end.
+            let pf = match st.prefetch.take() {
+                Some(pf) if pf.generation == st.generation => Some(pf),
+                _ => None,
+            };
+            (st.generation, pf)
+        };
+        self.emit(
+            "event.trackEnded",
+            json!({
+                "generationId": gen,
+                "queueId": queue_id,
+                "gapless": false,
+            }),
+        );
+        // A prefetched successor that couldn't share the
+        // stream (format reopen required) starts here —
+        // honestly NOT gapless.
+        if let Some(pf) = pf {
+            // A rebuild in flight makes the spawn/install
+            // transiently stale — retry on the settled
+            // format rather than lose the only successor.
+            for attempt in 0..3u8 {
+                // A load landing during this spawn must not
+                // be destroyed by the reopen's rebuild —
+                // guard it.
+                let seq = self.core.lock().unwrap().boundary_seq;
+                match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true, Some((seq, gen))) {
+                    Ok((reader, handle, dur, bypass, _info)) => {
+                        // A concurrent audio.load may have landed
+                        // while we decoded — check + install in
+                        // ONE critical section so it can't be
+                        // clobbered mid-gap.
+                        let reopen_instance = reader.instance;
+                        let mut core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        let transient =
+                            core.rebuilding || core.negotiated != reader.neg;
+                        let stale = st.generation != gen
+                            || st.queue_id.is_some()
+                            // a stop() mid-reopen must not be
+                            // overridden back to Playing —
+                            // but a pause keeps the reader,
+                            // installed paused below
+                            || (st.state != PlayState::Playing
+                                && st.state != PlayState::Paused)
+                            || transient;
+                        if stale {
+                            drop(st);
+                            drop(core);
+                            reader.pipe.abort();
+                            let _ = handle;
+                            if transient && attempt < 2 {
+                                std::thread::sleep(
+                                    std::time::Duration::from_millis(25),
+                                );
+                                continue;
+                            }
+                            eprintln!(
+                                "monitor: dropped stale reopen for {}",
+                                pf.queue_id
+                            );
+                            break;
+                        }
+                        let paused = st.state == PlayState::Paused;
+                        core.set_active(reader);
+                        core.paused = paused;
+                        core.paused_flag.store(paused, Ordering::Release);
+                        st.current_instance = reopen_instance;
+                        st.queue_id = Some(pf.queue_id.clone());
+                        st.source = Some(pf.source.clone());
+                        st.replay_gain_db = pf.replay_gain_db;
+                        st.duration_ms = dur;
+                        st.fidelity_bypass = bypass;
+                        st.state = if paused {
+                            PlayState::Paused
+                        } else {
+                            PlayState::Playing
+                        };
+                        drop(st);
+                        drop(core);
+                        *self.producer.lock().unwrap() = Some(handle);
+                        self.emit_state(None);
+                        self.emit_output();
+                        self.emit(
+                            "event.trackStarted",
+                            json!({
+                                "generationId": gen,
+                                "queueId": pf.queue_id,
+                                "durationMs": dur,
+                                "gapless": false,
+                            }),
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        // A concurrent rebuild or boundary
+                        // can fail the spawn transiently —
+                        // retry like the install path does.
+                        let transient = {
+                            let core = self.core.lock().unwrap();
+                            core.rebuilding || core.boundary_seq != seq
+                        };
+                        if transient && attempt < 2 {
+                            std::thread::sleep(
+                                std::time::Duration::from_millis(25),
+                            );
+                            continue;
+                        }
+                        // A concurrent load may own the slot
+                        // now — only report against ours.
+                        let ours = {
+                            let st = self.state.lock().unwrap();
+                            st.generation == gen && st.queue_id.is_none()
+                        };
+                        if ours {
+                            self.emit_error(
+                                Some(&pf.queue_id),
+                                &format!("{e:#}"),
+                                true,
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+            // The successful install above already
+            // advanced the state — skip the stopped check
+            // when a successor is now active.
+            let advanced = {
+                let st = self.state.lock().unwrap();
+                st.queue_id.is_some()
+            };
+            if advanced {
+                return;
+            }
+        }
+        // Check + stop atomically — a newer load must not
+        // be overwritten with Stopped in the gap, and a device error
+        // recorded mid-park must not be clobbered either.
+        let stopped = {
+            let mut st = self.state.lock().unwrap();
+            let ours = st.generation == gen
+                && st.queue_id.is_none()
+                && st.state != PlayState::Error;
+            if ours {
+                st.state = PlayState::Stopped;
+            }
+            ours
+        };
+        if stopped {
+            self.emit_state(None);
+        }
     }
 
     // ------------------------------ monitor ---------------------------------
@@ -1553,6 +2780,27 @@ impl Engine {
         let mut mono_buf = Vec::with_capacity(8192);
         let mut tap_buf = vec![0f32; 8192];
         let mut monitor_stalled = false;
+        let mut deferred_device_error: Option<(String, u64)> = None;
+        // The dead flag is sticky — latch it so a terminally dead sink
+        // reports once per sink instance, not a probing/event storm
+        // every tick.
+        let mut sink_dead_reported: Option<usize> = None;
+        // Non-gapless Ended events parked while the staged tail plays
+        // out — queued because a fast user load can END a successor
+        // before the predecessor's drain finishes; each entry carries
+        // its own rate-scaled deadline.
+        // (queue_id, instance, parked_at, deadline_ms, drain token —
+        //  Some((baseline, sink_gen)) once a drain was requested;
+        //  completion = a drained event newer than baseline on the
+        //  same sink generation)
+        let mut pending_ends: std::collections::VecDeque<(
+            String,
+            u64,
+            std::time::Instant,
+            u64,
+            Option<(u64, u64, std::time::Instant)>,
+            Option<(std::time::Instant, u64)>,
+        )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1588,6 +2836,7 @@ impl Engine {
                         started_instance,
                         started_duration_ms,
                         started_seek_offset_ms,
+                        started_bypass,
                     } => {
                         // A concurrent load may have landed while this event
                         // sat in the drain window — only adopt the promotion
@@ -1606,11 +2855,18 @@ impl Engine {
                             st.current_instance = started_instance;
                             st.queue_id = Some(started_queue_id.clone());
                             st.duration_ms = started_duration_ms;
+                            // The successor's own bypass flag — it may
+                            // differ from the ended track's on the same
+                            // stream format (e.g. Int(32) on F32).
+                            st.fidelity_bypass = started_bypass;
                             let _ = started_seek_offset_ms;
                             // promoted prefetch slot consumed — its source and
-                            // ReplayGain become the CURRENT track's.
+                            // ReplayGain become the CURRENT track's. A slot
+                            // from another generation is dropped, not adopted.
                             if let Some(pf) = st.prefetch.take() {
-                                if pf.queue_id == started_queue_id {
+                                if pf.queue_id == started_queue_id
+                                    && pf.generation == st.generation
+                                {
                                     st.source = Some(pf.source);
                                     st.replay_gain_db = pf.replay_gain_db;
                                 }
@@ -1635,88 +2891,396 @@ impl Engine {
                                 "gapless": true,
                             }),
                         );
+                        // The promoted track's bypass flag may differ from
+                        // the ended track's on the same stream — report it.
+                        self.emit_output();
                     }
                     CoreEvent::Ended { queue_id, instance } => {
-                        let gen = {
-                            let mut st = self.state.lock().unwrap();
-                            // Ignore an end for a track no longer current
-                            // (a concurrent load already replaced it).
-                            if st.queue_id.as_deref() != Some(queue_id.as_str())
-                                || st.current_instance != instance
-                            {
-                                continue;
-                            }
-                            st.current_instance = 0;
-                            st.queue_id = None;
-                            st.generation
+                        // Park the end until the staging ring drains —
+                        // the last chunk of the track is still audible
+                        // in the ring. Handling it now would clear the
+                        // tail unplayed (mpv drains via ao_drain;
+                        // GStreamer waits on EOS). The deadline scales
+                        // with the staged tail at park time so long
+                        // low-rate rings get their full drain; a paused
+                        // track keeps its tail until resume.
+                        let (staged, rate, downstream) = {
+                            let (staged, downstream) = self
+                                .sink
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .map(|s| {
+                                    (
+                                        s.staged_frames(),
+                                        s.device_delay_frames(),
+                                    )
+                                })
+                                .unwrap_or((0, 0));
+                            let rate = self
+                                .core
+                                .lock()
+                                .unwrap()
+                                .negotiated
+                                .rate
+                                .max(1) as u64;
+                            (staged, rate, downstream)
                         };
-                        self.emit(
-                            "event.trackEnded",
-                            json!({
-                                "generationId": gen,
-                                "queueId": queue_id,
-                                "gapless": false,
-                            }),
-                        );
-                        // A prefetched successor that couldn't share the
-                        // stream (format reopen required) starts here —
-                        // honestly NOT gapless.
-                        let pf = self.state.lock().unwrap().prefetch.take();
-                        if let Some(pf) = pf {
-                            match self.spawn_pipeline(&pf.queue_id, pf.source.clone(), 0, pf.replay_gain_db, true) {
-                                Ok((reader, handle, dur, bypass, _info)) => {
-                                    // A concurrent audio.load may have landed
-                                    // while we decoded — don't install a
-                                    // stale pipeline over the fresh track.
-                                    let stale = {
-                                        let st = self.state.lock().unwrap();
-                                        st.generation != gen || st.queue_id.is_some()
-                                    };
-                                    if stale {
-                                        eprintln!("monitor: dropped stale reopen for {}", pf.queue_id);
-                                        let _ = handle;
-                                        continue;
-                                    }
-                                    let reopen_instance = reader.instance;
-                                    {
-                                        let mut core = self.core.lock().unwrap();
-                                        core.set_active(reader);
-                                        core.paused = false;
-                                    }
-                                    *self.producer.lock().unwrap() = Some(handle);
-                                    {
-                                        let mut st = self.state.lock().unwrap();
-                                        st.current_instance = reopen_instance;
-                                        st.queue_id = Some(pf.queue_id.clone());
-                                        st.source = Some(pf.source);
-                                        st.duration_ms = dur;
-                                        st.fidelity_bypass = bypass;
-                                        st.state = PlayState::Playing;
-                                    }
-                                    self.emit_state(None);
-                                    self.emit_output();
-                                    self.emit(
-                                        "event.trackStarted",
-                                        json!({
-                                            "generationId": gen,
-                                            "queueId": pf.queue_id,
-                                            "durationMs": dur,
-                                            "gapless": false,
-                                        }),
-                                    );
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.emit_error(Some(&pf.queue_id), &format!("{e:#}"), true);
-                                }
-                            }
-                        }
-                        self.set_state(PlayState::Stopped);
-                        self.emit_state(None);
+                        // staged time + measured downstream delay +
+                        // slack: a high-latency graph's tail isn't
+                        // cut just because it exceeds 500ms.
+                        let deadline_ms = (staged + downstream)
+                            * 1000
+                            / rate
+                            + 500;
+                        pending_ends.push_back((
+                            queue_id,
+                            instance,
+                            std::time::Instant::now(),
+                            deadline_ms,
+                            None,
+                            None,
+                        ));
                     }
                 }
             }
-
+            // Parked non-gapless ends: the head waits for its staged
+            // tail to drain (bounded by its own deadline); while paused
+            // the deadline doesn't tick — the tail belongs to the user.
+            // staged==0 alone only means the callback COPIED the tail
+            // into a PipeWire buffer — the graph can still hold a
+            // quantum. Issue a drain and wait for the `drained` event
+            // (mpv's pw_stream_flush model); the deadline bounds a
+            // stalled graph.
+            while let Some((qid, inst, since, deadline_ms, issued, ring0)) =
+                pending_ends.pop_front()
+            {
+                // Ownership first: a parked end superseded by a load
+                // must never flush the NEW track's stream.
+                let owned = {
+                    let st = self.state.lock().unwrap();
+                    st.queue_id.as_deref() == Some(qid.as_str())
+                        && st.current_instance == inst
+                };
+                if !owned {
+                    let Some((_base, gen, _)) = issued else {
+                        // Never touched the sink — drop outright.
+                        self.handle_track_end(qid, inst);
+                        continue;
+                    };
+                    // Its drain IS in flight on the reused stream:
+                    // `drained` latches `draining` upstream, which
+                    // stops the process callback for good — cancel the
+                    // drain with resume() NOW rather than waiting for
+                    // it. The queued tail still plays out into the new
+                    // track (cancel only clears the drain flags, not
+                    // the buffers), and the stream never goes silent.
+                    // Generation check inside the sink lock.
+                    {
+                        let g = self.sink.lock().unwrap();
+                        if self.sink_gen.load(Ordering::Acquire) == gen {
+                            if let Some(s) = g.as_ref() {
+                                s.resume();
+                            }
+                        }
+                    }
+                    self.handle_track_end(qid, inst); // stale → bails
+                    continue;
+                }
+                enum Gate {
+                    Playing,
+                    Drained,
+                    DrainIssued,
+                    DrainUnsupported,
+                    Paused,
+                }
+                // Check + drain-request under ONE sink lock, with the
+                // ownership re-validation AND the flush itself inside
+                // the state guard — the state mutation that would
+                // change ownership serializes against it, so no load
+                // can slip between observing ownership and flushing.
+                // A stale `drained` flag can't satisfy an end that
+                // never issued a flush (request_drain clears it).
+                let paused =
+                    self.state.lock().unwrap().state == PlayState::Paused;
+                let mut drain_base = issued;
+                let gate = {
+                    let g = self.sink.lock().unwrap();
+                    match g.as_ref() {
+                        _ if paused => Gate::Paused,
+                        None => Gate::Drained,
+                        Some(s) if s.staged_frames() > 0 => Gate::Playing,
+                        Some(s) if issued.is_none() => {
+                            // Hold `state` THROUGH the flush: a load's
+                            // queue_id/instance mutation AND a pause
+                            // can't interleave between our checks and
+                            // the drain (a paused drain would play the
+                            // queued tail audibly — Paused here retries
+                            // next tick).
+                            let issued_b = {
+                                let st = self.state.lock().unwrap();
+                                let owned = st.queue_id.as_deref()
+                                    == Some(qid.as_str())
+                                    && st.current_instance == inst
+                                    && st.state != PlayState::Paused;
+                                if owned {
+                                    s.request_drain().map(|b| {
+                                        (
+                                            b,
+                                            self.sink_gen
+                                                .load(Ordering::Acquire),
+                                            std::time::Instant::now(),
+                                        )
+                                    })
+                                } else {
+                                    None
+                                }
+                            };
+                            match issued_b {
+                                Some(b) => {
+                                    drain_base = Some(b);
+                                    Gate::DrainIssued
+                                }
+                                None => {
+                                    // Lost ownership OR paused OR the
+                                    // backend can't drain — sort out
+                                    // which (paused retries next tick).
+                                    let (owned2, paused2) = {
+                                        let st = self.state.lock().unwrap();
+                                        (
+                                            st.queue_id.as_deref()
+                                                == Some(qid.as_str())
+                                                && st.current_instance == inst,
+                                            st.state == PlayState::Paused,
+                                        )
+                                    };
+                                    if paused2 {
+                                        Gate::Paused
+                                    } else if owned2 {
+                                        Gate::DrainUnsupported
+                                    } else {
+                                        Gate::Playing
+                                    }
+                                }
+                            }
+                        }
+                        Some(s) if issued
+                            .map(|(b, g, _)| {
+                                g == self.sink_gen.load(Ordering::Acquire)
+                                    && s.drained_since(b)
+                            })
+                            .unwrap_or(false) =>
+                        {
+                            Gate::Drained
+                        }
+                        Some(_) => Gate::Playing,
+                    }
+                };
+                match gate {
+                    Gate::Paused => {
+                        // Deadline doesn't tick while paused.
+                        pending_ends.push_front((
+                            qid,
+                            inst,
+                            std::time::Instant::now(),
+                            deadline_ms,
+                            issued,
+                            ring0,
+                        ));
+                        break;
+                    }
+                    Gate::DrainIssued => {
+                        pending_ends.push_front((
+                            qid,
+                            inst,
+                            since,
+                            deadline_ms,
+                            drain_base,
+                            ring0,
+                        ));
+                        break;
+                    }
+                    Gate::DrainUnsupported => {
+                        // The backend can't report downstream drain —
+                        // but staged==0 only means the ring emptied, not
+                        // that the graph played the tail. Wait out the
+                        // reported device-side delay (bounded by the
+                        // entry deadline) before handling, like mpv's
+                        // ao_drain fallback timing.
+                        let wait_ms = self
+                            .sink
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|s| s.drain_fallback_ms())
+                            .unwrap_or(0)
+                            // Honor the CURRENT measurement (the
+                            // park-time sample may be stale); bound
+                            // only by a sane absolute cap — the entry
+                            // deadline was already enlarged by the
+                            // same delay class at park time.
+                            .min(10_000)
+                            .max(50);
+                        // Reaching this arm proves staged==0 — stamp
+                        // (ring0, wait_ms) the FIRST time and snapshot
+                        // the measured delay there: the wait runs
+                        // from ring-empty, NOT park time, and the
+                        // measurement mustn't shrink mid-wait (a
+                        // falling backlog reading would let the wait
+                        // finish while audio remains downstream).
+                        let (r0, wait0) = ring0.unwrap_or_else(|| {
+                            (std::time::Instant::now(), wait_ms)
+                        });
+                        if r0.elapsed()
+                            > std::time::Duration::from_millis(wait0)
+                        {
+                            self.handle_track_end(qid, inst);
+                        } else {
+                            pending_ends.push_front((
+                                qid,
+                                inst,
+                                since,
+                                deadline_ms,
+                                issued,
+                                Some((r0, wait0)),
+                            ));
+                            break;
+                        }
+                    }
+                    Gate::Drained => {
+                        // Reactivate BEFORE the end handler — `drained`
+                        // latches `draining` upstream, which stops the
+                        // process callback for good.
+                        if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                            s.resume();
+                        }
+                        self.handle_track_end(qid, inst);
+                    }
+                    Gate::Playing => {
+                        if since.elapsed()
+                            > std::time::Duration::from_millis(deadline_ms)
+                        {
+                            // Issued-but-unfinished drain on a stalled
+                            // graph: resume() cancels it (set_active
+                            // clears draining+drained, un-latching the
+                            // stopped callback); queued buffers keep
+                            // playing. A cancelled drain can't complete
+                            // later — no watcher needed.
+                            if issued.is_some() {
+                                if let Some(s) = self.sink.lock().unwrap().as_ref() {
+                                    s.resume();
+                                }
+                            }
+                            self.handle_track_end(qid, inst);
+                        } else {
+                            // A completion CAN be coalesced away: our
+                            // drain can finish on the data loop while a
+                            // predecessor's notification is still
+                            // undispatched. Once OUR marker ran,
+                            // pending_drain==0 — a re-issued drain's
+                            // completion cannot be suppressed.
+                            // Ownership, generation AND pause are
+                            // re-validated under `state` through the
+                            // retry; rate-limited to one per 100ms
+                            // (each retry resets upstream drain state).
+                            if let Some((b, gen, last_issue)) = issued {
+                                if last_issue.elapsed()
+                                    > std::time::Duration::from_millis(
+                                        100,
+                                    )
+                                {
+                                    // The state guard is held THROUGH
+                                    // the retry — same discipline as
+                                    // the initial request: a load or
+                                    // pause can't land between the
+                                    // checks and the flush.
+                                    let g =
+                                        self.sink.lock().unwrap();
+                                    if let Some(s) = g.as_ref() {
+                                        let ok = {
+                                            let st = self
+                                                .state
+                                                .lock()
+                                                .unwrap();
+                                            let own = st.queue_id
+                                                .as_deref()
+                                                == Some(qid.as_str())
+                                                && st.current_instance
+                                                    == inst
+                                                && st.state
+                                                    != PlayState::Paused;
+                                            let r = own
+                                                && self.sink_gen
+                                                    .load(
+                                                        Ordering::Acquire,
+                                                    )
+                                                    == gen
+                                                && s.drain_marker_ran(
+                                                    b,
+                                                );
+                                            if r {
+                                                s.retry_drain(b).map(
+                                                    |b2| {
+                                                        (
+                                                            b2,
+                                                            gen,
+                                                            std::time::Instant::now(),
+                                                        )
+                                                    },
+                                                )
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        match ok {
+                                            Some((
+                                                u64::MAX,
+                                                _,
+                                                _,
+                                            )) => {
+                                                // retry_drain's
+                                                // recheck under tl
+                                                // found the original
+                                                // completion — resume
+                                                // under the sink lock,
+                                                // then drop `g` BEFORE
+                                                // handle_track_end
+                                                // (it can re-lock
+                                                // sink via
+                                                // rebuild_stream).
+                                                if let Some(s2) =
+                                                    g.as_ref()
+                                                {
+                                                    s2.resume();
+                                                }
+                                                drop(g);
+                                                self.handle_track_end(
+                                                    qid, inst,
+                                                );
+                                                continue;
+                                            }
+                                            Some(new_base) => {
+                                                drain_base =
+                                                    Some(new_base);
+                                            }
+                                            None => {}
+                                        }
+                                    }
+                                }
+                            }
+                            pending_ends.push_front((
+                                qid,
+                                inst,
+                                since,
+                                deadline_ms,
+                                drain_base,
+                                ring0,
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
             // underrun -> buffering (once per stall), then a state=playing
             // event when the stall clears so the UI never sticks on buffering.
             {
@@ -1748,20 +3312,22 @@ impl Engine {
                 }
             }
 
-            // prefetch readiness
+            // prefetch readiness — mark reported inside the same section
+            // so a replacement slot armed during the emit isn't
+            // suppressed; its own arm resets reported_prefetch_ready.
             {
-                let st = self.state.lock().unwrap();
+                let mut st = self.state.lock().unwrap();
                 if !st.reported_prefetch_ready {
                     if let Some(pf) = &st.prefetch {
                         if pf.ready.load(Ordering::Acquire) {
                             let gen = st.generation;
                             let qid = pf.queue_id.clone();
+                            st.reported_prefetch_ready = true;
                             drop(st);
                             self.emit(
                                 "event.prefetchReady",
                                 json!({ "generationId": gen, "queueId": qid }),
                             );
-                            self.state.lock().unwrap().reported_prefetch_ready = true;
                         }
                     }
                 }
@@ -1796,37 +3362,161 @@ impl Engine {
                 }
             }
 
-            // device loss -> honest error + stop
-            if let Some(msg) = self.caps.lock().unwrap().device_error() {
-                // Try the default output once — an unplugged headphone
-                // shouldn't end the session when speakers are available.
-                let was_default = {
-                    let caps = self.caps.lock().unwrap();
-                    caps.list().iter().any(|d| d.is_default && d.name == caps.name())
-                };
-                if !self.cfg.null_sink && !was_default {
-                    match self.set_device(None) {
-                        Ok(_) => {
-                            self.emit_error(
-                                None,
-                                &format!("output device lost ({msg}); fell back to default"),
-                                true,
-                            );
-                            continue;
+            // device loss -> honest error + stop. The error is bound to
+            // the generation that owned the device when it died — a newer
+            // load supersedes it entirely, and an un-adopted boundary
+            // defers handling to the next tick.
+            let device_error = deferred_device_error.take().or_else(|| {
+                let gen = self.state.lock().unwrap().generation;
+                // The caps' error cell covers reported failures; the
+                // sink's dead flag covers silent ones (never-scheduled
+                // streams, dead callbacks) — both need a poll each tick.
+                // Poll is_dead FIRST: the watchdog writes the shared
+                // error cell on its first trip, and the caps read below
+                // picks that real message up in the SAME tick — one
+                // event with the true cause instead of a generic trip
+                // followed by a duplicate.
+                // Keyed by sink generation (not the Box address — the
+                // allocator can reuse it after a rebuild) — one report
+                // per installed sink. Placeholders don't report at all.
+                let (sink_dead, sink_key) = {
+                    let g = self.sink.lock().unwrap();
+                    match g.as_ref() {
+                        Some(s) => {
+                            let key = self.sink_gen.load(Ordering::Relaxed) as usize;
+                            (
+                                s.is_dead() && !s.is_placeholder(),
+                                key,
+                            )
                         }
-                        Err(e) => {
-                            eprintln!("device fallback failed: {e:#}");
+                        None => (false, 0),
+                    }
+                };
+                let caps_err = self
+                    .caps
+                    .lock()
+                    .unwrap()
+                    .device_error();
+                let sink_dead = if sink_dead && sink_dead_reported != Some(sink_key) {
+                    true
+                } else {
+                    false
+                };
+                // Prefer the caps' real message over the generic dead
+                // one — and when it fires, consume the dead report too
+                // so the same failure isn't replayed next tick.
+                if caps_err.is_some() {
+                    sink_dead_reported = Some(sink_key);
+                    caps_err
+                        .map(|msg| (msg, gen))
+                } else {
+                    sink_dead.then(|| {
+                        sink_dead_reported = Some(sink_key);
+                        ("output stream died".to_string(), gen)
+                    })
+                }
+            });
+            if let Some((msg, err_gen)) = device_error {
+                let verdict = {
+                    let core = self.core.lock().unwrap();
+                    let st = self.state.lock().unwrap();
+                    if st.generation != err_gen {
+                        // Superseded by a newer load — its own error
+                        // paths handle whatever the device does next.
+                        2
+                    } else if core.ended_pending
+                        || core
+                            .active
+                            .as_ref()
+                            .is_some_and(|r| Some(r.instance) != Some(st.current_instance))
+                    {
+                        1
+                    } else {
+                        0
+                    }
+                };
+                if verdict == 1 {
+                    // A guarded rebuild would bail during adoption — defer
+                    // to the next tick after the drain settles it.
+                    deferred_device_error = Some((msg, err_gen));
+                } else if verdict == 0 {
+                    // Try the default output once — an unplugged headphone
+                    // shouldn't end the session when speakers are available.
+                    let was_default = {
+                        let caps = self.caps.lock().unwrap();
+                        caps.list().iter().any(|d| d.is_default && d.name == caps.name())
+                    };
+                    if !self.cfg.null_sink && !was_default {
+                        match self.set_device_inner(None, Some(err_gen)) {
+                            Ok(_) => {
+                                self.emit_error(
+                                    None,
+                                    &format!("output device lost ({msg}); fell back to default"),
+                                    true,
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                // A boundary landing mid-switch bails the
+                                // guarded rebuild — defer instead of
+                                // destroying the promoted reader below.
+                                let pending = {
+                                    let core = self.core.lock().unwrap();
+                                    let st = self.state.lock().unwrap();
+                                    st.generation == err_gen
+                                        && (core.ended_pending
+                                            || core
+                                                .active
+                                                .as_ref()
+                                                .is_some_and(|r| {
+                                                    Some(r.instance)
+                                                        != Some(st.current_instance)
+                                                }))
+                                };
+                                if pending {
+                                    deferred_device_error = Some((msg, err_gen));
+                                    continue;
+                                }
+                                // Superseded while switching — drop it.
+                                if self.state.lock().unwrap().generation != err_gen {
+                                    continue;
+                                }
+                                eprintln!("device fallback failed: {e:#}");
+                            }
                         }
                     }
+                    // Check + destroy atomically — a boundary or load
+                    // landing between them must not be torn down.
+                    let handled = {
+                        let mut core = self.core.lock().unwrap();
+                        let mut st = self.state.lock().unwrap();
+                        if st.generation != err_gen {
+                            false // superseded — drop silently
+                        } else if core.ended_pending
+                            || core
+                                .active
+                                .as_ref()
+                                .is_some_and(|r| {
+                                    Some(r.instance) != Some(st.current_instance)
+                                })
+                        {
+                            deferred_device_error = Some((msg.clone(), err_gen));
+                            false
+                        } else {
+                            core.clear_all();
+                            core.paused = true;
+                            core.paused_flag.store(true, Ordering::Release);
+                            st.state = PlayState::Error;
+                            true
+                        }
+                    };
+                    if !handled {
+                        continue;
+                    }
+                    self.emit_error(None, &format!("output device lost: {msg}"), false);
+                    self.emit_state(Some("device lost"));
                 }
-                self.emit_error(None, &format!("output device lost: {msg}"), false);
-                {
-                    let mut core = self.core.lock().unwrap();
-                    core.clear_all();
-                    core.paused = true;
-                }
-                self.set_state(PlayState::Error);
-                self.emit_state(Some("device lost"));
+                // verdict == 2: superseded — drop the error entirely
             }
 
             // position ~10Hz while playing
@@ -1843,7 +3533,10 @@ impl Engine {
         // installed after this point.
         let _serial = self.stream_mu.lock().unwrap();
         // Stop the sink first so no more samples land on the dump tap.
-        if let Some(mut s) = self.sink.lock().unwrap().take() {
+        // `take` under a temporary guard — holding `sink` through stop()
+        // would hold it across the feeder join, which needs `core`.
+        let taken = self.sink.lock().unwrap().take();
+        if let Some(mut s) = taken {
             s.stop();
         }
         let mut core = self.core.lock().unwrap();
@@ -1886,9 +3579,11 @@ fn run_producer_f32(
     };
     let mut dsp = Dsp::new(&eq_bands, rg_db, src_rate, neg.channels as usize);
 
-    let mut inbuf = vec![0f32; 8192];
-    // whole frames only
-    let ch = neg.channels as usize;
+    // whole frames only — the buffer must be a multiple of the channel
+    // count or every full read truncates a partial frame and the leftover
+    // samples desync the channel order
+    let ch = neg.channels.max(1) as usize;
+    let mut inbuf = vec![0f32; (8192 / ch) * ch];
     let mut out: Vec<f32> = Vec::with_capacity(16384);
     let mut first = true;
 
@@ -2009,7 +3704,9 @@ fn run_producer_s32(
                 channels: Some(ch as u32),
                 info,
             })?;
-            let mut inbuf = vec![0i32; 8192];
+            // same reason as the f32 path — buffer sized to whole frames
+            let mut inbuf = vec![0i32; (8192 / neg.channels.max(1) as usize)
+                * neg.channels.max(1) as usize];
             loop {
                 let n = stream.read_s32(&mut inbuf)?;
                 if n == 0 {
@@ -2057,7 +3754,7 @@ fn bytes_to_f32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<f32> {
                 if matches!(depth, BitDepth::Float) {
                     f32::from_le_bytes([c[0], c[1], c[2], c[3]])
                 } else {
-                    i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / i32::MAX as f32
+                    i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0f32
                 }
             })
             .collect(),
@@ -2066,12 +3763,12 @@ fn bytes_to_f32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<f32> {
             .map(|c| {
                 let v = (c[0] as i32) | ((c[1] as i32) << 8) | ((c[2] as i32) << 16);
                 let v = if v & 0x800000 != 0 { v | !0xFFFFFF } else { v };
-                v as f32 / 8388607.0
+                v as f32 / 8388608.0
             })
             .collect(),
         _ => bytes // 16-bit and anything narrower
             .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / i16::MAX as f32)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect(),
     }
 }
@@ -2081,7 +3778,10 @@ fn bytes_to_i32(bytes: &[u8], depth: BitDepth, _src_ch: usize) -> Vec<i32> {
     match depth {
         BitDepth::Float => bytes
             .chunks_exact(4)
-            .map(|c| (f32::from_le_bytes([c[0], c[1], c[2], c[3]]) * i32::MAX as f32) as i32)
+            .map(|c| {
+                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64 * 2147483648.0;
+                v.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+            })
             .collect(),
         BitDepth::Int(32) => bytes
             .chunks_exact(4)
@@ -2115,11 +3815,15 @@ impl RemixSample for f32 {
     }
 }
 impl RemixSample for i32 {
+    // Power-of-two scale, same convention as pull_s32/pull_s16:
+    // i32::MIN <-> exactly -1.0.
     fn to_f64(self) -> f64 {
-        self as f64 / i32::MAX as f64
+        self as f64 / 2147483648.0
     }
     fn from_f64(v: f64) -> Self {
-        (v * i32::MAX as f64).clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        (v * 2147483648.0)
+            .round()
+            .clamp(i32::MIN as f64, i32::MAX as f64) as i32
     }
 }
 
@@ -2215,6 +3919,7 @@ mod tests {
             channels: 2,
             kind: PcmKind::F32,
             device_name: "test".into(),
+            positions: None,
         };
         let (core, _tap, _cons) = Engine::make_core(neg, None);
         let mut c = core.lock().unwrap();
@@ -2226,6 +3931,14 @@ mod tests {
             duration_ms: 1_000,
             seek_offset_ms: 0,
             pipe: PipeReader::F32(cons),
+            bypass: false,
+            neg: Negotiated {
+                rate: 48_000,
+                channels: 2,
+                kind: PcmKind::F32,
+                device_name: "test".into(),
+            positions: None,
+            },
             ready: Arc::new(AtomicBool::new(true)),
         });
         assert!(!c.advance_track()); // nothing behind it -> Ended
@@ -2239,6 +3952,124 @@ mod tests {
         let retired: Vec<TrackReader> = c.retired.drain(..).collect();
         drop(retired);
         assert!(c.retired.is_empty());
+    }
+
+    /// pull_s16 must round-trip s16-representable values exactly — the
+    /// f32→i16 conversion uses the 2^15 scale, not i16::MAX (issue #1).
+    #[test]
+    fn pull_s16_round_trips_exact() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::S16,
+            device_name: "test".into(),
+            positions: None,
+        };
+        let (core, _tap, _cons) = Engine::make_core(neg, None);
+        let vals = [
+            -1.0f32,
+            -0.5,
+            -1.0 / 32768.0,
+            0.0,
+            0.25,
+            1.0 - 1.0 / 32768.0,
+            1.0,
+        ];
+        let (prod, cons) = ringbuf::channel::<f32>(64);
+        assert!(prod.write_all(&vals));
+        prod.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::F32(cons),
+                bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::F32,
+                    device_name: "test".into(),
+            positions: None,
+                },
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            c.paused = false;
+            let mut out = [0i16; 7];
+            c.pull_s16(&mut out);
+            assert_eq!(out, [-32768, -16384, -1, 0, 8192, 32767, 32767]);
+        }
+    }
+
+    /// pull_s32 passes an s32 pipe through untouched and scales an f32 pipe
+    /// at 2^31 — both bit-exact for representable values.
+    #[test]
+    fn pull_s32_paths_are_exact() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::S32,
+            device_name: "test".into(),
+            positions: None,
+        };
+        let (core, _tap, _cons) = Engine::make_core(neg, None);
+        // s32 pipe: bit-exact passthrough (bypass path)
+        let vals = [i32::MIN, -1_000_000_000, 0, 1_000_000_000, i32::MAX];
+        let (prod, cons) = ringbuf::channel::<i32>(64);
+        assert!(prod.write_all(&vals));
+        prod.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::S32(cons),
+                bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::S32,
+                    device_name: "test".into(),
+            positions: None,
+                },
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            c.paused = false;
+            let mut out = [0i32; 5];
+            c.pull_s32(&mut out);
+            assert_eq!(out, vals);
+        }
+        // f32 pipe -> s32 sink: 2^31 scale, representable values exact
+        let fvals = [-1.0f32, -0.5, 0.0, 0.25, 1.0];
+        let (prodf, consf) = ringbuf::channel::<f32>(64);
+        assert!(prodf.write_all(&fvals));
+        prodf.finish();
+        {
+            let mut c = core.lock().unwrap();
+            c.active = Some(TrackReader {
+                instance: 1,
+                queue_id: "q2".into(),
+                duration_ms: 1_000,
+                seek_offset_ms: 0,
+                pipe: PipeReader::F32(consf),
+                bypass: false,
+                neg: Negotiated {
+                    rate: 48_000,
+                    channels: 2,
+                    kind: PcmKind::F32,
+                    device_name: "test".into(),
+            positions: None,
+                },
+                ready: Arc::new(AtomicBool::new(true)),
+            });
+            let mut out = [0i32; 5];
+            c.pull_s32(&mut out);
+            assert_eq!(out, [i32::MIN, -1073741824, 0, 536870912, i32::MAX]);
+        }
     }
 
     /// Once the reader drains, a waiting push completes.

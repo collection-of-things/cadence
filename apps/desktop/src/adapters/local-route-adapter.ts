@@ -9,7 +9,16 @@ import type {
   Tri,
 } from "@cadence/protocol";
 import type { AudioServiceClient } from "../audio/audio-client.js";
-import type { FidelityCapable, RestartRestorable } from "./types.js";
+import type { FidelityCapable, ReplayGainCapable, RestartRestorable } from "./types.js";
+
+/** Engine refused during a track boundary or stream rebuild — the
+ * window is one monitor tick (~20ms); a short defer makes it succeed. */
+function isBoundaryRetry(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes("boundary") || msg.includes("rebuild in flight")
+    || msg.includes("mid-spawn") || msg.includes("during prefetch")
+    || msg.includes("during spawn") || msg.includes("mid-rebuild");
+}
 
 /** The item's source could not be expressed to the audio engine. */
 export class UnplayableSource extends Error {
@@ -27,7 +36,8 @@ export class UnplayableSource extends Error {
  * and are only upgraded once the engine reports them (event.trackEnded's
  * gapless flag, event.output's exclusive flag).
  */
-export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, FidelityCapable {
+export class LocalRouteAdapter
+  implements RouteAdapter, RestartRestorable, FidelityCapable, ReplayGainCapable {
   readonly route = "local" as const;
   private readonly client: AudioServiceClient;
   private readonly listeners = new Set<(e: AdapterEvent) => void>();
@@ -44,6 +54,7 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     }
   }
   private fidelityMode = false;
+  private replayGain = false;
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
 
@@ -116,7 +127,13 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
     // Apply fidelity before load — setFidelityMode after load rebuilds the
     // just-started pipeline (audible blip).
     if (this.fidelityMode) await this.client.setFidelityMode(true);
-    await this.client.load(params);
+    try {
+      await this.client.load(params);
+    } catch (e) {
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.load(params);
+    }
   }
 
   /** Pause under the lease's generation. */
@@ -145,7 +162,13 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
 
   /** Seek under the lease's generation. */
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {
-    await this.client.seek(lease.generationId, positionMs);
+    try {
+      await this.client.seek(lease.generationId, positionMs);
+    } catch (e) {
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.seek(lease.generationId, positionMs);
+    }
   }
 
   /** Apply engine volume (the coordinator's mute lives above this). */
@@ -168,7 +191,16 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
       generationId: this.lastLoadGeneration,
     };
     if (item.track.replayGainDb !== undefined) params.replayGainDb = item.track.replayGainDb;
-    await this.client.prefetch(params);
+    try {
+      await this.client.prefetch(params);
+    } catch (e) {
+      // The engine refuses a prefetch during an un-adopted track boundary
+      // (~20ms) — retry once after the adoption tick rather than dropping
+      // the successor.
+      if (!isBoundaryRetry(e)) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+      await this.client.prefetch(params);
+    }
   }
 
   /** Idle teardown: silence whatever generation is loaded, keep the service warm. */
@@ -182,12 +214,21 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   async restoreAfterEngineRestart(item: QueueItem, positionMs: number): Promise<void> {
     const source = fileSourceOf(item);
     this.rememberQueueId(item.queueId);
+    // The engine forgot user settings on restart — re-apply them before
+    // loading so the restored item renders with the same DSP state.
+    await this.client.setFidelityMode(this.fidelityMode);
+    await this.client.setReplayGain(this.replayGain);
     await this.client.load({
       queueId: item.queueId,
       generationId: this.lastLoadGeneration,
       source,
       startPaused: true,
       positionMs,
+      // The tag travels with the track like on a normal load — the engine
+      // applies it only when ReplayGain is enabled.
+      ...(item.track.replayGainDb !== undefined
+        ? { replayGainDb: item.track.replayGainDb }
+        : {}),
     });
   }
 
@@ -195,6 +236,12 @@ export class LocalRouteAdapter implements RouteAdapter, RestartRestorable, Fidel
   async setFidelityMode(enabled: boolean): Promise<void> {
     this.fidelityMode = enabled;
     await this.client.setFidelityMode(enabled);
+  }
+
+  /** Toggle ReplayGain application on the engine (tag gains → DSP gain). */
+  async setReplayGain(enabled: boolean): Promise<void> {
+    this.replayGain = enabled;
+    await this.client.setReplayGain(enabled);
   }
 
   /** Tear down the service. */
