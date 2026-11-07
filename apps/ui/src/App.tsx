@@ -33,7 +33,7 @@ export type Location =
   | { page: 'home' }
   | { page: 'browse' }
   | { page: 'radio' }
-  | { page: 'search'; query?: string }
+  | { page: 'search'; query?: string; nonce?: number }
   | { page: 'library'; tab: LibraryTab }
   | { page: 'localfiles'; tab: LibraryTab }
   | { page: 'favorites' }
@@ -82,6 +82,7 @@ export function App() {
   const [railOpen, setRailOpen] = useState(false);
   const locationRef = useRef(location);
   locationRef.current = location;
+  const searchNonce = useRef(0);
   useMediaSession();
 
   useEffect(() => {
@@ -105,6 +106,19 @@ export function App() {
 
   const navigate = useCallback((next: Location) => {
     const current = locationRef.current;
+    if (next.page === 'search') {
+      // Every explicit submission lands — even a repeat of the current query —
+      // so the view can reset its field to what was submitted. The nonce is
+      // the submission signal; identical resubmits update in place rather than
+      // growing the back stack.
+      const target: Location = { ...next, nonce: ++searchNonce.current };
+      if (!sameLocation(next, current)) {
+        setBackStack((stack) => [...stack, current]);
+        setForwardStack([]);
+      }
+      setLocation(target);
+      return;
+    }
     if (sameLocation(next, current)) return;
     setBackStack((stack) => [...stack, current]);
     setForwardStack([]);
@@ -249,7 +263,7 @@ export function App() {
           {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
           {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
           {location.page === 'radio' && <ProviderRadioView nav={catalogNav} />}
-          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} query={location.query} /> : <SourcesView />)}
+          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} query={location.query} nonce={location.nonce} /> : <SourcesView />)}
           {location.page === 'library' && (isApple ? (
             <ProviderLibraryView nav={catalogNav} />
           ) : (

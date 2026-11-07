@@ -105,8 +105,16 @@ describe('catalog search handoff', () => {
   it('clears the field when the location query goes absent (Back, blank Search)', () => {
     // No DOM harness in this suite (environment: 'node'), so the adopt
     // effect is asserted on source: an absent query must reset text to ''.
-    const effect = viewsSource.match(/useEffect\(\(\) => \{\s*setText\(query \?\? ''\);\s*\}, \[query\]\)/);
+    const effect = viewsSource.match(/useEffect\(\(\) => \{\s*setText\(query \?\? ''\);\s*\}, \[query, nonce\]\)/);
     expect(effect).not.toBeNull();
+  });
+
+  it('repeat submissions of the same query still reach the view via a nonce', () => {
+    // sameLocation dedupes on query alone; navigate must stamp a fresh nonce
+    // on every search submission so ProviderSearchView resets its field even
+    // when the query is unchanged.
+    const stamp = appSource.match(/next\.page === 'search'[\s\S]*?nonce: \+\+searchNonce\.current/);
+    expect(stamp).not.toBeNull();
   });
 });
 
