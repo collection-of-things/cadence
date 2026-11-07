@@ -6,6 +6,8 @@
  * vocabulary. Keep additive changes backward compatible.
  */
 
+import type { CatalogPage, CatalogRequest } from "./catalog.js";
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -58,6 +60,8 @@ export interface RouteCapabilities {
     /** "pcm-fft" = real spectrum from our graph; "ambient" = artwork-driven only. */
     kind: "pcm-fft" | "ambient";
   };
+  /** The adapter implements a real sign-out (partition/token reset). */
+  canSignOut?: boolean;
   /** Free-form notes surfaced in the UI tooltip/settings, e.g. known provider limits. */
   notes: string[];
 }
@@ -80,7 +84,7 @@ export interface ArtworkRef {
 
 export type TrackSource =
   | { kind: "file"; path: string; format?: string }
-  | { kind: "provider"; providerItemId: string; uri?: string };
+  | { kind: "provider"; providerItemId: string; uri?: string; catalogId?: string };
 
 export interface TrackRef {
   /** Globally unique: `${route}:${providerItemId-or-path-hash}`. */
@@ -254,6 +258,11 @@ export interface RouteAdapter {
    * describing the real cause.
    */
   search?(text: string): Promise<TrackRef[]>;
+  /**
+   * Full catalog surface (browse/home/library/detail/lyrics). Adapters that
+   * serve only search omit this; callers treat absence as unavailable.
+   */
+  catalog?(req: CatalogRequest): Promise<CatalogPage>;
   /** Trigger the route's sign-in flow (reveal view / open pairing). */
   signIn?(): Promise<void>;
   signOut?(): Promise<void>;
@@ -283,6 +292,9 @@ export type AdapterEvent =
       gapless?: boolean;
     }
   | { kind: "queueChanged"; generationId: number; providerQueue?: unknown }
+  /** The provider stopped playback unconditionally (sign-out, teardown) —
+   *  the coordinator drops the lease; this is not a queue-advance signal. */
+  | { kind: "stopped"; generationId: number }
   | { kind: "error"; message: string; retriable: boolean; code?: string }
   | { kind: "capabilitiesChanged" };
 
@@ -317,3 +329,4 @@ export interface ScanProgress {
 
 export * from "./audio-ipc.js";
 export * from "./cadence-api.js";
+export * from "./catalog.js";

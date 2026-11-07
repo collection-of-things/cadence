@@ -1,8 +1,11 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
+  CatalogPage,
+  CatalogRequest,
   CoordinatorEvent,
   PlaybackCommand,
   PlaybackSnapshot,
+  PlatformId,
   QueueItem,
   QueueState,
   RouteCapabilities,
@@ -12,6 +15,7 @@ import type {
 } from '@cadence/protocol';
 import type { Rgb } from './palette';
 import { DEFAULT_PALETTE } from './palette';
+import { providerForRoute } from './components/RouteBadge';
 
 export interface Toast {
   id: number;
@@ -38,7 +42,17 @@ export interface StoreApiSurface {
   getQueue(): Promise<QueueState>;
   getCapabilities(): Promise<RouteCapabilities[]>;
   library: { onScanProgress(cb: (p: ScanProgress) => void): () => void };
-  routes?: { signIn(route: RouteId): Promise<unknown> };
+  routes?: {
+    signIn(route: RouteId): Promise<unknown>;
+    signOut(route: RouteId): Promise<unknown>;
+  };
+  platform?: {
+    active(): Promise<PlatformId>;
+    setActive(platform: PlatformId): Promise<unknown>;
+  };
+  catalog?: {
+    query(route: RouteId, request: CatalogRequest): Promise<CatalogPage>;
+  };
   audio?: {
     setEq(bands: EqBand[]): Promise<unknown>;
     listDevices(): Promise<AudioDevice[]>;
@@ -54,6 +68,8 @@ export interface UiState {
   generationId: number;
   toasts: Toast[];
   scan: ScanProgress;
+  /** The active streaming platform ("local" = none). Drives the whole shell. */
+  platform: PlatformId;
   view: 'now' | 'library' | 'sources' | 'home';
   viewNonce: number;
   libraryQuery: string;
@@ -146,6 +162,8 @@ export interface UiSession {
   moveQueueItem(fromIndex: number, toIndex: number): void;
   playQueueId(queueId: string): void;
   signInRoute(route: RouteId): void;
+  signOutRoute(route: RouteId): void;
+  setPlatform(platform: PlatformId): void;
   setFidelityMode(enabled: boolean): void;
   setReplayGain(enabled: boolean): void;
   setEq(bands: EqBand[]): void;
@@ -172,6 +190,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     generationId: -1,
     toasts: [],
     scan: { phase: 'idle', scanned: 0 },
+    platform: 'local',
     eqBands: [],
     view: 'now',
     viewNonce: 0,
@@ -285,6 +304,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const gen = snapshot.lease?.generationId ?? -1;
       set({ snapshot, queue, capabilities, generationId: Math.max(gen, get().generationId), ready: true });
       syncClock(snapshot);
+      const platform = await api.platform?.active().catch(() => 'local' as const);
+      if (platform) set({ platform });
       unsubs.push(api.onEvent(dispatch));
       unsubs.push(api.library.onScanProgress((scan) => set({ scan })));
     },
@@ -340,6 +361,20 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         const m = e instanceof Error ? e.message : 'Sign-in failed';
         pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
       });
+    },
+    signOutRoute(route) {
+      if (!api.routes) return;
+      void api.routes.signOut(route).then(() => {
+        // Signing out of the active platform drops the shell back to local.
+        if (get().platform === providerForRoute(route)) set({ platform: 'local' });
+      }).catch((e: unknown) => {
+        const m = e instanceof Error ? e.message : 'Sign-out failed';
+        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
+      });
+    },
+    setPlatform(platform) {
+      set({ platform });
+      void api.platform?.setActive(platform).catch(() => undefined);
     },
     setFidelityMode: (enabled) => cmd({ kind: 'setFidelityMode', enabled }),
     setReplayGain: (enabled) => cmd({ kind: 'setReplayGain', enabled }),

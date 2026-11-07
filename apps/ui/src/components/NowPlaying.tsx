@@ -79,7 +79,7 @@ export function NowPlaying() {
   return (
     <div className="np">
       {!expanded && <PixiBackground palette={palette} />}
-      {track && <button className="np-expand" onClick={() => session.setNowPlayingExpanded(true)} aria-label="Expand now playing"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 4h5v5M20 4 12.5 11.5M9 20H4v-5M4 20l7.5-7.5" /></svg> <span>Full screen</span></button>}
+      {track && <button className="np-expand" onClick={() => session.setNowPlayingExpanded(true)} aria-label="Show full screen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 4h5v5M20 4 12.5 11.5M9 20H4v-5M4 20l7.5-7.5" /></svg> <span>Full screen</span></button>}
       {expanded && track && createPortal(<NowPlayingFull onClose={closeFull} />, document.body)}
       {track ? (
         <div className="np-inner">

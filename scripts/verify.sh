@@ -14,5 +14,7 @@ step "loom ring model" && timeout 600 cargo run --manifest-path services/audio/l
 step "audio fixtures + headless playback probe" && \
   timeout 300 bash scripts/gen-fixtures.sh && \
   timeout 300 bash scripts/probe-audio.sh || fail=1
+step "e2e smoke (real app, private PipeWire tap)" && \
+  timeout 420 .agents/skills/verify-cadence/helpers/cadence-verify run smoke || fail=1
 echo
 if [ "$fail" -eq 0 ]; then echo "VERIFY: PASS"; else echo "VERIFY: FAIL"; exit 1; fi
