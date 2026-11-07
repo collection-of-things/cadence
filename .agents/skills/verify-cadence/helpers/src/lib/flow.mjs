@@ -79,8 +79,11 @@ export async function navTo(ctx, label, expect = null) {
   if (!(await row.isVisible().catch(() => false))) {
     // The row can sit in a collapsed sidebar section — its rows aren't
     // rendered until the section head is expanded.
-    for (const head of await ctx.page.locator('.side-section-head[aria-expanded="false"]').all()) {
-      await head.click();
+    // Re-query after each click: expanding a section removes its head from
+    // the selector, so a snapshotted .all() list would index past the rest.
+    const closedHeads = ctx.page.locator('.side-section-head[aria-expanded="false"]');
+    while (await closedHeads.count()) {
+      await closedHeads.first().click();
     }
   }
   await row.click();
