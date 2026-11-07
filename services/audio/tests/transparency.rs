@@ -7,7 +7,9 @@ mod common;
 
 use cadence_audio::decode::PcmKind;
 use cadence_audio::engine::{Engine, EngineConfig, LoadParams, OutputCore, SourceSpec};
-use cadence_audio::sink::{DeviceCaps, DeviceDesc, Negotiated, NullCaps, Sink};
+use cadence_audio::sink::{
+    DeviceCaps, DeviceDesc, Negotiated, NullCaps, Sink, resolve_positions,
+};
 use cadence_audio::decode::BitDepth;
 use common::{decode_all, fixtures_dir};
 use serde_json::Value;
@@ -30,6 +32,7 @@ fn make_engine_with_caps(
         channels: 2,
         kind: PcmKind::F32,
         device_name: caps.name(),
+        positions: resolve_positions(None, 2),
     };
     let cfg = EngineConfig {
         null_sink: true,
