@@ -258,3 +258,23 @@ export const ArtOnlyIcon = (p: P) => (
     <path d="M7.5 5v14M16.5 5v14" {...strokeProps()} />
   </Svg>
 );
+export const BrowseIcon = (p: P) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.4" {...strokeProps()} />
+    <path d="m15.4 8.6-2 4.8-4.8 2 2-4.8Z" {...strokeProps()} />
+  </Svg>
+);
+export const RadioIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="4" y="9" width="16" height="10" rx="2" {...strokeProps()} />
+    <path d="m5.4 9 11-4.4M9 14.6h.01M12 14.6h6M9 17h.01M12 17h6" {...strokeProps()} />
+  </Svg>
+);
+export const AppleIcon = (p: P) => (
+  <Svg {...p}>
+    <path
+      d="M15.8 5.2c-.8.9-2 1.5-3.1 1.5-.2-1.2.4-2.4 1.2-3.1.8-.8 2.1-1.4 3.1-1.4.1 1.2-.4 2.2-1.2 3ZM12.7 8.2c.9 0 1.9.7 2.4.7s1.6-.8 3-.8c1.3 0 2.4.7 3.1 1.9-1.4.8-2.1 2-2.1 3.3 0 1.8 1.1 3 2.4 3.4-.2.5-.4 1-.7 1.5-.8 1.3-1.8 2.6-3.1 2.6-.9 0-1.2-.6-2.4-.6s-1.6.6-2.4.6c-1.3 0-2.3-1.4-3.1-2.7C8.6 16.4 7.7 14 7.7 11.9c0-3 1.9-4.5 3.7-4.5Z"
+      {...strokeProps()}
+    />
+  </Svg>
+);

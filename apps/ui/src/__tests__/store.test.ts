@@ -237,6 +237,14 @@ describe('commands', () => {
     expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
   });
 
+  it('togglePlay on a restored session (paused, no lease) sends resume', () => {
+    // Restored playback comes back paused without a lease; the transport
+    // must resume the coordinator's remembered item, not replay queue[0].
+    session.dispatch({ kind: 'snapshot', snapshot: snap({ status: 'paused', lease: null, positionMs: 42_000 }) });
+    session.togglePlay();
+    expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
+  });
+
   it('cycleRepeat rotates off -> all -> one', () => {
     session.cycleRepeat();
     expect(fake.sent.at(-1)).toEqual({ kind: 'setRepeat', repeat: 'all' });

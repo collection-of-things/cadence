@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CadenceApi,
+  CatalogRequest,
   CoordinatorEvent,
   LibraryQuery,
+  PlatformId,
   PlaybackCommand,
   RouteId,
   ScanProgress,
@@ -57,6 +59,16 @@ const api: CadenceApi = {
   routes: {
     signIn: (route: RouteId) => invoke(C.routeSignIn, route),
     signOut: (route: RouteId) => invoke(C.routeSignOut, route),
+  },
+
+  platform: {
+    active: () => invoke(C.platformGet),
+    setActive: (platform: PlatformId) => invoke(C.platformSet, platform),
+  },
+
+  catalog: {
+    query: (route: RouteId, request: CatalogRequest) =>
+      invoke(C.catalogQuery, { route, request }),
   },
 
   search: {

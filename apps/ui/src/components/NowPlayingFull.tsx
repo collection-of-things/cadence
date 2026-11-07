@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import type { TrackRef } from '@cadence/protocol';
 import { artistsLine } from '../format';
 import { useUi } from '../hooks';
-import { session } from '../session';
+import { api, session } from '../session';
 import { CollapseIcon, LyricsIcon, NoteIcon, QueueIcon, SidebarIcon } from '../icons';
 import { PixiBackground } from '../visuals/PixiBackground';
 import { Lyrics } from './Lyrics';
@@ -13,6 +14,29 @@ import '../nowplaying-full.css';
 
 const rgb = (c: readonly number[] | undefined, fallback: string) => (c ? `rgb(${c[0]} ${c[1]} ${c[2]})` : fallback);
 
+/** Provider tracks carry no lyrics on the TrackRef — fetch on demand. */
+function useTrackLyrics(track: TrackRef | undefined): string | undefined {
+  const [lyrics, setLyrics] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    setLyrics(undefined);
+    if (!track || track.lyrics || !api.catalog) return;
+    if (track.source.kind !== 'provider' || !track.source.providerItemId) return;
+    // Library items carry their catalog twin for lookups keyed by catalog id.
+    const id = track.source.catalogId ?? track.source.providerItemId;
+    api.catalog
+      .query(track.route, { kind: 'lyrics', songId: id })
+      .then((page) => {
+        if (live && page.lyrics) setLyrics(page.lyrics);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [track]);
+  return track?.lyrics ?? lyrics;
+}
+
 /**
  * Immersive now playing: artwork bleeding into an artwork-coloured field,
  * a glass synced-lyrics card, and one floating control dock. Modal — the
@@ -20,6 +44,7 @@ const rgb = (c: readonly number[] | undefined, fallback: string) => (c ? `rgb(${
  */
 export function NowPlayingFull({ onClose }: { onClose: () => void }) {
   const track = useUi((s) => s.snapshot.current?.track);
+  const trackLyrics = useTrackLyrics(track);
   const palette = useUi((s) => s.palette);
   const queueOpen = useUi((s) => s.queueOpen);
   const [lyricsOn, setLyricsOn] = useState(true);
@@ -124,7 +149,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
 
       {showCard && (
         <div className="npf-card">
-          <Lyrics key={track.id} raw={track.lyrics} />
+          <Lyrics key={track.id} raw={trackLyrics} />
         </div>
       )}
 

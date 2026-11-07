@@ -20,3 +20,7 @@ apps/desktop/release/
 *.key
 id_*
 credentials*
+
+# e2e verification artifacts
+verify-runs/
+.scratch/

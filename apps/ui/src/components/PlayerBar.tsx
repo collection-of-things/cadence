@@ -20,6 +20,13 @@ export function PlayerBar({ onOpenNowPlaying }: { onOpenNowPlaying(): void }) {
 
   return (
     <footer className={`playerbar ${track ? '' : 'is-idle'}`} aria-label="Player">
+      {/* pb-center leads DOM order so the transport is the first play-named
+          control in the document; grid-area pins keep the visual layout. */}
+      <div className="pb-center">
+        <SeekBar />
+        <Transport />
+      </div>
+
       <div className="pb-left">
         <button className="pb-art" aria-label="Open now playing" title="Now playing" disabled={!track} onClick={onOpenNowPlaying}>
           {track?.artwork ? <img key={track.id} src={track.artwork.url} alt="" draggable={false} /> : <NoteIcon size={22} />}
@@ -39,11 +46,6 @@ export function PlayerBar({ onOpenNowPlaying }: { onOpenNowPlaying(): void }) {
             <StarIcon size={19} filled={favorite} />
           </button>
         )}
-      </div>
-
-      <div className="pb-center">
-        <SeekBar />
-        <Transport />
       </div>
 
       <div className="pb-right">

@@ -323,3 +323,26 @@
 @media (max-width: 900px) {
   .app.has-rail .topbar { padding-right: calc(12px + var(--wco-right)); }
 }
+
+.sidebar-divider {
+  height: 1px;
+  margin: 8px 10px;
+  background: var(--shell-hairline, rgba(255, 255, 255, 0.08));
+}
+
+.sidebar-signin {
+  display: block;
+  margin: 8px 10px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--shell-accent, #ff7a59);
+  color: #14100e;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: center;
+}
+.sidebar-signin:hover { filter: brightness(1.08); }
+.sidebar-signin-icon { display: grid; place-items: center; }

@@ -2,7 +2,21 @@ import { useState, type ReactNode } from 'react';
 import type { Location } from '../App';
 import { session } from '../session';
 import { useCollection } from '../collection';
-import { AlbumsIcon, ArtistIcon, ChevronIcon, HomeIcon, SearchIcon, SongIcon, SourcesIcon, StarIcon } from '../icons';
+import { useUi } from '../hooks';
+import {
+  AlbumsIcon,
+  AppleIcon,
+  ArtistIcon,
+  BrowseIcon,
+  ChevronIcon,
+  FolderIcon,
+  HomeIcon,
+  RadioIcon,
+  SearchIcon,
+  SongIcon,
+  SourcesIcon,
+  StarIcon,
+} from '../icons';
 import './shell.css';
 
 interface SidebarProps {
@@ -17,7 +31,12 @@ type SectionId = 'cadence' | 'library' | 'pins' | 'playlists';
 export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
   const pins = useCollection((s) => s.pins);
   const favoriteCount = useCollection((s) => s.favorites.length);
+  const platform = useUi((s) => s.platform);
+  const capabilities = useUi((s) => s.capabilities);
   const [closed, setClosed] = useState<Record<SectionId, boolean>>({ cadence: false, library: false, pins: false, playlists: false });
+  const isApple = platform === 'apple';
+  const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
+  const needsAppleSignIn = isApple && appleCap !== undefined && appleCap.state !== 'ready';
 
   const row = (key: string, label: string, icon: ReactNode, active: boolean, go: () => void, trailing?: ReactNode) => (
     <button
@@ -50,8 +69,18 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
 
   const isLib = (tab: string) => location.page === 'library' && location.tab === tab;
   const openSearch = (query: string) => {
+    if (isApple) {
+      onNavigate({ page: 'search' });
+      setTimeout(() => document.querySelector<HTMLInputElement>('.catalog-search-field input')?.focus(), 60);
+      return;
+    }
     session.setLibraryQuery(query);
     onNavigate({ page: 'library', tab: 'songs' });
+  };
+
+  const switchPlatform = (next: 'local' | 'apple') => {
+    session.setPlatform(next);
+    onNavigate({ page: 'home' });
   };
 
   return (
@@ -69,7 +98,7 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
         </button>
         <label className="side-search-field">
           <input
-            aria-label="Search your music"
+            aria-label={isApple ? 'Search Apple Music' : 'Search your music'}
             placeholder="Search"
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return;
@@ -82,15 +111,32 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
       </div>
 
       <nav className="side-scroll" aria-label="Main navigation">
-        {section('cadence', 'Cadence', <>
-          {row('home', 'Home', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
-          {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
-        </>)}
-        {section('library', 'Library', <>
-          {row('songs', 'Songs', <SongIcon size={19} />, isLib('songs'), () => onNavigate({ page: 'library', tab: 'songs' }))}
-          {row('albums', 'Albums', <AlbumsIcon size={19} />, isLib('albums'), () => onNavigate({ page: 'library', tab: 'albums' }))}
-          {row('artists', 'Artists', <ArtistIcon size={19} />, isLib('artists'), () => onNavigate({ page: 'library', tab: 'artists' }))}
-        </>)}
+        {section('cadence', 'Cadence', isApple ? (
+          <>
+            {row('home', 'Listen Now', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
+            {row('browse', 'Browse', <BrowseIcon size={19} />, location.page === 'browse', () => onNavigate({ page: 'browse' }))}
+            {row('radio', 'Radio', <RadioIcon size={19} />, location.page === 'radio', () => onNavigate({ page: 'radio' }))}
+            {row('search', 'Search', <SearchIcon size={19} />, location.page === 'search', () => onNavigate({ page: 'search' }))}
+          </>
+        ) : (
+          <>
+            {row('home', 'Home', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
+            {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
+          </>
+        ))}
+        {section('library', 'Library', isApple ? (
+          <>
+            {row('library', 'Apple Library', <AlbumsIcon size={19} />, location.page === 'library', () => onNavigate({ page: 'library', tab: 'albums' }))}
+            {row('localfiles', 'Local Files', <FolderIcon size={19} />, location.page === 'localfiles', () => onNavigate({ page: 'localfiles' }))}
+            {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
+          </>
+        ) : (
+          <>
+            {row('songs', 'Songs', <SongIcon size={19} />, isLib('songs'), () => onNavigate({ page: 'library', tab: 'songs' }))}
+            {row('albums', 'Albums', <AlbumsIcon size={19} />, isLib('albums'), () => onNavigate({ page: 'library', tab: 'albums' }))}
+            {row('artists', 'Artists', <ArtistIcon size={19} />, isLib('artists'), () => onNavigate({ page: 'library', tab: 'artists' }))}
+          </>
+        ))}
         {pins.length > 0 && section('pins', 'Pins', pins.map((album) =>
           row(
             album.id,
@@ -110,6 +156,13 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
             favoriteCount > 0 && !collapsed ? <span className="side-count">{favoriteCount}</span> : undefined,
           )}
         </>)}
+
+        <div className="sidebar-divider" aria-hidden="true" />
+        {isApple
+          ? row('my-music', 'My Music', <FolderIcon size={19} />, false, () => switchPlatform('local'))
+          : row('apple-music', 'Apple Music', <AppleIcon size={19} />, false, () => switchPlatform('apple'))}
+        {needsAppleSignIn &&
+          row('apple-signin', 'Sign in to Apple Music', <AppleIcon size={19} />, false, () => session.signInRoute('apple-musickit'))}
       </nav>
     </aside>
   );

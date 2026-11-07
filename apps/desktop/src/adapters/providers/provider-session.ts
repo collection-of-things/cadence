@@ -26,8 +26,40 @@ export interface ProviderSessionOptions {
   url: string;
   /** Preload bundle path (defaults to the bundled provider preload). */
   preloadPath?: string;
+  /**
+   * Expression re-evaluated after every page load (in-page navigations wipe
+   * injected state). Must be idempotent — controllers self-guard.
+   */
+  injectScript?: string;
   /** Called for every event posted by the injected controller. */
   onEvent?: (event: { name: string; data: unknown }) => void;
+}
+
+/** Which hosts a given provider partition may navigate/popup to. */
+function hostAllowedFor(partition: string, hostname: string): boolean {
+  if (partition.includes("apple")) {
+    return hostname.endsWith(".apple.com") || hostname === "apple.com";
+  }
+  if (partition.includes("youtube")) {
+    return (
+      hostname.endsWith(".youtube.com") ||
+      hostname === "youtube.com" ||
+      hostname.endsWith(".google.com") ||
+      hostname.endsWith(".googleusercontent.com")
+    );
+  }
+  if (partition.includes("spotify")) {
+    return hostname.endsWith(".spotify.com") || hostname === "spotify.com";
+  }
+  return false;
+}
+
+/** The page eval exceeded its time budget — the call's fate is unknown. */
+export class ProviderEvalTimeout extends Error {
+  constructor(partition: string) {
+    super(`provider eval timed out on ${partition}`);
+    this.name = "ProviderEvalTimeout";
+  }
 }
 
 export class ProviderSession {
@@ -72,9 +104,12 @@ export class ProviderSession {
         },
       });
 
-      // Route provider events posted through the preload bridge.
-      win.webContents.on("ipc-message", (_e, channel, name, data) => {
+      // Route provider events posted through the preload bridge — only from
+      // frames inside the provider's own host family.
+      win.webContents.on("ipc-message", (e, channel, name, data) => {
         if (channel !== "cadence:provider-event") return;
+        const frameUrl = e.senderFrame?.url ?? "";
+        if (!frameUrl || !hostAllowed(frameUrl)) return;
         const evt = { name: String(name), data };
         for (const l of this.listeners) l(evt);
       });
@@ -86,47 +121,180 @@ export class ProviderSession {
           l({ name: "viewGone", data: { reason: details.reason } });
       });
 
+      // Re-inject the controller after every (in-page) navigation — SPAs
+      // keep JS state, but hard loads (redirects, OAuth round-trips) wipe it.
+      if (this.opts.injectScript) {
+        const script = this.opts.injectScript;
+        win.webContents.on("did-finish-load", () => {
+          void win.webContents
+            .executeJavaScript(script, true)
+            .catch(() => undefined);
+        });
+      }
+
+      // Keep the provider page inside its own service: sign-in popups and
+      // navigations may only go to the provider's family of hosts.
+      const hostAllowed = (raw: string): boolean => {
+        try {
+          const u = new URL(raw);
+          return u.protocol === "https:" && hostAllowedFor(this.partition, u.hostname);
+        } catch {
+          return false;
+        }
+      };
+      win.webContents.on("will-navigate", (event, url) => {
+        if (!hostAllowed(url)) event.preventDefault();
+      });
+      // Server redirects bypass will-navigate — check those too. A
+      // post-redirect landed outside the family gets rolled back.
+      win.webContents.on("will-redirect", (event, url) => {
+        if (!hostAllowed(url)) event.preventDefault();
+      });
+      let rollbackCount = 0;
+      win.webContents.on("did-navigate", (_e, url) => {
+        if (!hostAllowed(url)) {
+          if (rollbackCount++ >= 3) return; // offline error pages — don't loop
+          setTimeout(() => (rollbackCount = 0), 30_000);
+          void win.webContents.loadURL(this.opts.url).catch(() => undefined);
+        }
+      });
       win.webContents.setWindowOpenHandler(({ url }) => {
+        if (!hostAllowed(url)) return { action: "deny" };
         // Provider sign-in popups must open in the same account partition.
         return { action: "allow", overrideBrowserWindowOptions: { show: true } };
       });
+      // Sign-in popups get their own windows — keep those inside the
+      // provider's hosts too. Recursive: grandchildren get the same guards
+      // and the same lifecycle tracking.
+      const trackPopup = (win2: BrowserWindow) => {
+        this.popups.add(win2);
+        for (const l of this.popupOpenedListeners) l();
+        win2.on("closed", () => {
+          this.popups.delete(win2);
+          for (const l of this.popupClosedListeners) l();
+        });
+      };
+      const guardPopup = (wc: WebContents) => {
+        wc.on("will-navigate", (event, url) => {
+          if (!hostAllowed(url)) event.preventDefault();
+        });
+        wc.on("will-redirect", (event, url) => {
+          if (!hostAllowed(url)) event.preventDefault();
+        });
+        wc.setWindowOpenHandler(({ url }) =>
+          hostAllowed(url)
+            ? { action: "allow", overrideBrowserWindowOptions: { show: true } }
+            : { action: "deny" },
+        );
+        wc.on("did-create-window", (grand) => {
+          guardPopup(grand.webContents);
+          trackPopup(grand);
+        });
+      };
+      win.webContents.on("did-create-window", (child) => {
+        guardPopup(child.webContents);
+        trackPopup(child);
+      });
 
       // Assign before loadURL: reveal() and eval() see the window even while
-      // the page is still loading (or the load fails).
+      // the page is still loading (or the load fails). A reset() during the
+      // load must not let the stale attempt overwrite the fresh state.
+      const attempt = { win };
       this.win = win;
       try {
         await win.loadURL(this.opts.url);
       } catch (e) {
         // Don't leak the failed hidden window — destroy so a retry starts clean.
-        this.win = null;
+        if (this.win === attempt.win) this.win = null;
         if (!win.isDestroyed()) win.destroy();
         throw e;
       }
     })();
 
+    const pending = this.readyPromise;
     try {
-      await this.readyPromise;
+      await pending;
     } finally {
-      this.readyPromise = null;
+      if (this.readyPromise === pending) this.readyPromise = null;
     }
   }
 
   /** Run a command inside the page world. Serialized + validated strings only. */
-  async eval<T = unknown>(expression: string): Promise<T> {
+  async eval<T = unknown>(expression: string, timeoutMs = 10_000): Promise<T> {
     if (!this.alive) throw new Error(`provider session ${this.partition} is not alive`);
     // A wedged provider page must not stall the coordinator chain.
-    const result = await Promise.race([
-      this.win!.webContents.executeJavaScript(expression, true),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`provider eval timed out on ${this.partition}`)), 10_000),
-      ),
-    ]);
-    return result as T;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        this.win!.webContents.executeJavaScript(expression, true),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(
+            () => rej(new ProviderEvalTimeout(this.partition)),
+            timeoutMs,
+          );
+        }),
+      ]);
+      return result as T;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Destroy the view and drop the pending-load promise — used on sign-out so
+   * the live in-page instance (and its MusicKit auth) is fully gone.
+   */
+  reset(): void {
+    if (this.win && !this.win.isDestroyed()) this.win.destroy();
+    this.destroyPopups();
+    this.win = null;
+    this.readyPromise = null;
+  }
+
+  /** Popups outlive the parent — an auth window surviving teardown could
+   * re-seed auth into a wiped partition. Every teardown path kills them. */
+  private destroyPopups(): void {
+    for (const p of this.popups) {
+      if (!p.isDestroyed()) p.destroy();
+    }
+    this.popups.clear();
   }
 
   onEvent(cb: (e: { name: string; data: unknown }) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
+  }
+
+  private popupClosedListeners = new Set<() => void>();
+  private popupOpenedListeners = new Set<() => void>();
+  /** Live popup windows (sign-in flows) this view spawned. */
+  private popups = new Set<BrowserWindow>();
+
+  /** Popup windows this session's view spawned (sign-in flows) closing. */
+  onPopupClosed(cb: () => void): () => void {
+    this.popupClosedListeners.add(cb);
+    return () => this.popupClosedListeners.delete(cb);
+  }
+
+  /** A provider popup window was created — a sign-in flow became visible. */
+  onPopupOpened(cb: () => void): () => void {
+    this.popupOpenedListeners.add(cb);
+    return () => this.popupOpenedListeners.delete(cb);
+  }
+
+  /** Whether a provider popup (e.g. the sign-in window) is still open. */
+  get hasOpenPopups(): boolean {
+    return this.popups.size > 0;
+  }
+
+  /** Raise the newest open popup — a sign-in retry should surface it, not
+   * the parent view. */
+  focusPopup(): boolean {
+    const last = [...this.popups].at(-1);
+    if (!last || last.isDestroyed()) return false;
+    last.show();
+    last.focus();
+    return true;
   }
 
   /**
@@ -146,8 +314,24 @@ export class ProviderSession {
     }
   }
 
+  /** Cheap signal that the partition likely holds a signed-in session —
+   * looks for Apple's media-user-token specifically (a signed-out visit
+   * still leaves anonymous cookies). */
+  async hasSessionCookies(): Promise<boolean> {
+    try {
+      const ses = session.fromPartition(this.partition);
+      const cookies = await ses.cookies.get({ url: this.opts.url });
+      return cookies.some((c) => /media-user-token|media_user_token/.test(c.name));
+    } catch {
+      return false;
+    }
+  }
+
   /** Destroy the view. The session partition (and login) persists. */
   async release(): Promise<void> {
+    // Popups die even when the parent is already gone — a dead view's
+    // auth window must not linger.
+    this.destroyPopups();
     if (!this.alive) return;
     const win = this.win!;
     this.win = null;
@@ -156,6 +340,7 @@ export class ProviderSession {
 
   async dispose(): Promise<void> {
     await this.release();
+    this.destroyPopups();
     this.listeners.clear();
   }
 
@@ -174,5 +359,11 @@ export class ProviderSession {
 
   hide(): void {
     this.win?.hide();
+  }
+
+  /** Wipe the partition's storage — full provider sign-out. Throws on
+   * failure: callers must not report a clean sign-out they can't confirm. */
+  async clearData(): Promise<void> {
+    await session.fromPartition(this.partition).clearStorageData();
   }
 }

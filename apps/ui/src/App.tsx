@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { LibraryAlbum } from '@cadence/protocol';
+import type { CatalogArtist, CatalogContainer, LibraryAlbum } from '@cadence/protocol';
 import { session } from './session';
 import { recordPlayed } from './collection';
 import { AlbumView } from './components/AlbumView';
@@ -15,16 +15,32 @@ import { Sidebar } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
 import { TopBar } from './components/TopBar';
+import {
+  ArtistView,
+  CatalogDetailView,
+  ProviderBrowseView,
+  ProviderHomeView,
+  ProviderLibraryView,
+  ProviderRadioView,
+  ProviderSearchView,
+} from './components/provider/views';
+import type { CatalogNav } from './components/provider/catalog';
 import { positionNow, useMediaSession, useUi } from './hooks';
 import { extractPalette, DEFAULT_PALETTE } from './palette';
 
 /** Where the browse stage is. The now-playing overlay is not a location. */
 export type Location =
   | { page: 'home' }
+  | { page: 'browse' }
+  | { page: 'radio' }
+  | { page: 'search' }
   | { page: 'library'; tab: LibraryTab }
+  | { page: 'localfiles' }
   | { page: 'favorites' }
   | { page: 'sources' }
-  | { page: 'album'; album: LibraryAlbum };
+  | { page: 'album'; album: LibraryAlbum }
+  | { page: 'detail'; container: CatalogContainer }
+  | { page: 'artist'; artist: CatalogArtist };
 
 const TABS_MAX = 6;
 
@@ -32,12 +48,16 @@ export function sameLocation(a: Location, b: Location): boolean {
   if (a.page !== b.page) return false;
   if (a.page === 'library' && b.page === 'library') return a.tab === b.tab;
   if (a.page === 'album' && b.page === 'album') return a.album.id === b.album.id;
+  if (a.page === 'detail' && b.page === 'detail') return a.container.id === b.container.id;
+  if (a.page === 'artist' && b.page === 'artist') return a.artist.id === b.artist.id;
   return true;
 }
 
 /** Identity of a location for page-change animation (re-mounts the page). */
 function pageKey(location: Location): string {
   if (location.page === 'album') return `album:${location.album.id}`;
+  if (location.page === 'detail') return `detail:${location.container.id}`;
+  if (location.page === 'artist') return `artist:${location.artist.id}`;
   // One key for every Library tab: search can switch tabs while typing, and
   // a remount would drop the query and focus.
   if (location.page === 'library') return 'library';
@@ -47,6 +67,7 @@ function pageKey(location: Location): string {
 export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
+  const platform = useUi((s) => s.platform);
   const hasTrack = useUi((s) => s.snapshot.current !== null);
   const expanded = useUi((s) => s.nowPlayingExpanded) && hasTrack;
   const track = useUi((s) => s.snapshot.current?.track);
@@ -196,12 +217,22 @@ export function App() {
 
   const openAlbum = (album: LibraryAlbum) => navigate({ page: 'album', album });
   const openNowPlaying = () => session.setNowPlayingExpanded(true);
+  const catalogNav: CatalogNav = {
+    openAlbum: (container) => navigate({ page: 'detail', container }),
+    openPlaylist: (container) => navigate({ page: 'detail', container }),
+    openArtist: (artist) => navigate({ page: 'artist', artist }),
+  };
+  const isApple = platform === 'apple';
   const rail = railOpen && hasTrack;
 
   return (
     <div className={`app ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${rail ? 'has-rail' : ''}`}>
       <Sidebar location={location} collapsed={sidebarCollapsed} onNavigate={navigate} />
       <div className="stage">
+        {/* The transport must be the first play-named control in the document:
+            page-level buttons ("Play album", "Play <track> next") legitimately
+            share the name space, so the fixed player bar leads DOM order. */}
+        {!expanded && <PlayerBar onOpenNowPlaying={openNowPlaying} />}
         <TopBar
           location={location}
           tabs={tabs}
@@ -217,16 +248,29 @@ export function App() {
         />
         <main className="stage-main">
           <div className="page" key={pageKey(location)}>
-          {location.page === 'home' && <HomeView onSelectAlbum={openAlbum} />}
-          {location.page === 'library' && (
+          {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
+          {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
+          {location.page === 'radio' && <ProviderRadioView nav={catalogNav} />}
+          {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} /> : <SourcesView />)}
+          {location.page === 'library' && (isApple ? (
+            <ProviderLibraryView nav={catalogNav} />
+          ) : (
             <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
+          ))}
+          {location.page === 'localfiles' && (
+            <LibraryView tab="albums" onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
           )}
           {location.page === 'favorites' && <FavoritesView />}
           {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}
+          {location.page === 'detail' && (
+            <CatalogDetailView container={location.container} nav={catalogNav} onBack={goBack} />
+          )}
+          {location.page === 'artist' && (
+            <ArtistView artist={location.artist} nav={catalogNav} onBack={goBack} />
+          )}
           {location.page === 'sources' && <SourcesView />}
           </div>
         </main>
-        {!expanded && <PlayerBar onOpenNowPlaying={openNowPlaying} />}
       </div>
       {rail && <LyricsRail />}
       <QueuePanel />
