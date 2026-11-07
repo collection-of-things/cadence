@@ -26,6 +26,7 @@ import { LibraryScanner } from "./library/scanner.js";
 import { LibraryService, chokidarWatcherFactory } from "./library/library-service.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { registerMediaKeys } from "./media-keys.js";
+import { wireCloseToTray } from "./quit-guard.js";
 
 /**
  * Composition root: parse environment, construct adapters + services, wire
@@ -266,14 +267,14 @@ async function main(): Promise<void> {
 
   // Close-to-tray: the window hides, playback continues — per the v3 design
   // provider playback must survive the main window closing. Explicit Quit
-  // only from the tray menu (or app.quit() paths like single-instance).
-  let quitting = false;
+  // only from the tray menu (or app.quit() paths like single-instance);
+  // before-quit arms the guard so programmatic quit paths can still close.
   let tray: Tray | null = null;
   const win = createWindow();
-  win.on("close", (e) => {
-    if (quitting) return;
-    e.preventDefault();
-    win.hide();
+  const { requestQuit } = wireCloseToTray({
+    onBeforeQuit: (cb) => app.on("before-quit", cb),
+    onWindowClose: (cb) => win.on("close", cb),
+    hideWindow: () => win.hide(),
   });
 
   // 16x16 dark rounded-square with a C — enough for a tray icon.
@@ -288,8 +289,10 @@ async function main(): Promise<void> {
       { type: "separator" },
       {
         label: "Quit",
+        // requestQuit() is belt-and-braces: before-quit already arms the
+        // guard, but arming here covers any quit path that bypasses it.
         click: () => {
-          quitting = true;
+          requestQuit();
           app.quit();
         },
       },

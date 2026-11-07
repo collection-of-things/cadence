@@ -180,6 +180,10 @@ export function App() {
 
   return (
     <div className={`app app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
+      {/* The transport must be the first play-named control in the document:
+          page-level buttons ("Play album", "Play <track> next") legitimately
+          share the name space, so the fixed player bar leads DOM order. */}
+      {!npExpanded && <PlayerBar />}
       <Sidebar
         activePage={location.page === 'playlist' ? 'playlist' : activePage}
         collapsed={sidebarCollapsed}
@@ -207,7 +211,6 @@ export function App() {
           {location.page === 'now' && <NowPlaying />}
         </main>
       </div>
-      {!npExpanded && <PlayerBar />}
       <QueuePanel />
 {createPortal(<Toasts />, document.body)}
     </div>
