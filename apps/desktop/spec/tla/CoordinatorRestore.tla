@@ -87,13 +87,15 @@ Init ==
 HasQueue == restored /\ Len(queue.items) > 0
 
 \* Constructor: parsePersistedPlayback gates whether anything restores.
-\* Restored intent is PAUSED, never playing (no autoplay on launch).
+\* Restored intent is PAUSED, never playing (no autoplay on launch). A queue
+\* whose index selects nothing (-1: "Play next" additions never played)
+\* restores STOPPED with its items — the same shape the code produces.
 Restore ==
     /\ ~restored
     /\ restored' = TRUE
     /\ IF Accepted(stored)
          THEN /\ queue' = stored
-              /\ status' = IF Len(stored.items) = 0 THEN "stopped" ELSE "paused"
+              /\ status' = IF stored.currentIndex = -1 THEN "stopped" ELSE "paused"
               /\ position' = 12000  \* any remembered position
          ELSE /\ UNCHANGED queue
               /\ status' = "stopped"
@@ -118,9 +120,11 @@ EngineRestarted ==
     /\ userPlayed' = FALSE
     /\ UNCHANGED <<stored, restored, queue, position, playsIssued>>
 
-\* Explicit user commands drive all playback after restore.
+\* Explicit user commands drive all playback after restore. A stopped queue
+\* that still holds items (idle index, or stopped mid-queue) starts too —
+\* the code's play command falls back to the top of the play order.
 UserPlay ==
-    /\ status = "paused" /\ HasQueue
+    /\ status \in {"paused", "stopped"} /\ HasQueue
     /\ playsIssued < 2  \* bound: replay cycles add nothing new
     /\ playsIssued' = playsIssued + 1
     /\ userPlayed' = TRUE

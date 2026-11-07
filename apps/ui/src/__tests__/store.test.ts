@@ -245,6 +245,42 @@ describe('commands', () => {
     expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
   });
 
+  it('togglePlay on an idle restored queue (stopped, items, nothing selected) sends play', () => {
+    // "Play next" additions on an empty queue persist currentIndex -1; after
+    // relaunch the queue is populated but nothing is current. The transport
+    // must still issue a bare play — the coordinator starts the first item.
+    session.dispatch({ kind: 'snapshot', snapshot: snap({ status: 'stopped', lease: null, current: null }) });
+    session.dispatch({ kind: 'queue', queue: queue([qItem('a'), qItem('b')], { currentIndex: -1 }) });
+    session.togglePlay();
+    expect(fake.sent.at(-1)).toEqual({ kind: 'play' });
+  });
+
+  it('togglePlay on a paused provider session sends resume', () => {
+    session.dispatch({
+      kind: 'snapshot',
+      snapshot: snap({ status: 'paused', lease: { generationId: 1, route: 'apple-musickit', queueId: 'q-a', issuedAtMs: 0 } }),
+    });
+    session.togglePlay();
+    expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
+  });
+
+  it('insertNext forwards a provider track with its provider source intact', () => {
+    const appleTrack: TrackRef = {
+      ...track('am-1'),
+      route: 'apple-musickit',
+      provider: 'apple',
+      title: 'Play It Again',
+      source: { kind: 'provider', providerItemId: 'am-1' },
+    };
+    session.insertNext(appleTrack);
+    const cmd = fake.sent.at(-1);
+    expect(cmd?.kind).toBe('insertNext');
+    if (cmd?.kind === 'insertNext') {
+      expect(cmd.items[0]!.track.route).toBe('apple-musickit');
+      expect(cmd.items[0]!.track.source).toEqual({ kind: 'provider', providerItemId: 'am-1' });
+    }
+  });
+
   it('cycleRepeat rotates off -> all -> one', () => {
     session.cycleRepeat();
     expect(fake.sent.at(-1)).toEqual({ kind: 'setRepeat', repeat: 'all' });
