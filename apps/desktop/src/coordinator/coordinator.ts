@@ -632,7 +632,12 @@ export class Coordinator {
       try {
         await this.withTimeout(outgoing.stop(outgoingLease), 8_000, "resilence.stop");
       } catch (cause) {
-        this.emitError(route, item.queueId, `resilencing outgoing engine failed: ${msg(cause)}`, true);
+        this.emitError(
+          outgoing.route,
+          outgoingLease.queueId,
+          `resilencing outgoing engine failed: ${msg(cause)}`,
+          true,
+        );
       }
     }
     const playOpts: { positionMs?: number } = {};
