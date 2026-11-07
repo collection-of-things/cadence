@@ -729,7 +729,8 @@ fn fill<T: PcmSample>(stream: &pw::stream::Stream, feed: &mut Feed<T>) {
                 let frames = if requested > 0 {
                     requested.min(max_frames)
                 } else {
-                    max_frames
+                    // Same unstated-request cap as the live path.
+                    feed.latency_frames.min(max_frames)
                 };
                 s[..frames * stride].fill(0);
                 frames * stride
