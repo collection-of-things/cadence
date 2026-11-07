@@ -7,10 +7,26 @@ import { fixtureTracks, FIXTURES, waitFor, sleep, run as shellRun, readJson, HEL
 import { TAP_NAME } from "./pipewire.mjs";
 import * as api from "./api.mjs";
 
+/** Fixture flows need the local library shell — an attached session left in
+ * Apple Music mode has no Songs/Albums/Artists sidebar rows. Switch through
+ * the UI store (window.__cadenceSession) so shell state and the persisted
+ * platform move together; the bare platform.setActive bridge would leave
+ * the store on 'apple' until reload. */
+export async function ensureLocalPlatform(ctx) {
+  const active = await ctx.page
+    .evaluate(() => window.cadence?.platform?.active?.() ?? "local")
+    .catch(() => "local");
+  if (active === "local") return;
+  ctx.ev.step("platform", `active=${active} — switching to local`);
+  await ctx.page.evaluate(() => window.__cadenceSession?.setPlatform("local"));
+  await ctx.page.waitForSelector('.side-row[aria-label="Albums"]', { timeout: 8_000 });
+}
+
 /** Scan the checked-in fixture library; returns the indexed tracks.
  * Waits until the exact fixture FILES are indexed — a count-only pass
  * could accept stale leftovers from a previous scan. */
 export async function seedLibrary(ctx) {
+  await ensureLocalPlatform(ctx);
   ctx.ev.step("library", `scan ${FIXTURES}`);
   await api.scan(ctx.page, [FIXTURES]);
   const expected = fixtureTracks();

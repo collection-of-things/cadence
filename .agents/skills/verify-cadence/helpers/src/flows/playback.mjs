@@ -101,7 +101,7 @@ export async function run(ctx) {
   ev.check("add-next queues track", true,
     `North Field at index ${q1.currentIndex + 1} (current ${q1.currentIndex})`);
 
-  await page.getByRole("button", { name: /^Queue/ }).first().click();
+  await page.locator(".playerbar [data-queue-toggle]").click();
   await page.waitForSelector(".queue.open", { timeout: 8_000 });
   await shot(ctx, "queue-before-jump");
   // jump directly to the queued item by clicking its row — wait for the

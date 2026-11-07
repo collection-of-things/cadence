@@ -60,14 +60,15 @@ export async function run(ctx) {
   await clickTrack(ctx, "Beacon");
   await api.waitStatus(page, "playing");
 
-  // queue panel — the toggles carry an accessible "Queue" name (player bar,
-  // top bar, now-playing dock all share the data-queue-toggle hook)
-  await page.getByRole("button", { name: /^Queue/ }).first().click();
+  // queue panel — scope to the player bar's toggle: pinned albums and the
+  // top bar/now-playing dock share the data-queue-toggle hook and a "Queue*"
+  // album title could otherwise win the accessible-name match
+  await page.locator(".playerbar [data-queue-toggle]").click();
   await page.waitForSelector(".queue.open", { timeout: 8_000 });
   const q = await api.queue(page);
   ev.check("queue panel shows queue", q.items.length >= 1, `${q.items.length} item(s)`);
   await shot(ctx, "queue-open");
-  await page.getByRole("button", { name: /^Queue/ }).first().click();
+  await page.locator(".playerbar [data-queue-toggle]").click();
 
   // now playing overlay — the dialog must actually open, not just the button
   await page.getByRole("button", { name: "Open now playing" }).first().click();
