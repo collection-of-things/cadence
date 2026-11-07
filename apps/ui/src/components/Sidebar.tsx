@@ -70,7 +70,8 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
   const isLib = (tab: string) => location.page === 'library' && location.tab === tab;
   const openSearch = (query: string) => {
     if (isApple) {
-      onNavigate({ page: 'search' });
+      // The query rides the location — the search view mounts already submitted.
+      onNavigate({ page: 'search', ...(query ? { query } : {}) });
       setTimeout(() => document.querySelector<HTMLInputElement>('.catalog-search-field input')?.focus(), 60);
       return;
     }
@@ -127,7 +128,7 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
         {section('library', 'Library', isApple ? (
           <>
             {row('library', 'Apple Library', <AlbumsIcon size={19} />, location.page === 'library', () => onNavigate({ page: 'library', tab: 'albums' }))}
-            {row('localfiles', 'Local Files', <FolderIcon size={19} />, location.page === 'localfiles', () => onNavigate({ page: 'localfiles' }))}
+            {row('localfiles', 'Local Files', <FolderIcon size={19} />, location.page === 'localfiles', () => onNavigate({ page: 'localfiles', tab: 'albums' }))}
             {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
           </>
         ) : (

@@ -226,12 +226,18 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
 }
 
 /** Catalog search — grouped results across songs, albums, artists, playlists. */
-export function ProviderSearchView({ nav }: ProviderViewProps) {
+export function ProviderSearchView({ nav, query }: ProviderViewProps & { query?: string | undefined }) {
   const platform = useUi((s) => s.platform);
   const route = routeForPlatform(platform);
-  const [text, setText] = useState(useUi((s) => s.libraryQuery));
+  const [text, setText] = useState(query ?? '');
   const [debounced, setDebounced] = useState(text);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The sidebar carries its query in the search location — adopt it. A new
+  // query while already on the page re-submits without a remount.
+  useEffect(() => {
+    if (query !== undefined) setText(query);
+  }, [query]);
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
