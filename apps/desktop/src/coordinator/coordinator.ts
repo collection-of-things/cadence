@@ -15,7 +15,7 @@ import type {
 } from "@cadence/protocol";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { isFidelityCapable, isReplayGainCapable, isRestartRestorable } from "../adapters/types.js";
-import { parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
+import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
 
@@ -92,8 +92,6 @@ export class Coordinator {
   /** ended events already handled, keyed `${generation}:${queueId}`. */
   private handledEnded = new Set<string>();
   /** queueId+generation the engine self-promoted (tail-race guard). */
-  private promotedQueueId: string | null = null;
-  private promotedGenerationId = 0;
 
   constructor(deps: CoordinatorDeps) {
     this.registry = deps.registry;
@@ -405,7 +403,7 @@ export class Coordinator {
   notifyEngineRestarted(route: RouteId): void {
     // Route through the serialized chain — a startItem in flight must not
     // see generation/lease mutated underneath it.
-    this.chain = this.chain.then(() => this.restoreAfterRestart(route));
+    this.extendChain(() => this.restoreAfterRestart(route));
   }
 
   private async restoreAfterRestart(route: RouteId): Promise<void> {
@@ -415,9 +413,16 @@ export class Coordinator {
     const adapter = this.registry.get(route);
     this.lease = null;
     this.activeAdapter = null;
+    this.pendingPrefetch = null;
     if (adapter !== undefined && isRestartRestorable(adapter)) {
       try {
-        await adapter.restoreAfterEngineRestart(item, this.positionMs);
+        // Bounded like every other adapter call in the chain — a hung
+        // restore must not wedge every later command.
+        await this.withTimeout(
+          adapter.restoreAfterEngineRestart(item, this.positionMs),
+          15_000,
+          "restore.restart",
+        );
       } catch (cause) {
         this.emitError(route, item.queueId, `restore after engine restart failed: ${msg(cause)}`, true);
       }
@@ -447,15 +452,72 @@ export class Coordinator {
    * an error event carries the route + queueId, and the UI can issue a
    * deliberate `switchRoute` fallback.
    */
-  /** Serialize an engine/event-driven start onto the same chain as commands. */
-  private enqueueStart(
-    index: number,
-    opts: { positionMs?: number; routeOverride?: RouteId; adoptPromotion?: boolean } = {},
-  ): void {
-    this.chain = this.chain.then(() => this.startItem(index, opts)).then(
+  /**
+   * Append a task to `this.chain` with the rejection guard every link
+   * needs: a rejected chain would silently skip the next command's
+   * dispatch. All chain extensions go through here.
+   */
+  private extendChain(task: () => Promise<void>): void {
+    this.chain = this.chain.then(task).then(
       () => undefined,
       () => undefined,
     );
+  }
+
+  /** Serialize an engine/event-driven start onto the same chain as commands. */
+  private enqueueStart(
+    index: number,
+    opts: { positionMs?: number; routeOverride?: RouteId } = {},
+    expected?: { generationId: number; queueId: string },
+  ): void {
+    this.extendChain(() => {
+      // The event that queued this link belonged to a specific lease — its
+      // generation AND the item it names. If either moved, the link is
+      // stale — running it would stomp the user's chosen track.
+      if (
+        expected !== undefined &&
+        (this.lease?.generationId !== expected.generationId ||
+          this.lease.queueId !== expected.queueId)
+      ) {
+        return Promise.resolve();
+      }
+      if (expected === undefined) {
+        // A user-commanded start: the index was captured at dispatch.
+        return index >= 0 && index < this.queue.items.length
+          ? this.startItem(index, opts)
+          : Promise.resolve();
+      }
+      // An ended-driven advance: recompute the successor of the ENDED
+      // item now — queue ops that preserve queueIds (move, remove,
+      // insertNext, setRepeat, setShuffle) may have run behind this link.
+      const endedIdx = this.queue.items.findIndex((it) => it.queueId === expected.queueId);
+      if (endedIdx < 0) return Promise.resolve();
+      const nextIdx = QueueOps.nextIndexAfterEnd({
+        ...this.queue,
+        currentIndex: endedIdx,
+      });
+      if (nextIdx === null) {
+        // The ended item has no successor NOW — the session stops. Tell
+        // the adapter to stop too: an engine whose `ended` was followed
+        // by a resurrecting `started` must not keep sounding after the
+        // session dies.
+        const adapter = this.activeAdapter;
+        const lease = this.lease;
+        this.status = "stopped";
+        this.lease = null;
+        this.activeAdapter = null;
+        this.positionMs = 0;
+        this.emitSnapshot();
+        this.persistSoon();
+        if (adapter !== null && lease !== null) {
+          return this.withTimeout(adapter.stop(lease), 8_000, "end-of-queue.stop").catch(
+            () => undefined,
+          );
+        }
+        return Promise.resolve();
+      }
+      return this.startItem(nextIdx, opts);
+    });
   }
 
   /** Bound a call so a wedged adapter can't stall the coordinator forever. */
@@ -475,7 +537,7 @@ export class Coordinator {
 
   private async startItem(
     index: number,
-    opts: { positionMs?: number; routeOverride?: RouteId; adoptPromotion?: boolean },
+    opts: { positionMs?: number; routeOverride?: RouteId },
   ): Promise<void> {
     const item = this.queue.items[index];
     if (item === undefined) return;
@@ -483,33 +545,6 @@ export class Coordinator {
     this.pendingPrefetch = null;
     const route = opts.routeOverride ?? item.track.route;
     const adapter = this.registry.get(route);
-
-    // Tail of the promotion race: the engine may already be playing this
-    // exact track under the current lease. Adopt that lease — minting a new
-    // generation here would desync event stamping and gated commands.
-    // The guard is spent once an `ended` for the promoted item is on record,
-    // so repeat-one replays and manual re-plays still issue a real play.
-    // adoptPromotion limits this to engine-advance starts — an explicit
-    // user "play this track" must really play it.
-    if (
-      opts.adoptPromotion === true &&
-      adapter !== undefined &&
-      this.promotedQueueId === item.queueId &&
-      adapter === this.activeAdapter &&
-      !this.handledEnded.has(`${this.promotedGenerationId}:${item.queueId}`)
-    ) {
-      if (this.queue.currentIndex !== index) {
-        this.queue = { ...this.queue, currentIndex: index };
-        this.emitQueue();
-      }
-      this.status = "playing";
-      this.lastError = undefined;
-      this.durationMs = item.track.durationMs;
-      this.emitSnapshot();
-      this.persistSoon();
-      this.refreshPrefetch();
-      return;
-    }
 
     this.generation += 1;
     const lease: PlaybackLease = {
@@ -550,9 +585,25 @@ export class Coordinator {
       await this.withTimeout(adapter.prepare(), 15_000, "adapter.prepare");
     } catch (cause) {
       // Roll back: outgoing keeps its lease, adapter and queue position.
-      this.queue = { ...this.queue, currentIndex: previousIndex };
-      this.durationMs = previousDuration;
-      this.positionMs = previousPosition;
+      // If intent moved while prepare was in flight (an engine
+      // self-promotion re-pointed the lease), restore the index the lease
+      // names — the engine's truth wins over the remembered index.
+      const leaseQid = this.lease?.queueId;
+      const leaseIdx =
+        leaseQid === undefined
+          ? -1
+          : this.queue.items.findIndex((it) => it.queueId === leaseQid);
+      const restoreIdx = leaseIdx >= 0 ? leaseIdx : previousIndex;
+      this.queue = { ...this.queue, currentIndex: restoreIdx };
+      if (leaseIdx >= 0 && leaseIdx !== previousIndex) {
+        // The lease moved to a promoted item — restore ITS track duration,
+        // not the failed item's and not the remembered previous track's.
+        this.durationMs = this.queue.items[leaseIdx]?.track.durationMs ?? this.durationMs;
+        this.positionMs = 0;
+      } else {
+        this.durationMs = previousDuration;
+        this.positionMs = previousPosition;
+      }
       this.emitQueue();
       this.failStart(route, item.queueId, `prepare failed: ${msg(cause)}`, true);
       return;
@@ -579,7 +630,28 @@ export class Coordinator {
     // lease only now, so a failed prepare above left the old route intact.
     this.handledEnded.clear();
     this.lease = lease;
-    this.promotedQueueId = null;
+    // A self-promotion on the outgoing engine may have moved queue intent
+    // while the awaits above were in flight — re-assert the committed item.
+    if (this.queue.currentIndex !== index) {
+      this.queue = { ...this.queue, currentIndex: index };
+      this.emitQueue();
+    }
+    // That same self-promotion may have restarted audible output on the
+    // just-stopped engine. Re-silence it before the incoming play — the
+    // commit owns the outcome, and a failure here is reported like the
+    // first stop's.
+    if (outgoing !== null && outgoingLease !== null) {
+      try {
+        await this.withTimeout(outgoing.stop(outgoingLease), 8_000, "resilence.stop");
+      } catch (cause) {
+        this.emitError(
+          outgoing.route,
+          outgoingLease.queueId,
+          `resilencing outgoing engine failed: ${msg(cause)}`,
+          true,
+        );
+      }
+    }
     const playOpts: { positionMs?: number } = {};
     if (opts.positionMs !== undefined) playOpts.positionMs = opts.positionMs;
     try {
@@ -600,7 +672,18 @@ export class Coordinator {
       // A timed-out play may still have started audio underneath us — issue
       // a real stop so the failure path owns silence, not optimism.
       await this.withTimeout(adapter.stop(lease), 8_000, "cleanup.stop").catch(() => undefined);
+      // Release the lease: the gate dies with the attempt, so a late
+      // `started` can't resurrect "playing" over the reported error.
+      this.lease = null;
+      this.activeAdapter = null;
       this.failStart(route, item.queueId, `play failed: ${msg(cause)}`, true);
+      return;
+    }
+    if (this.lease === null || this.lease.generationId !== lease.generationId) {
+      // The session was torn down while play was in flight (e.g. an `ended`
+      // arrived and cleared the lease). Don't claim playback — silence what
+      // may be a detached item and leave the state the event left behind.
+      await this.withTimeout(adapter.stop(lease), 8_000, "stale-play.stop").catch(() => undefined);
       return;
     }
 
@@ -623,6 +706,8 @@ export class Coordinator {
     const adapter = this.activeAdapter;
     const lease = this.lease;
     this.activeAdapter = null;
+    this.pendingPrefetch = null;
+    this.clearPromotionWait();
     if (adapter !== null && lease !== null) {
       try {
         await this.withTimeout(adapter.stop(lease), 8_000, "teardown.stop");
@@ -666,9 +751,18 @@ export class Coordinator {
     if (nextIdx === null || nextIdx === this.queue.currentIndex) return;
     const next = this.queue.items[nextIdx];
     if (next === undefined || next.track.route !== adapter.route) return;
+    const issuedGen = this.lease?.generationId;
     try {
       await adapter.prefetch(next);
-      this.pendingPrefetch = next.queueId;
+      // The belief is only sound while it still describes the live
+      // successor: a handoff or promotion interleaving with the prefetch
+      // call must not leave a stale pendingPrefetch behind.
+      const stillSuccessor =
+        this.lease?.generationId === issuedGen &&
+        this.activeAdapter === adapter &&
+        this.queue.items[QueueOps.nextIndexAfterEnd(this.queue) ?? -1]?.queueId ===
+          next.queueId;
+      if (stillSuccessor) this.pendingPrefetch = next.queueId;
     } catch {
       // Prefetch is an optimization; a failure only costs the seamlessness.
     }
@@ -719,7 +813,7 @@ export class Coordinator {
     if (adapter === null) return;
     const effective = this.muted ? 0 : this.volume;
     try {
-      await adapter.setVolume(effective);
+      await this.withTimeout(adapter.setVolume(effective), 10_000, "adapter.setVolume");
     } catch (cause) {
       this.emitError(adapter.route, this.lease?.queueId, `setVolume failed: ${msg(cause)}`, true);
     }
@@ -815,7 +909,20 @@ export class Coordinator {
         this.handledEnded.add(endedKey);
         const queueId = e.queueId ?? this.lease.queueId;
         this.emit({ kind: "trackEnded", queueId, generationId: e.generationId });
-        const idx = QueueOps.nextIndexAfterEnd(this.queue);
+        // Advance follows the item that ENDED, not currentIndex — a start
+        // already in flight may have moved the index provisionally. If the
+        // event's queueId doesn't resolve to a queue item, the lease's item
+        // is what ended (the event already passed the generation gate).
+        const endedQid =
+          queueId === this.lease.queueId ||
+          this.queue.items.some((it) => it.queueId === queueId)
+            ? queueId
+            : this.lease.queueId;
+        const endedIdx = this.queue.items.findIndex((it) => it.queueId === endedQid);
+        const idx =
+          endedIdx < 0
+            ? null
+            : QueueOps.nextIndexAfterEnd({ ...this.queue, currentIndex: endedIdx });
         if (idx === null) {
           this.status = "stopped";
           this.lease = null;
@@ -831,28 +938,31 @@ export class Coordinator {
         // ourselves — a redundant load here would restart a track already
         // playing, which is exactly the seam the engine exists to remove.
         if (this.pendingPrefetch !== null) {
-          // Capture the queueId, resolve to an index at fire time — a queue
-          // mutation inside the window must not start whatever item happens
-          // to sit at the stale index.
-          const fallbackQueueId = this.queue.items[idx]?.queueId;
+          // The link recomputes the successor of the ended item when it
+          // runs — the timer only validates that the ended lease still
+          // stands before queueing it.
+          const endedGen = e.generationId;
           this.promotionTimer = setTimeout(() => {
             this.promotionTimer = null;
             if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
-            if (fallbackQueueId === undefined) return;
-            const nowIdx = this.queue.items.findIndex((it) => it.queueId === fallbackQueueId);
-            if (nowIdx >= 0) this.enqueueStart(nowIdx, { adoptPromotion: true });
+            // Same staleness rule as the immediate link: the lease must
+            // still name the item that ended.
+            if (
+              this.lease?.generationId !== endedGen ||
+              this.lease.queueId !== endedQid
+            ) {
+              return;
+            }
+            this.enqueueStart(0, {}, {
+              generationId: endedGen,
+              queueId: endedQid,
+            });
           }, 600);
           return;
         }
         {
-          const nextQueueId = this.queue.items[idx]?.queueId;
-          if (nextQueueId === undefined) return;
-          this.chain = this.chain.then(() => {
-            const nowIdx = this.queue.items.findIndex((it) => it.queueId === nextQueueId);
-            return nowIdx >= 0
-              ? this.startItem(nowIdx, { adoptPromotion: true })
-              : Promise.resolve();
-          });
+          const endedGen = e.generationId;
+          this.enqueueStart(0, {}, { generationId: endedGen, queueId: endedQid });
         }
         return;
       }
@@ -924,10 +1034,8 @@ export class Coordinator {
     this.pendingPrefetch = null;
     const item = idx >= 0 ? this.queue.items[idx] : undefined;
     if (this.lease === null || item === undefined) return;
-    this.promotedQueueId = item.queueId;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
     this.leaseStartPositionMs = 0;
-    this.promotedGenerationId = this.lease.generationId;
     if (this.queue.currentIndex !== idx) {
       this.queue = { ...this.queue, currentIndex: idx };
       this.emitQueue();
@@ -1085,10 +1193,10 @@ function parseProviderQueue(u: unknown, stamp: (it: QueueItem) => QueueItem): Qu
   for (const raw of u) {
     if (typeof raw !== "object" || raw === null) continue;
     const item = raw as Record<string, unknown>;
-    const track = item.track;
-    if (typeof track !== "object" || track === null) continue;
-    // SAFETY: provider queues are best-effort; we checked the envelope
-    // (object with a track object) and the coordinator re-stamps queueIds.
+    // Full TrackRef validation — refreshPrefetch and the adapters
+    // dereference track.route/track.source; a partial track is a crash
+    // later, not a queue item.
+    if (!isTrack(item.track)) continue;
     items.push(stamp(item as unknown as QueueItem));
   }
   return items;

@@ -32,6 +32,15 @@ const DROP_ENV = [
   "CADENCE_SPOTIFY_PASSWORD",
   "CADENCE_SPOTIFY_ACCESS_TOKEN",
   "CADENCE_SPOTIFY_TOKEN",
+  // profile/driver overrides added with the provider work: an inherited
+  // CADENCE_USER_DATA would beat the harness's --user-data-dir and could
+  // attach to a real signed-in profile; CADENCE_E2E_CDP_PORT would add a
+  // second remote-debugging-port; the sandbox switches silently change
+  // what is under test
+  "CADENCE_USER_DATA",
+  "CADENCE_E2E_CDP_PORT",
+  "CADENCE_DISABLE_SANDBOX",
+  "ELECTRON_DISABLE_SANDBOX",
   // real audio routes: PulseAudio socket/sink selection and ALSA config.
   // The app talks cpal -> ALSA; without sanitation it could open the real
   // default device or the user's Pulse/PipeWire server.

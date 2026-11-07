@@ -122,7 +122,13 @@ describe("coordinator: handoff", () => {
     order.length = 0;
     const ytId = r.coordinator.getQueue().items[1]?.queueId ?? "";
     await r.coordinator.handleCommand({ kind: "play", queueId: ytId });
-    expect(order).toEqual(["provider.prepare", "local.stop", "provider.play"]);
+    // prepare incoming, stop outgoing (plus a best-effort re-silence at
+    // commit), then start incoming.
+    expect(order[0]).toBe("provider.prepare");
+    expect(order.at(-1)).toBe("provider.play");
+    expect(order.slice(1, -1)).toEqual(
+      Array.from({ length: order.length - 2 }, () => "local.stop"),
+    );
     expect(r.coordinator.getSnapshot().lease?.route).toBe("youtube-music");
     expect(r.coordinator.getQueue().owner).toBe("provider");
   });
