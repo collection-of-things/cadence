@@ -33,3 +33,6 @@ jobs:
 
       - name: cargo test
         run: cargo test --manifest-path services/audio/Cargo.toml
+
+      - name: loom ring model
+        run: cargo run --manifest-path services/audio/loom-check/Cargo.toml --release

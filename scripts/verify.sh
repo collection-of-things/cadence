@@ -10,6 +10,7 @@ step "build" && timeout 300 pnpm -r build || fail=1
 step "unit tests" && timeout 300 pnpm -r test || fail=1
 step "cargo build" && timeout 600 cargo build --manifest-path services/audio/Cargo.toml || fail=1
 step "cargo test" && timeout 600 cargo test --manifest-path services/audio/Cargo.toml || fail=1
+step "loom ring model" && timeout 600 cargo run --manifest-path services/audio/loom-check/Cargo.toml --release || fail=1
 step "audio fixtures + headless playback probe" && \
   timeout 300 bash scripts/gen-fixtures.sh && \
   timeout 300 bash scripts/probe-audio.sh || fail=1
