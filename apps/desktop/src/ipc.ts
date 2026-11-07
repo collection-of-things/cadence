@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain } from "electron";
-import type { CoordinatorEvent, RouteId } from "@cadence/protocol";
+import type { CoordinatorEvent, PlatformId, RouteId } from "@cadence/protocol";
 import type { Coordinator } from "./coordinator/coordinator.js";
 import type { AdapterRegistry } from "./adapters/registry.js";
 import type { LibraryService } from "./library/library-service.js";
@@ -7,10 +7,12 @@ import { IpcChannels as C } from "./ipc-channels.js";
 import { isOk } from "./result.js";
 import {
   InvalidIpcPayload,
+  parseCatalogQuery,
   parseLibraryQuery,
   parsePaths,
   parsePlaybackCommand,
   parseEqBands,
+  parsePlatformId,
   parseProviderSearch,
   parseRouteId,
   parseTrackId,
@@ -32,6 +34,11 @@ export interface IpcDeps {
     setEq(bands: { freqHz: number; gainDb: number }[]): Promise<unknown>;
     listDevices(): Promise<unknown>;
     setDevice(name: string | null): Promise<unknown>;
+  };
+  /** Active-platform persistence (one streaming service at a time). */
+  readonly platform?: {
+    active(): Promise<PlatformId>;
+    setActive(platform: PlatformId): Promise<void>;
   };
 }
 
@@ -104,6 +111,11 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   });
   ipcMain.handle(C.routeSignOut, async (_e, route: unknown) => {
     const r = assertOk(parseRouteId(route));
+    const adapter = registry.get(r);
+    if (adapter?.signOut === undefined) {
+      throw new Error(`sign-out is not available for route "${r}"`);
+    }
+    await adapter.signOut();
     if (deps.routeSignOut !== undefined) await deps.routeSignOut(r);
   });
 
@@ -119,10 +131,33 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     return Promise.race([
       adapter.search(text),
       new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`search on route "${route}" timed out`)), 15_000),
+        setTimeout(() => rej(new Error(`search on route "${route}" timed out`)), 30_000),
       ),
     ]);
   });
+
+  // Full catalog surface (home/browse/detail/library/lyrics).
+  ipcMain.handle(C.catalogQuery, async (_e, payload: unknown) => {
+    const { route, request } = assertOk(parseCatalogQuery(payload));
+    const adapter = registry.get(route);
+    if (adapter?.catalog === undefined) {
+      throw new Error(`catalog is not available for route "${route}"`);
+    }
+    return Promise.race([
+      adapter.catalog(request),
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error(`catalog on route "${route}" timed out`)), 30_000),
+      ),
+    ]);
+  });
+
+  if (deps.platform !== undefined) {
+    const platform = deps.platform;
+    ipcMain.handle(C.platformGet, () => platform.active());
+    ipcMain.handle(C.platformSet, async (_e, payload: unknown) => {
+      await platform.setActive(assertOk(parsePlatformId(payload)));
+    });
+  }
 
   ipcMain.handle(C.windowMinimize, (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();

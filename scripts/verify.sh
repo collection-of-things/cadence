@@ -17,5 +17,7 @@ step "cargo test" && timeout 600 cargo test --manifest-path services/audio/Cargo
 step "audio fixtures + headless playback probe" && \
   timeout 300 bash scripts/gen-fixtures.sh && \
   timeout 300 bash scripts/probe-audio.sh || fail=1
+step "e2e smoke (real app, private PipeWire tap)" && \
+  timeout 420 .agents/skills/verify-cadence/helpers/cadence-verify run smoke || fail=1
 echo
 if [ "$fail" -eq 0 ]; then echo "VERIFY: PASS"; else echo "VERIFY: FAIL"; exit 1; fi

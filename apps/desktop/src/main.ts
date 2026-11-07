@@ -12,6 +12,7 @@ import {
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { PlatformId } from "@cadence/protocol";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
 import { makePlaceholderAdapter, providerRoutes } from "./adapters/placeholders.js";
@@ -26,12 +27,37 @@ import { LibraryScanner } from "./library/scanner.js";
 import { LibraryService, chokidarWatcherFactory } from "./library/library-service.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { registerMediaKeys } from "./media-keys.js";
+import { wireCloseToTray } from "./quit-guard.js";
 
 /**
  * Composition root: parse environment, construct adapters + services, wire
  * the coordinator, open the main window. All domain/policy logic lives in
  * the modules; this file only wires concrete pieces together.
  */
+
+// --- environment (must run before app is ready) -------------------------------
+// CADENCE_USER_DATA: pin the profile dir (e2e reuses a signed-in profile).
+if (process.env.CADENCE_USER_DATA) {
+  app.setPath("userData", process.env.CADENCE_USER_DATA);
+}
+// CADENCE_E2E_CDP_PORT: expose Chrome DevTools Protocol for headless driving.
+// Dev-only surface — never in packaged builds (a local process could drive a
+// signed-in provider session through it).
+if (process.env.CADENCE_E2E_CDP_PORT && !app.isPackaged) {
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.CADENCE_E2E_CDP_PORT);
+}
+// CADENCE_DISABLE_SANDBOX=1: boxes without kernel user-namespace support
+// cannot start the Chromium sandbox at all. --no-zygote is then required on
+// Linux (zygote-based child spawn fails); Chromium rejects it with sandbox on.
+const sandboxDisabled =
+  process.env.CADENCE_DISABLE_SANDBOX === "1" || process.env.ELECTRON_DISABLE_SANDBOX === "1";
+if (sandboxDisabled) {
+  app.commandLine.appendSwitch("no-sandbox");
+  if (process.platform === "linux") {
+    app.commandLine.appendSwitch("no-zygote");
+  }
+}
+app.setName("cadence");
 
 // apps/desktop -> repo root (CADENCE_AUDIO_BIN overrides the binary path in
 // packaged builds where this layout no longer applies).
@@ -166,9 +192,6 @@ async function main(): Promise<void> {
   const registered = new Set(["local"]);
   for (const adapter of createProviderAdapters({
     graph: audioClient,
-    apple: {
-      getDeveloperToken: async () => process.env.CADENCE_APPLE_DEVELOPER_TOKEN ?? null,
-    },
     spotify: {
       getCredentials: async () => {
         const username = process.env.CADENCE_SPOTIFY_USERNAME;
@@ -259,21 +282,49 @@ async function main(): Promise<void> {
       await adapter.signIn();
     },
     routeSignOut: async (route) => {
-      await registry.get(route)?.signOut?.();
+      // Signing out of the ACTIVE provider drops the platform back to local.
+      const platform: PlatformId = route.startsWith("spotify")
+        ? "spotify"
+        : route.startsWith("apple")
+          ? "apple"
+          : route.startsWith("youtube")
+            ? "youtube"
+            : "local";
+      const active = (store.loadSection("platform") as { active?: string })?.active;
+      if (active === platform) {
+        store.saveSection("platform", { active: "local" });
+      }
+    },
+    platform: {
+      // One streaming platform at a time; "local" means none is active.
+      // Persisted in the same settings document as playback/library state.
+      active: async (): Promise<PlatformId> => {
+        const section = store.loadSection("platform");
+        const active =
+          typeof section === "object" && section !== null
+            ? (section as { active?: unknown }).active
+            : undefined;
+        return active === "apple" || active === "spotify" || active === "youtube"
+          ? active
+          : "local";
+      },
+      setActive: async (platform) => {
+        store.saveSection("platform", { active: platform });
+      },
     },
   });
   const unregisterKeys = registerMediaKeys(coordinator);
 
   // Close-to-tray: the window hides, playback continues — per the v3 design
   // provider playback must survive the main window closing. Explicit Quit
-  // only from the tray menu (or app.quit() paths like single-instance).
-  let quitting = false;
+  // only from the tray menu (or app.quit() paths like single-instance);
+  // before-quit arms the guard so programmatic quit paths can still close.
   let tray: Tray | null = null;
   const win = createWindow();
-  win.on("close", (e) => {
-    if (quitting) return;
-    e.preventDefault();
-    win.hide();
+  const { requestQuit } = wireCloseToTray({
+    onBeforeQuit: (cb) => app.on("before-quit", cb),
+    onWindowClose: (cb) => win.on("close", cb),
+    hideWindow: () => win.hide(),
   });
 
   // 16x16 dark rounded-square with a C — enough for a tray icon.
@@ -288,8 +339,10 @@ async function main(): Promise<void> {
       { type: "separator" },
       {
         label: "Quit",
+        // requestQuit() is belt-and-braces: before-quit already arms the
+        // guard, but arming here covers any quit path that bypasses it.
         click: () => {
-          quitting = true;
+          requestQuit();
           app.quit();
         },
       },

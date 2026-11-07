@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { TrackRef } from '@cadence/protocol';
 import { artistsLine } from '../format';
 import { useUi } from '../hooks';
-import { session } from '../app';
+import { api, session } from '../app';
 import { DownIcon, MuteIcon, NoteIcon, VolumeIcon } from '../icons';
 import { PixiBackground } from '../visuals/PixiBackground';
 import { Lyrics } from './Lyrics';
@@ -9,8 +10,32 @@ import { SeekBar } from './SeekBar';
 import { Transport } from './Transport';
 import '../nowplaying-full.css';
 
+/** Provider tracks carry no lyrics on the TrackRef — fetch on demand. */
+function useTrackLyrics(track: TrackRef | undefined): string | undefined {
+  const [lyrics, setLyrics] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    setLyrics(undefined);
+    if (!track || track.lyrics || !api.catalog) return;
+    if (track.source.kind !== 'provider' || !track.source.providerItemId) return;
+    // Library items carry their catalog twin for lookups keyed by catalog id.
+    const id = track.source.catalogId ?? track.source.providerItemId;
+    api.catalog
+      .query(track.route, { kind: 'lyrics', songId: id })
+      .then((page) => {
+        if (live && page.lyrics) setLyrics(page.lyrics);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [track]);
+  return track?.lyrics ?? lyrics;
+}
+
 export function NowPlayingFull({ onClose }: { onClose: () => void }) {
   const track = useUi((s) => s.snapshot.current?.track);
+  const trackLyrics = useTrackLyrics(track);
   const palette = useUi((s) => s.palette);
   const queueOpen = useUi((s) => s.queueOpen);
   const muted = useUi((s) => s.snapshot.muted === true);
@@ -81,7 +106,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
       <PixiBackground palette={palette} />
       <div className="full-wash" />
       <header className="full-header">
-        <button ref={closeRef} className="full-close" onClick={onClose} aria-label="Close full screen now playing"><DownIcon size={24} /></button>
+        <button ref={closeRef} className="full-close" onClick={onClose} aria-label="Close full screen"><DownIcon size={24} /></button>
         <span>NOW PLAYING</span><span className="full-brand">CADENCE</span>
       </header>
       <main className="full-content">
@@ -89,7 +114,7 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
           <div className="full-art">{track.artwork ? <img src={track.artwork.url} alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={72} />}</div>
           <div className="full-meta"><h1>{track.title}</h1><p>{artistsLine(track.artists)}{track.album && <><span> · </span>{track.album}</>}</p></div>
         </div>
-        <div className="full-lyrics-card"><div className="full-lyrics-label">LYRICS <span>{track.lyrics && /\[\d+:\d{2}/.test(track.lyrics) ? 'SYNCED' : ''}</span></div><Lyrics raw={track.lyrics} /></div>
+        <div className="full-lyrics-card"><div className="full-lyrics-label">LYRICS <span>{trackLyrics && /\[\d+:\d{2}/.test(trackLyrics) ? 'SYNCED' : ''}</span></div><Lyrics raw={trackLyrics} /></div>
       </main>
       <div className="full-controls">
         <SeekBar />

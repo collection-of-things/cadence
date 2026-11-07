@@ -312,3 +312,26 @@
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .sidebar *, .cadence-topbar *, .chrome-button { transition-duration: 0.001ms !important; }
 }
+
+.sidebar-divider {
+  height: 1px;
+  margin: 8px 10px;
+  background: var(--shell-hairline, rgba(255, 255, 255, 0.08));
+}
+
+.sidebar-signin {
+  display: block;
+  margin: 8px 10px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--shell-accent, #ff7a59);
+  color: #14100e;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: center;
+}
+.sidebar-signin:hover { filter: brightness(1.08); }
+.sidebar-signin-icon { display: grid; place-items: center; }

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# cadence-verify — entry shim. Usage:
+#   .agents/skills/verify-cadence/helpers/cadence-verify <command> [args]
+# See .agents/skills/verify-cadence/SKILL.md for the full contract.
+set -euo pipefail
+exec node "$(dirname "$0")/src/cli.mjs" "$@"

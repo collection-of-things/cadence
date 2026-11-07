@@ -10,7 +10,7 @@
     "test": "vitest run",
     "dev": "pnpm build && electron .",
     "start": "electron .",
-    "electron:ecs": "pnpm pkg set devDependencies.electron=github:castlabs/electron-releases#v44.10.0+wvcus && pnpm install",
+    "electron:ecs": "echo \"ECS is the default electron dependency on this branch\"",
     "dist": "pnpm build && bash ../../scripts/package-assets.sh && electron-builder --config electron-builder.yml",
     "dist:dir": "pnpm build && bash ../../scripts/package-assets.sh && electron-builder --dir --config electron-builder.yml",
     "package:assets": "bash ../../scripts/package-assets.sh"
@@ -25,13 +25,15 @@
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
-    "electron": "45.1.0",
+    "@types/ws": "8.18.2",
+    "electron": "github:castlabs/electron-releases#v45.2.1+wvcus",
     "electron-builder": "^26.0.0",
     "fast-check": "4.10.2",
     "tla-ts": "0.0.8",
     "tsup": "9.0.0",
     "typescript": "^5.9.3",
     "vite": "8.3.5",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "ws": "8.22.1"
   }
 }

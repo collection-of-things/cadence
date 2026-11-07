@@ -1,9 +1,14 @@
 import type {
   ActiveOutput,
   CadenceApi,
+  CatalogContainer,
+  CatalogEntry,
+  CatalogPage,
+  CatalogRequest,
   CoordinatorEvent,
   LibraryAlbum,
   LibraryQuery,
+  PlatformId,
   PlaybackCommand,
   PlaybackSnapshot,
   QueueItem,
@@ -36,6 +41,7 @@ export class MockCadenceApi implements CadenceApi {
   private scanListeners = new Set<(p: ScanProgress) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private generation = 1;
+  private activePlatform: PlatformId = 'local';
   private fftPhase = 0;
   private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Last EQ band set applied via audio.setEq (inspectable in tests). */
@@ -509,6 +515,195 @@ export class MockCadenceApi implements CadenceApi {
           availability: 'available',
         }),
       );
+    },
+  };
+
+  platform = {
+    active: async () => this.activePlatform,
+    setActive: async (platform: PlatformId) => {
+      this.activePlatform = platform;
+    },
+  };
+
+  /**
+   * Mock catalog: real CatalogPage structure built from the mock library.
+   * Apple Music requires sign-in (matching the real adapter's auth gate);
+   * other routes reject so "unavailable" stays exercised.
+   */
+  catalog = {
+    query: async (route: RouteId, request: CatalogRequest): Promise<CatalogPage> => {
+      await new Promise((r) => setTimeout(r, 120));
+      if (route !== 'apple-musickit') {
+        throw new Error(`catalog is not available for route "${route}"`);
+      }
+      const cap = this.routeCaps(route);
+      if (cap && cap.state !== 'ready') {
+        throw new Error('Apple Music is not signed in — sign in to browse the catalog.');
+      }
+      const appleTracks = this.tracks.filter((t) => t.route === 'apple-musickit');
+      const appleAlbums = this.albums
+        .filter((a) => appleTracks.some((t) => t.album === a.title))
+        .map((a): CatalogContainer => ({
+          kind: 'album',
+          id: `mock-album-${a.id}`,
+          route,
+          provider: 'apple',
+          title: a.title,
+          ...(a.artwork ? { artwork: a.artwork } : {}),
+          itemCount: a.trackCount,
+          ...(a.year !== undefined ? { year: a.year } : {}),
+          ...(a.artist ? { subtitle: a.artist } : {}),
+        }));
+      const songEntries = (list: TrackRef[]): CatalogEntry[] =>
+        list.map((track) => ({ kind: 'song', track }));
+      const albumEntries = appleAlbums.map((album): CatalogEntry => ({ kind: 'album', album }));
+
+      switch (request.kind) {
+        case 'search': {
+          const q = request.text.toLowerCase();
+          const songs = appleTracks.filter(
+            (t) => t.title.toLowerCase().includes(q) || t.artists.some((a) => a.name.toLowerCase().includes(q)),
+          );
+          const albums = appleAlbums.filter((a) => a.title.toLowerCase().includes(q));
+          return {
+            title: `Search: ${request.text}`,
+            sections: [
+              { id: 'search-songs', title: 'Songs', entries: songEntries(songs) },
+              {
+                id: 'search-albums',
+                title: 'Albums',
+                entries: albums.map((album): CatalogEntry => ({ kind: 'album', album })),
+              },
+              {
+                id: 'search-stations',
+                title: 'Radio stations',
+                entries: [
+                  {
+                    kind: 'station',
+                    station: { kind: 'station', id: 'ra.985484166', route, provider: 'apple', name: 'Apple Music 1' },
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        case 'home':
+          return {
+            title: 'Listen Now',
+            sections: [
+              { id: 'recently-played', title: 'Recently Played', entries: albumEntries },
+              { id: 'for-you', title: 'Made For You', entries: albumEntries.slice().reverse() },
+              { id: 'top-songs', title: 'Your Top Songs', entries: songEntries(appleTracks.slice(0, 8)) },
+            ],
+          };
+        case 'browse':
+          return {
+            title: 'Browse',
+            sections: [
+              { id: 'new-music', title: 'New Music', entries: albumEntries },
+              { id: 'chart-songs', title: 'Top Songs', entries: songEntries(appleTracks.slice(0, 10)) },
+              {
+                id: 'stations',
+                title: 'Radio',
+                entries: [
+                  {
+                    kind: 'station',
+                    station: { kind: 'station', id: 'ra.985484166', route, provider: 'apple', name: 'Apple Music 1' },
+                  },
+                ],
+              },
+            ],
+          };
+        case 'radio':
+          return {
+            title: 'Radio',
+            sections: [
+              {
+                id: 'stations',
+                title: 'Stations',
+                entries: [
+                  {
+                    kind: 'station',
+                    station: { kind: 'station', id: 'ra.985484166', route, provider: 'apple', name: 'Apple Music 1' },
+                  },
+                  {
+                    kind: 'station',
+                    station: { kind: 'station', id: 'ra.mock-hits', route, provider: 'apple', name: 'Cadence Radio' },
+                  },
+                ],
+              },
+            ],
+          };
+        case 'album':
+        case 'playlist':
+        case 'libraryDetail': {
+          const title = appleAlbums[0]?.title ?? 'Mock Album';
+          const tracks = appleTracks.filter((t) => t.album === title).length
+            ? appleTracks.filter((t) => t.album === title)
+            : appleTracks;
+          return {
+            title,
+            ...(appleAlbums[0]?.subtitle ? { subtitle: appleAlbums[0].subtitle } : {}),
+            ...(appleAlbums[0]?.artwork ? { artwork: appleAlbums[0].artwork } : {}),
+            sections: [{ id: 'tracks', title: 'Tracks', entries: songEntries(tracks) }],
+          };
+        }
+        case 'artist': {
+          const name = 'Fjordline';
+          return {
+            title: name,
+            sections: [
+              { id: 'artist-top-songs', title: 'Top Songs', entries: songEntries(appleTracks.slice(0, 6)) },
+              { id: 'artist-top-albums', title: 'Top Albums', entries: albumEntries },
+            ],
+          };
+        }
+        case 'library': {
+          const offset = request.offset ?? 0;
+          const slice = appleTracks.slice(offset, offset + (request.limit ?? 25));
+          if (request.collection === 'songs') {
+            return {
+              title: 'Library — Songs',
+              sections: [{ id: 'library-songs', title: 'Songs', entries: songEntries(slice) }],
+              ...(offset + slice.length < appleTracks.length ? { nextOffset: offset + slice.length } : {}),
+            };
+          }
+          if (request.collection === 'albums') {
+            return { title: 'Library — Albums', sections: [{ id: 'library-albums', title: 'Albums', entries: albumEntries }] };
+          }
+          if (request.collection === 'artists') {
+            return {
+              title: 'Library — Artists',
+              sections: [
+                {
+                  id: 'library-artists',
+                  title: 'Artists',
+                  entries: [{ kind: 'artist', artist: { kind: 'artist', id: 'mock-artist-1', route, provider: 'apple', name: 'Fjordline' } }],
+                },
+              ],
+            };
+          }
+          return {
+            title: 'Library — Playlists',
+            sections: [
+              {
+                id: 'library-playlists',
+                title: 'Playlists',
+                entries: [
+                  {
+                    kind: 'playlist',
+                    playlist: { kind: 'playlist', id: 'pl.mock-1', route, provider: 'apple', title: 'Late Night Rotation', isLibraryItem: true },
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        case 'lyrics':
+          return { sections: [], lyrics: '[00:00.50]Signal on the wire\n[00:04.00]Numbers in the rain' };
+        case 'addToLibrary':
+          return { sections: [] };
+      }
     },
   };
 

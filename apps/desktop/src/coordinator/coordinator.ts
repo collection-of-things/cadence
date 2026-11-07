@@ -83,6 +83,9 @@ export class Coordinator {
   private chain: Promise<void> = Promise.resolve();
   /** queueId of the successor we asked the active adapter to prefetch. */
   private pendingPrefetch: string | null = null;
+  /** Playhead position the active lease started at — the physical-earliest
+   * point an 'ended' event for it could legitimately arrive. */
+  private leaseStartPositionMs = 0;
   /** Set after an engine `ended` while we wait for a self-promoted started. */
   private promotionTimer: ReturnType<typeof setTimeout> | null = null;
   /** ended events already handled, keyed `${generation}:${queueId}`. */
@@ -301,6 +304,9 @@ export class Coordinator {
         this.positionMs = positionMs;
         this.positionAtMs = this.now();
         const lease = this.lease;
+        // Re-base the stale-end baseline — a seek near the tail means a real
+        // end can legitimately arrive soon after.
+        this.leaseStartPositionMs = positionMs;
         const adapter = this.activeAdapter;
         if (lease !== null && adapter !== null) {
           await this.guarded(() => adapter.seek(lease, positionMs), "seek");
@@ -535,6 +541,7 @@ export class Coordinator {
       queueId: item.queueId,
       issuedAtMs: this.now(),
     };
+    this.leaseStartPositionMs = opts.positionMs ?? 0;
     if (adapter === undefined) {
       this.lease = lease;
       this.status = "error";
@@ -858,6 +865,25 @@ export class Coordinator {
         // fan-in across adapters sharing the graph). Ended events carry the
         // ended track's queueId — the same track ending twice under the same
         // generation is always a duplicate.
+        // Stale-boundary guard: an item cannot have physically ended before
+        // its playback position has elapsed. Provider engines fire lingering
+        // end-state events across queue transitions — suppress them by up to
+        // 10s rather than killing a fresh lease.
+        {
+          const leaseAgeMs = this.now() - this.lease.issuedAtMs;
+          const leaseItem = this.queue.items.find((it) => it.queueId === this.lease?.queueId);
+          const durMs = leaseItem?.track.durationMs ?? 0;
+          if (
+            (e.queueId ?? this.lease.queueId) === this.lease.queueId &&
+            this.lease.route !== "local" &&
+            durMs > 0 &&
+            leaseAgeMs >= 0 &&
+            leaseAgeMs < 10_000 &&
+            this.leaseStartPositionMs + leaseAgeMs < durMs - 5000
+          ) {
+            return;
+          }
+        }
         const endedKey = `${e.generationId}:${e.queueId ?? this.lease.queueId}`;
         if (this.handledEnded.has(endedKey)) return;
         this.handledEnded.add(endedKey);
@@ -920,6 +946,18 @@ export class Coordinator {
         }
         return;
       }
+      case "stopped": {
+        // Provider tore its playback down (sign-out) — drop the lease
+        // without treating it as a track end: no advance, no guard window.
+        this.clearPromotionWait();
+        this.pendingPrefetch = null;
+        this.status = "stopped";
+        this.lease = null;
+        this.activeAdapter = null;
+        this.emitSnapshot();
+        this.persistSoon();
+        return;
+      }
       case "queueChanged": {
         // Explicit reconcile of provider-owned queue truth.
         const items = parseProviderQueue(e.providerQueue, (it) => this.stampQueueId(it));
@@ -977,6 +1015,7 @@ export class Coordinator {
     const item = idx >= 0 ? this.queue.items[idx] : undefined;
     if (this.lease === null || item === undefined) return;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
+    this.leaseStartPositionMs = 0;
     if (this.queue.currentIndex !== idx) {
       this.queue = { ...this.queue, currentIndex: idx };
       this.emitQueue();
