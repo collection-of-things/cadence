@@ -7,10 +7,36 @@ import { fixtureTracks, FIXTURES, waitFor, sleep, run as shellRun, readJson, HEL
 import { TAP_NAME } from "./pipewire.mjs";
 import * as api from "./api.mjs";
 
+/** Fixture flows need the local library shell — an attached session left in
+ * Apple Music mode has no Songs/Albums/Artists sidebar rows. Switch through
+ * the UI store (window.__cadenceSession) so shell state and the persisted
+ * platform move together; the bare platform.setActive bridge would leave
+ * the store on 'apple' until reload. */
+export async function ensureLocalPlatform(ctx) {
+  // The UI store leads the bridge: setPlatform flips it synchronously while
+  // platform.setActive persists asynchronously, so an attach mid-switch can
+  // see store='apple' with bridge still 'local'.
+  const platform = await ctx.page
+    .evaluate(() =>
+      window.__cadenceSession?.store?.getState?.().platform
+      ?? window.cadence?.platform?.active?.()
+      ?? "local")
+    .catch(() => "local");
+  if (platform === "local") return;
+  ctx.ev.step("platform", `active=${platform} — switching to local`);
+  await ctx.page.evaluate(() => window.__cadenceSession?.setPlatform("local"));
+  await ctx.page.waitForFunction(
+    () => window.__cadenceSession?.store?.getState?.().platform === "local",
+    undefined,
+    { timeout: 8_000 },
+  );
+}
+
 /** Scan the checked-in fixture library; returns the indexed tracks.
  * Waits until the exact fixture FILES are indexed — a count-only pass
  * could accept stale leftovers from a previous scan. */
 export async function seedLibrary(ctx) {
+  await ensureLocalPlatform(ctx);
   ctx.ev.step("library", `scan ${FIXTURES}`);
   await api.scan(ctx.page, [FIXTURES]);
   const expected = fixtureTracks();
@@ -43,13 +69,24 @@ export async function dumpState(ctx, name) {
   return { snap, q };
 }
 
-/** Click a sidebar/topbar nav row by its label, then prove we ARRIVED —
- * when `expect` is given, that selector must become visible or this throws. */
+/** Click a sidebar nav row by its accessible label, then prove we ARRIVED —
+ * when `expect` is given, that selector must become visible or this throws.
+ * Every destination is a `.side-row` button whose aria-label is the row
+ * label (Sidebar.tsx). Pass row names — a section head like "Library" is a
+ * collapse toggle, not a destination. */
 export async function navTo(ctx, label, expect = null) {
-  const btn = ctx.page.locator(
-    `.sidebar-nav-row:has-text("${label}"), .topbar-segment:has-text("${label}")`,
-  ).first();
-  await btn.click();
+  const row = ctx.page.locator(`.side-row[aria-label="${label}"]`).first();
+  if (!(await row.isVisible().catch(() => false))) {
+    // The row can sit in a collapsed sidebar section — its rows aren't
+    // rendered until the section head is expanded.
+    // Re-query after each click: expanding a section removes its head from
+    // the selector, so a snapshotted .all() list would index past the rest.
+    const closedHeads = ctx.page.locator('.side-section-head[aria-expanded="false"]');
+    while (await closedHeads.count()) {
+      await closedHeads.first().click();
+    }
+  }
+  await row.click();
   ctx.ev.step("nav", label);
   if (expect) {
     await ctx.page.waitForSelector(expect, { timeout: 8_000 });
@@ -59,28 +96,27 @@ export async function navTo(ctx, label, expect = null) {
 }
 
 /** Play the first track of an album by opening it and clicking a row.
- *  Works from the Home shelf and from Library — Library's album cards
- *  live behind the "Albums" tab, which may not be active after other
- *  flows left the view on Tracks/Artists. */
+ *  Album cards live on Home shelves and on the Library grid behind the
+ *  sidebar's "Albums" row — which may not be active after other flows
+ *  left the view on Songs/Artists or another page. */
 export async function openAlbumByName(ctx, title) {
   const card = ctx.page.getByRole("button", { name: new RegExp(`Open ${escapeRe(title)}`) });
   if (!(await card.first().isVisible().catch(() => false))) {
-    await ctx.page.getByRole("button", { name: "Albums" }).first().click().catch(() => {});
+    await navTo(ctx, "Albums", ".lib .album-grid");
   }
   await card.first().click();
   ctx.ev.step("nav", `open album ${title}`);
-  await ctx.page.waitForSelector(".album-track-row", { timeout: 10_000 });
+  await ctx.page.waitForSelector(".album .track-row", { timeout: 10_000 });
 }
 
 export function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Click a track row by title (works in .tr-row and .album-track-row). */
+/** Click a track row by title — album and list variants are both
+ *  role=button rows named "Play <title> by <artists>" (TrackRow.tsx). */
 export async function clickTrack(ctx, title) {
-  const row = ctx.page.locator(
-    `.tr-row:has-text("${title}"), .album-track-row:has-text("${title}")`,
-  ).first();
+  const row = ctx.page.getByRole("button", { name: new RegExp(`^Play ${escapeRe(title)} by`) }).first();
   await row.click();
   ctx.ev.step("drive", `click track ${title}`);
 }

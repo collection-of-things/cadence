@@ -23,13 +23,12 @@ export async function run(ctx) {
   const withArt = tracks.filter((t) => t.artwork?.url).length;
   ev.check("artwork extracted", withArt >= 5, `${withArt}/5 tracks carry artwork`);
 
-  // user path: library tabs
-  await navTo(ctx, "Library", ".lib");
-  await page.locator('.lib-tab:has-text("Artists")').click();
+  // user path: library tabs are sidebar rows in the redesign
+  await navTo(ctx, "Artists", ".lib .artist-list");
   await shot(ctx, "artists");
-  await page.locator('.lib-tab:has-text("Tracks")').click();
+  await navTo(ctx, "Songs", ".lib .tr-scroll");
   await shot(ctx, "tracks");
-  const rows = await page.locator(".tr-row").count();
+  const rows = await page.locator(".lib .track-row").count();
   ev.check("track rows render", rows >= 5, `${rows} rows`);
 
   // text filter through the real DB query path
@@ -38,16 +37,16 @@ export async function run(ctx) {
     `${filtered.length} hit(s)`);
 
   // artist row plays that artist's first track
-  await page.locator('.lib-tab:has-text("Artists")').click();
+  await navTo(ctx, "Artists", ".lib .artist-list");
   await page.locator('.artist-row:has-text("Vector Choir")').click();
   const snap = await api.waitStatus(page, "playing");
   ev.check("artist row plays", snap.current?.track?.artists?.[0]?.name === "Vector Choir",
     `${snap.current?.track?.title}`);
 
-  // album view facts (year/genre/track count from tags)
-  await navTo(ctx, "Library", ".lib");
+  // album view facts (genre/year/track count chips from tags)
+  await navTo(ctx, "Albums", ".lib .album-grid");
   await openAlbumByName(ctx, "Signal Atlas");
-  const facts = await page.locator(".album-fact").allTextContents();
+  const facts = await page.locator(".album-chips .chip").allTextContents();
   ev.check("album facts show track count", facts.some((f) => /3 tracks/.test(f)),
     facts.join(" | "));
   await shot(ctx, "album-facts");

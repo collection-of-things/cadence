@@ -11,7 +11,7 @@ export async function run(ctx) {
   const { page, ev } = ctx;
   const tracks = await seedLibrary(ctx);
 
-  await navTo(ctx, "Library", ".lib");
+  await navTo(ctx, "Albums", ".lib .album-grid");
   await openAlbumByName(ctx, "Signal Atlas");
 
   // play the album's first track by clicking its row — the real user path
@@ -81,13 +81,15 @@ export async function run(ctx) {
     `pos=${afterSeek.positionMs}/${dur}`);
   await dumpState(ctx, "after-seek");
 
-  // queue ops: "Add next" on another album's track, then queue panel edits.
-  // Mutations propagate asynchronously — wait on the resulting state, don't
-  // read the queue in the same tick the command was sent.
+  // queue ops: "Play next" on another album's track (behind the row's
+  // "More actions" menu), then queue panel edits. Mutations propagate
+  // asynchronously — wait on the resulting state, don't read the queue in
+  // the same tick the command was sent.
   await page.getByLabel("Go back").click();
   await page.waitForSelector(".album-grid", { timeout: 8_000 });
   await openAlbumByName(ctx, "Field Notes");
-  await page.getByRole("button", { name: "Add North Field next" }).first().click();
+  await page.getByRole("button", { name: "More actions for North Field" }).first().click();
+  await page.getByRole("menuitem", { name: "Play next" }).click();
   const q1 = await waitFor(
     async () => {
       const q = await api.queue(page);
@@ -99,7 +101,7 @@ export async function run(ctx) {
   ev.check("add-next queues track", true,
     `North Field at index ${q1.currentIndex + 1} (current ${q1.currentIndex})`);
 
-  await page.getByRole("button", { name: "Toggle queue" }).first().click();
+  await page.locator(".playerbar [data-queue-toggle]").click();
   await page.waitForSelector(".queue.open", { timeout: 8_000 });
   await shot(ctx, "queue-before-jump");
   // jump directly to the queued item by clicking its row — wait for the

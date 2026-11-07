@@ -4,8 +4,9 @@ Run: `cadence-verify run playback`
 
 Row-click play, position advances, transport pause/resume, spacebar
 toggle (blur first — a focused row swallows Space), seek-bar click at
-65%, Next/Previous (waits for the title to change), "Add next" queueing
-from Field Notes, queue-panel row jump, queue remove via bridge.
+65%, Next/Previous (waits for the title to change), "Play next" queueing
+from Field Notes (row "More actions" menu), queue-panel row jump, queue
+remove via bridge.
 
 Known flake on main: the previous/next assertions can catch the
 coordinator's transition-advance defect mid-flight — the check is strict
