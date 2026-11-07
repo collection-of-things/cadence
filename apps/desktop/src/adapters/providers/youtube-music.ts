@@ -46,14 +46,14 @@ interface YtmPlayerState {
 export class YouTubeMusicAdapter extends ProviderViewAdapter {
   readonly route = "youtube-music" as const;
   private session: ProviderSession;
-  private catalog: YtmCatalogLike | null;
+  private catalogClient: YtmCatalogLike | null;
   private generation = 0;
   private signedIn: boolean | null = null;
   private destroyed = false;
 
   constructor(deps: YouTubeMusicAdapterDeps = {}) {
     super();
-    this.catalog = deps.catalog ?? null;
+    this.catalogClient = deps.catalog ?? null;
     this.session = new ProviderSession({
       partition: "persist:provider-youtube",
       url: "https://music.youtube.com",
@@ -197,11 +197,11 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   async search(text: string): Promise<TrackRef[]> {
     const query = text.trim();
     if (!query) return [];
-    this.catalog ??= new YouTubeMusicCatalog({
+    this.catalogClient ??= new YouTubeMusicCatalog({
       getCookieHeader: () => this.session.cookieHeader(),
     });
     try {
-      return await this.catalog.searchTracks(query);
+      return await this.catalogClient.searchTracks(query);
     } catch (e) {
       throw new Error(`YouTube Music search failed: ${(e as Error).message}`);
     }
