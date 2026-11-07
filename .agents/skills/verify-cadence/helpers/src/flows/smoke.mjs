@@ -24,7 +24,7 @@ export async function run(ctx) {
 
   await seedLibrary(ctx);
 
-  await navTo(ctx, "Library", ".lib");
+  await navTo(ctx, "Albums", ".lib .album-grid");
   await shot(ctx, "02-library-albums");
   await openAlbumByName(ctx, "Signal Atlas");
   await shot(ctx, "03-album");

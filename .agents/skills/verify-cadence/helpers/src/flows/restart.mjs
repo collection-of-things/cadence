@@ -27,7 +27,7 @@ export const name = "restart";
 export async function run(ctx) {
   const { page, ev } = ctx;
   await seedLibrary(ctx);
-  await navTo(ctx, "Library", ".lib");
+  await navTo(ctx, "Albums", ".lib .album-grid");
   await openAlbumByName(ctx, "Signal Atlas");
   await clickTrack(ctx, "Beacon");
   await api.waitStatus(page, "playing");

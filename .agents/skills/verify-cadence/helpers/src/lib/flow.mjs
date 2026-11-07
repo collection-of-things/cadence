@@ -43,12 +43,13 @@ export async function dumpState(ctx, name) {
   return { snap, q };
 }
 
-/** Click a sidebar/topbar nav row by its label, then prove we ARRIVED —
- * when `expect` is given, that selector must become visible or this throws. */
+/** Click a sidebar nav row by its accessible label, then prove we ARRIVED —
+ * when `expect` is given, that selector must become visible or this throws.
+ * Every destination is a `.side-row` button whose aria-label is the row
+ * label (Sidebar.tsx). Pass row names — a section head like "Library" is a
+ * collapse toggle, not a destination. */
 export async function navTo(ctx, label, expect = null) {
-  const btn = ctx.page.locator(
-    `.sidebar-nav-row:has-text("${label}"), .topbar-segment:has-text("${label}")`,
-  ).first();
+  const btn = ctx.page.locator(`.side-row[aria-label="${label}"]`).first();
   await btn.click();
   ctx.ev.step("nav", label);
   if (expect) {
@@ -59,28 +60,27 @@ export async function navTo(ctx, label, expect = null) {
 }
 
 /** Play the first track of an album by opening it and clicking a row.
- *  Works from the Home shelf and from Library — Library's album cards
- *  live behind the "Albums" tab, which may not be active after other
- *  flows left the view on Tracks/Artists. */
+ *  Album cards live on Home shelves and on the Library grid behind the
+ *  sidebar's "Albums" row — which may not be active after other flows
+ *  left the view on Songs/Artists or another page. */
 export async function openAlbumByName(ctx, title) {
   const card = ctx.page.getByRole("button", { name: new RegExp(`Open ${escapeRe(title)}`) });
   if (!(await card.first().isVisible().catch(() => false))) {
-    await ctx.page.getByRole("button", { name: "Albums" }).first().click().catch(() => {});
+    await navTo(ctx, "Albums", ".lib .album-grid");
   }
   await card.first().click();
   ctx.ev.step("nav", `open album ${title}`);
-  await ctx.page.waitForSelector(".album-track-row", { timeout: 10_000 });
+  await ctx.page.waitForSelector(".album .track-row", { timeout: 10_000 });
 }
 
 export function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Click a track row by title (works in .tr-row and .album-track-row). */
+/** Click a track row by title — album and list variants are both
+ *  role=button rows named "Play <title> by <artists>" (TrackRow.tsx). */
 export async function clickTrack(ctx, title) {
-  const row = ctx.page.locator(
-    `.tr-row:has-text("${title}"), .album-track-row:has-text("${title}")`,
-  ).first();
+  const row = ctx.page.getByRole("button", { name: new RegExp(`^Play ${escapeRe(title)} by`) }).first();
   await row.click();
   ctx.ev.step("drive", `click track ${title}`);
 }

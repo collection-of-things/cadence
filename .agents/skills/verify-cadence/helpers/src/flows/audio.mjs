@@ -22,7 +22,7 @@ export const name = "audio";
 export async function run(ctx) {
   const { page, ev } = ctx;
   await seedLibrary(ctx);
-  await navTo(ctx, "Library", ".lib");
+  await navTo(ctx, "Albums", ".lib .album-grid");
   await openAlbumByName(ctx, "Signal Atlas");
 
   const ref = fixtureForTitle("Vantage"); // 16s — enough runway for play+seek+pause
