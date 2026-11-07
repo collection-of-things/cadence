@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Tri } from '@cadence/protocol';
-import { session } from '../app';
+import { session } from '../session';
 import { useUi } from '../hooks';
 import { CloseIcon, GearIcon } from '../icons';
 import type { AudioDevice } from '../store';
@@ -207,7 +207,7 @@ export function SettingsSheet() {
     <div className="settings">
       <button
         ref={btnRef}
-        className={`icon-btn ${open ? 'on' : ''}`}
+        className={`chrome-btn ${open ? 'is-on' : ''}`}
         aria-label="Settings"
         aria-haspopup="dialog"
         aria-expanded={open}

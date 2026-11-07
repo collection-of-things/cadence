@@ -1,168 +1,169 @@
-import { session } from '../app';
-import { useEffect, useState } from 'react';
-import { SearchIcon } from '../icons';
+import { useState, type ReactNode } from 'react';
+import type { Location } from '../App';
+import { session } from '../session';
+import { useCollection } from '../collection';
 import { useUi } from '../hooks';
+import {
+  AlbumsIcon,
+  AppleIcon,
+  ArtistIcon,
+  BrowseIcon,
+  ChevronIcon,
+  FolderIcon,
+  HomeIcon,
+  RadioIcon,
+  SearchIcon,
+  SongIcon,
+  SourcesIcon,
+  StarIcon,
+} from '../icons';
 import './shell.css';
 
-export type ShellPage =
-  | 'home'
-  | 'browse'
-  | 'radio'
-  | 'search'
-  | 'library'
-  | 'localfiles'
-  | 'sources'
-  | 'now'
-  | 'album'
-  | 'playlist'
-  | 'detail'
-  | 'artist';
-
-type NavSection = 'home' | 'browse' | 'radio' | 'search' | 'library' | 'localfiles' | 'sources' | 'apple';
-
-function Glyph({ name, size = 17 }: { name: NavSection; size?: number }) {
-  const common = { stroke: 'currentColor', strokeWidth: 1.65, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      {name === 'home' && <><path d="m3.6 10.5 8.4-7 8.4 7" {...common} /><path d="M5.8 9.3v10.2h12.4V9.3M9.4 19.5v-6h5.2v6" {...common} /></>}
-      {name === 'browse' && <><circle cx="12" cy="12" r="8.4" {...common} /><path d="m15.4 8.6-2 4.8-4.8 2 2-4.8Z" {...common} /></>}
-      {name === 'radio' && <><rect x="4" y="9" width="16" height="10" rx="2" {...common} /><path d="m5.4 9 11-4.4M9 14.6h.01M12 14.6h6M9 17h.01M12 17h6" {...common} /></>}
-      {name === 'search' && <><circle cx="11" cy="11" r="6.4" {...common} /><path d="m16 16 4.4 4.4" {...common} /></>}
-      {name === 'library' && <><path d="M4 5.2h16M4 9.8h16M4 14.4h10" {...common} /><path d="M4 19h8" {...common} /><circle cx="18" cy="17.6" r="2.8" {...common} /></>}
-      {name === 'localfiles' && <><path d="M4 7.2 8.4 5h7.2l4.4 2.2v10.4a1.4 1.4 0 0 1-1.4 1.4H5.4A1.4 1.4 0 0 1 4 17.6Z" {...common} /><path d="M4 9.8h16M9.4 14.4v3.4a1.8 1.8 0 1 1-1.4-1.75M15 13v3.4a1.8 1.8 0 1 1-1.4-1.75" {...common} /></>}
-      {name === 'sources' && <><path d="M5 8.2h14a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7.6a2 2 0 0 1 2-2Z" {...common} /><path d="M8 8.2V6.6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1.6M12 12v4" {...common} /></>}
-      {name === 'apple' && <><path d="M15.8 5.2c-.8.9-2 1.5-3.1 1.5-.2-1.2.4-2.4 1.2-3.1.8-.8 2.1-1.4 3.1-1.4.1 1.2-.4 2.2-1.2 3ZM12.7 8.2c.9 0 1.9.7 2.4.7s1.6-.8 3-.8c1.3 0 2.4.7 3.1 1.9-1.4.8-2.1 2-2.1 3.3 0 1.8 1.1 3 2.4 3.4-.2.5-.4 1-.7 1.5-.8 1.3-1.8 2.6-3.1 2.6-.9 0-1.2-.6-2.4-.6s-1.6.6-2.4.6c-1.3 0-2.3-1.4-3.1-2.7C8.6 16.4 7.7 14 7.7 11.9c0-3 1.9-4.5 3.7-4.5Z" {...common} /></>}
-    </svg>
-  );
-}
-
 interface SidebarProps {
-  activePage: ShellPage;
+  location: Location;
   collapsed: boolean;
-  onNavigate(page: Exclude<ShellPage, 'album' | 'playlist' | 'detail' | 'artist'>): void;
+  onNavigate(next: Location): void;
 }
 
-export function Sidebar({ activePage, collapsed, onNavigate }: SidebarProps) {
+type SectionId = 'cadence' | 'library' | 'pins' | 'playlists';
+
+/** Left navigation: search, collapsible sections, pins and playlists. */
+export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
+  const pins = useCollection((s) => s.pins);
+  const favoriteCount = useCollection((s) => s.favorites.length);
   const platform = useUi((s) => s.platform);
   const capabilities = useUi((s) => s.capabilities);
+  const [closed, setClosed] = useState<Record<SectionId, boolean>>({ cadence: false, library: false, pins: false, playlists: false });
+  const isApple = platform === 'apple';
   const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
-  const needsAppleSignIn = platform === 'apple' && appleCap !== undefined && appleCap.state !== 'ready';
-  const [compact, setCompact] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 690px)').matches);
+  const needsAppleSignIn = isApple && appleCap !== undefined && appleCap.state !== 'ready';
 
-  useEffect(() => {
-    const media = window.matchMedia('(max-width: 690px)');
-    const update = () => setCompact(media.matches);
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
+  const row = (key: string, label: string, icon: ReactNode, active: boolean, go: () => void, trailing?: ReactNode) => (
+    <button
+      key={key}
+      className={`side-row ${active ? 'is-active' : ''}`}
+      aria-current={active ? 'page' : undefined}
+      title={label}
+      aria-label={label}
+      onClick={go}
+    >
+      <span className="side-row-icon">{icon}</span>
+      <span className="side-row-label">{label}</span>
+      {trailing}
+    </button>
+  );
 
-  const navRow = (target: Exclude<ShellPage, 'album' | 'playlist' | 'detail' | 'artist'>, label: string, icon: NavSection) => {
-    const isActive = activePage === target;
-    return (
+  const section = (id: SectionId, title: string, children: ReactNode) => (
+    <section className="side-section" aria-label={title}>
       <button
-        key={target}
-        className={`sidebar-nav-row ${isActive ? 'is-active' : ''}`}
-        aria-current={isActive ? 'page' : undefined}
-        title={collapsed ? label : undefined}
-        onClick={() => onNavigate(target)}
+        className="side-section-head"
+        aria-expanded={!closed[id]}
+        onClick={() => setClosed((c) => ({ ...c, [id]: !c[id] }))}
       >
-        <span className="sidebar-row-icon"><Glyph name={icon} size={16} /></span>
-        {!collapsed && <span className="sidebar-row-label">{label}</span>}
+        <span>{title}</span>
+        <span className={`side-chevron ${closed[id] ? 'is-closed' : ''}`}><ChevronIcon size={15} /></span>
       </button>
-    );
+      {(!closed[id] || collapsed) && <div className="side-section-rows">{children}</div>}
+    </section>
+  );
+
+  const isLib = (tab: string) => location.page === 'library' && location.tab === tab;
+  const openSearch = (query: string) => {
+    if (isApple) {
+      onNavigate({ page: 'search' });
+      setTimeout(() => document.querySelector<HTMLInputElement>('.catalog-search-field input')?.focus(), 60);
+      return;
+    }
+    session.setLibraryQuery(query);
+    onNavigate({ page: 'library', tab: 'songs' });
   };
 
-  const searchTarget = platform === 'local' ? 'library' : 'search';
+  const switchPlatform = (next: 'local' | 'apple') => {
+    session.setPlatform(next);
+    onNavigate({ page: 'home' });
+  };
 
   return (
-    <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Main sidebar">
-      <div className="sidebar-brand">
-        <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
-        {!collapsed && <span className="sidebar-brand-name">cadence</span>}
+    <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Sidebar">
+      <div className="side-brand" aria-label="Cadence">
+        <img src={`${import.meta.env.BASE_URL}brand/mark.svg`} width="36" height="36" alt="" />
+        <span className="side-brand-name">cadence</span>
       </div>
-
-      <label className="sidebar-search">
-        <SearchIcon size={16} />
-        {!collapsed && <input aria-label="Search Cadence" placeholder={platform === 'apple' ? 'Search Apple Music' : 'Search your music'} onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            session.setLibraryQuery(event.currentTarget.value.trim());
-            onNavigate(searchTarget);
-          }
-        }} />}
-        {collapsed && <span className="sidebar-search-tooltip">Search</span>}
-        {(collapsed || compact) && (
-          <button
-            className="sidebar-compact-search-hit"
-            aria-label="Search your music"
-            onClick={() => {
-              session.setLibraryQuery('');
-              onNavigate(searchTarget);
-              setTimeout(() => (document.querySelector<HTMLElement>('.lib-search input') ?? document.querySelector<HTMLElement>('.lib-bar input') ?? document.querySelector<HTMLElement>('.catalog-search-field input'))?.focus(), 60);
+      <div className="side-search">
+        <button className="side-search-btn" aria-label="Search" title="Search" onClick={() => {
+          openSearch('');
+          setTimeout(() => document.querySelector<HTMLInputElement>('.lib-search input')?.focus(), 60);
+        }}>
+          <SearchIcon size={18} />
+        </button>
+        <label className="side-search-field">
+          <input
+            aria-label={isApple ? 'Search Apple Music' : 'Search your music'}
+            placeholder="Search"
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              openSearch(event.currentTarget.value.trim());
+              event.currentTarget.value = '';
             }}
           />
-        )}
-      </label>
+          <SearchIcon size={16} />
+        </label>
+      </div>
 
-      <nav className="sidebar-nav" aria-label="Library navigation">
-        {platform === 'apple' ? (
+      <nav className="side-scroll" aria-label="Main navigation">
+        {section('cadence', 'Cadence', isApple ? (
           <>
-            {navRow('home', 'Listen Now', 'home')}
-            {navRow('browse', 'Browse', 'browse')}
-            {navRow('radio', 'Radio', 'radio')}
-            {navRow('search', 'Search', 'search')}
-            {navRow('library', 'Library', 'library')}
-            <div className="sidebar-divider" aria-hidden="true" />
-            {navRow('localfiles', 'Local Files', 'localfiles')}
-            {navRow('sources', 'Sources', 'sources')}
-            <button
-              className="sidebar-nav-row sidebar-platform-switch"
-              title={collapsed ? 'Back to local music' : undefined}
-              onClick={() => {
-                session.setPlatform('local');
-                onNavigate('home');
-              }}
-            >
-              <span className="sidebar-row-icon"><Glyph name="library" size={16} /></span>
-              {!collapsed && <span className="sidebar-row-label">My Music</span>}
-            </button>
+            {row('home', 'Listen Now', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
+            {row('browse', 'Browse', <BrowseIcon size={19} />, location.page === 'browse', () => onNavigate({ page: 'browse' }))}
+            {row('radio', 'Radio', <RadioIcon size={19} />, location.page === 'radio', () => onNavigate({ page: 'radio' }))}
+            {row('search', 'Search', <SearchIcon size={19} />, location.page === 'search', () => onNavigate({ page: 'search' }))}
           </>
         ) : (
           <>
-            {navRow('home', 'Home', 'home')}
-            {navRow('library', 'Library', 'library')}
-            {navRow('sources', 'Sources', 'sources')}
-            <div className="sidebar-divider" aria-hidden="true" />
-            <button
-              className="sidebar-nav-row sidebar-platform-switch"
-              title={collapsed ? 'Apple Music' : undefined}
-              onClick={() => {
-                session.setPlatform('apple');
-                onNavigate('home');
-              }}
-            >
-              <span className="sidebar-row-icon"><Glyph name="apple" size={16} /></span>
-              {!collapsed && <span className="sidebar-row-label">Apple Music</span>}
-            </button>
+            {row('home', 'Home', <HomeIcon size={19} />, location.page === 'home', () => onNavigate({ page: 'home' }))}
+            {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
           </>
-        )}
-      </nav>
+        ))}
+        {section('library', 'Library', isApple ? (
+          <>
+            {row('library', 'Apple Library', <AlbumsIcon size={19} />, location.page === 'library', () => onNavigate({ page: 'library', tab: 'albums' }))}
+            {row('localfiles', 'Local Files', <FolderIcon size={19} />, location.page === 'localfiles', () => onNavigate({ page: 'localfiles' }))}
+            {row('sources', 'Sources', <SourcesIcon size={19} />, location.page === 'sources', () => onNavigate({ page: 'sources' }))}
+          </>
+        ) : (
+          <>
+            {row('songs', 'Songs', <SongIcon size={19} />, isLib('songs'), () => onNavigate({ page: 'library', tab: 'songs' }))}
+            {row('albums', 'Albums', <AlbumsIcon size={19} />, isLib('albums'), () => onNavigate({ page: 'library', tab: 'albums' }))}
+            {row('artists', 'Artists', <ArtistIcon size={19} />, isLib('artists'), () => onNavigate({ page: 'library', tab: 'artists' }))}
+          </>
+        ))}
+        {pins.length > 0 && section('pins', 'Pins', pins.map((album) =>
+          row(
+            album.id,
+            album.title,
+            album.artwork ? <img className="side-thumb" src={album.artwork.url} alt="" /> : <AlbumsIcon size={19} />,
+            location.page === 'album' && location.album.id === album.id,
+            () => onNavigate({ page: 'album', album }),
+          ),
+        ))}
+        {section('playlists', 'Playlists', <>
+          {row(
+            'favorites',
+            'Favourite Songs',
+            <StarIcon size={19} />,
+            location.page === 'favorites',
+            () => onNavigate({ page: 'favorites' }),
+            favoriteCount > 0 && !collapsed ? <span className="side-count">{favoriteCount}</span> : undefined,
+          )}
+        </>)}
 
-      {needsAppleSignIn && !collapsed && (
-        <button className="sidebar-signin" onClick={() => session.signInRoute('apple-musickit')}>
-          Sign in to Apple Music
-        </button>
-      )}
-      {needsAppleSignIn && collapsed && (
-        <button className="sidebar-signin sidebar-signin-icon" aria-label="Sign in to Apple Music" title="Sign in to Apple Music" onClick={() => session.signInRoute('apple-musickit')}>
-          <Glyph name="apple" size={16} />
-        </button>
-      )}
-      {!collapsed && (
-        <div className="sidebar-footer">
-          <span className="sidebar-live-dot" />
-          <span>{platform === 'apple' ? 'Apple Music' : 'Music, in one place'}</span>
-        </div>
-      )}
+        <div className="sidebar-divider" aria-hidden="true" />
+        {isApple
+          ? row('my-music', 'My Music', <FolderIcon size={19} />, false, () => switchPlatform('local'))
+          : row('apple-music', 'Apple Music', <AppleIcon size={19} />, false, () => switchPlatform('apple'))}
+        {needsAppleSignIn &&
+          row('apple-signin', 'Sign in to Apple Music', <AppleIcon size={19} />, false, () => session.signInRoute('apple-musickit'))}
+      </nav>
     </aside>
   );
 }

@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
-import { api, session } from '../app';
+import { api, session } from '../session';
 import { formatTime } from '../format';
 import { useUi } from '../hooks';
-import { FolderIcon, NoteIcon, PlusIcon, SearchIcon } from '../icons';
-import { providerForRoute, RouteBadge } from './RouteBadge';
+import { FolderIcon, NoteIcon, SearchIcon } from '../icons';
+import { TrackRow } from './TrackRow';
 
-type Tab = 'albums' | 'artists' | 'tracks';
+export type LibraryTab = 'albums' | 'artists' | 'songs';
+const TITLES: Record<LibraryTab, string> = { albums: 'Albums', artists: 'Artists', songs: 'Songs' };
 
 function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(album: LibraryAlbum): void }) {
   const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
@@ -26,8 +27,8 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
 
   return (
     <div className="album-grid">
-      {albums.map((a) => (
-        <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+      {albums.map((a, i) => (
+        <button key={a.id} className="album-card" style={{ '--i': i } as CSSProperties} onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
           {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
           <span className="album-title">{a.title}</span>
           <span className="album-artist">
@@ -75,36 +76,6 @@ function ArtistsList({ query }: { query: string }) {
   );
 }
 
-function TrackRow({ track, index, onPlay }: { track: TrackRef; index: number; onPlay: () => void }) {
-  return (
-    <div
-      className="tr-row"
-      tabIndex={0}
-      onClick={onPlay}
-      onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onPlay(); }}
-    >
-      <span className="tr-num">{index + 1}</span>
-      {track.artwork ? <img className="tr-art" src={track.artwork.url} alt="" loading="lazy" /> : <span className="tr-art" />}
-      <span className="tr-title">{track.title}</span>
-      <span className="tr-artist">{track.artists.map((a) => a.name).join(', ')}</span>
-      <span className="tr-album">{track.album ?? ''}</span>
-      <RouteBadge provider={providerForRoute(track.route)} title={track.route} />
-      <span className="tr-time">{formatTime(track.durationMs)}</span>
-      <button
-        className="icon-btn tr-next"
-        aria-label={`Play ${track.title} next`}
-        title="Play next"
-        onClick={(e) => {
-          e.stopPropagation();
-          session.insertNext(track);
-        }}
-      >
-        <PlusIcon size={15} />
-      </button>
-    </div>
-  );
-}
-
 function TracksTable({ query }: { query: string }) {
   const [tracks, setTracks] = useState<TrackRef[] | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -123,7 +94,7 @@ function TracksTable({ query }: { query: string }) {
   const virtualizer = useVirtualizer({
     count: list.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 46,
+    estimateSize: () => 56,
     overscan: 12,
   });
 
@@ -132,22 +103,21 @@ function TracksTable({ query }: { query: string }) {
 
   return (
     <div className="tr-scroll" ref={scrollRef}>
-      <div className="tr-head">
-        <span className="tr-num">#</span>
-        <span className="tr-art" />
-        <span className="tr-title">Title</span>
-        <span className="tr-artist">Artist</span>
-        <span className="tr-album">Album</span>
+      <div className="track-head" aria-hidden="true">
+        <span>#</span>
         <span />
-        <span className="tr-time">Time</span>
+        <span>Title</span>
+        <span>Artist</span>
+        <span>Album</span>
+        <span>Time</span>
         <span />
       </div>
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualizer.getVirtualItems().map((vi) => {
           const track = list[vi.index]!;
           return (
-            <div key={track.id} className="tr-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
-              <TrackRow track={track} index={vi.index} onPlay={() => session.playTracks(list, vi.index, { kind: 'manual' })} />
+            <div key={track.id} className={`tr-row-wrap ${vi.index % 2 === 0 ? 'is-odd' : ''}`} style={{ transform: `translateY(${vi.start}px)` }}>
+              <TrackRow track={track} index={vi.index} variant="list" onPlay={() => session.playTracks(list, vi.index, { kind: 'manual' })} />
             </div>
           );
         })}
@@ -156,8 +126,8 @@ function TracksTable({ query }: { query: string }) {
   );
 }
 
-export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlbum): void }) {
-  const [tab, setTab] = useState<Tab>('albums');
+/** Library pages (Albums / Artists / Songs); the sidebar picks the tab. */
+export function LibraryView({ tab, onTab, onSelectAlbum }: { tab: LibraryTab; onTab(tab: LibraryTab): void; onSelectAlbum(album: LibraryAlbum): void }) {
   const storeQuery = useUi((s) => s.libraryQuery);
   const [text, setText] = useState(storeQuery);
   const [query, setQuery] = useState(storeQuery);
@@ -185,7 +155,7 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
       if (!text.trim()) jumpedRef.current = false;
       else if (!jumpedRef.current) {
         jumpedRef.current = true;
-        setTab('tracks');
+        if (tab !== 'songs') onTab('songs');
       }
     }, 250);
     return () => clearTimeout(t);
@@ -216,17 +186,10 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
   return (
     <div className="lib">
       <header className="lib-head">
-        <h1>Library</h1>
-        {counts && <span className="lib-count">{counts.albums} albums · {counts.tracks} tracks</span>}
+        <h1>{TITLES[tab]}</h1>
+        {counts && <span className="lib-count">{counts.albums} albums · {counts.tracks} songs</span>}
       </header>
       <div className="lib-bar">
-        <nav className="lib-tabs" aria-label="Library sections">
-          {(['albums', 'artists', 'tracks'] as const).map((t) => (
-            <button key={t} className={`lib-tab ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
-              {t[0]!.toUpperCase() + t.slice(1)}
-            </button>
-          ))}
-        </nav>
         <div className="lib-search">
           <SearchIcon size={16} />
           <input
@@ -269,7 +232,7 @@ export function LibraryView({ onSelectAlbum }: { onSelectAlbum(album: LibraryAlb
       <div className="lib-body">
         {tab === 'albums' && <AlbumsGrid query={query} onSelectAlbum={onSelectAlbum} />}
         {tab === 'artists' && <ArtistsList query={query} />}
-        {tab === 'tracks' && <TracksTable query={query} />}
+        {tab === 'songs' && <TracksTable query={query} />}
       </div>
     </div>
   );

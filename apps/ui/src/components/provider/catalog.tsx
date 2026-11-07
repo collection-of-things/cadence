@@ -19,7 +19,7 @@ import type {
   TrackRef,
 } from '@cadence/protocol';
 import { stationToTrack } from '@cadence/protocol';
-import { api, session } from '../../app';
+import { api, session } from '../../session';
 import { artistsLine, formatTime } from '../../format';
 import { useUi } from '../../hooks';
 import { NoteIcon, PlayIcon, PlusIcon } from '../../icons';

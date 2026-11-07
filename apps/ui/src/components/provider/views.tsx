@@ -13,7 +13,7 @@ import type {
   TrackRef,
 } from '@cadence/protocol';
 import { stationToTrack } from '@cadence/protocol';
-import { api, session } from '../../app';
+import { api, session } from '../../session';
 import { formatTime } from '../../format';
 import { useUi } from '../../hooks';
 import { NoteIcon, PlayIcon, PlusIcon, SearchIcon, ShuffleIcon } from '../../icons';

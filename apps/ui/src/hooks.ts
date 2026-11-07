@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from 'zustand/react';
-import { session } from './app';
+import { session } from './session';
 import type { UiState } from './store';
 
 /** Subscribe to the UI store. */

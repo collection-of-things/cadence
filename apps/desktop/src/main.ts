@@ -64,6 +64,9 @@ app.setName("cadence");
 const appDir = app.getAppPath();
 const repoRoot = join(appDir, "..", "..");
 const distDir = join(appDir, "dist");
+const iconDir = app.isPackaged
+  ? join(process.resourcesPath, "icons")
+  : join(appDir, "build", "icons");
 let uiRootPath: string | null = null;
 
 // Artwork is served to the sandboxed renderer over a narrow scheme instead
@@ -91,7 +94,15 @@ function createWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 480,
     title: "Cadence",
-    backgroundColor: "#0c0d10",
+    icon: join(iconDir, "icon.png"),
+    backgroundColor: "#0b0b0c",
+    // Frameless chrome: the renderer's top bar is the title bar. Windows and
+    // Linux draw native window controls over its right edge (the UI reads
+    // env(titlebar-area-*) to keep clear); macOS keeps inset traffic lights.
+    titleBarStyle: "hidden",
+    ...(process.platform === "darwin"
+      ? { trafficLightPosition: { x: 18, y: 20 } }
+      : { titleBarOverlay: { color: "#00000000", symbolColor: "#ffffff", height: 56 } }),
     webPreferences: {
       preload: join(distDir, "preload.cjs"),
       contextIsolation: true,
@@ -136,6 +147,7 @@ async function main(): Promise<void> {
   });
 
   await app.whenReady();
+  app.dock?.setIcon(join(iconDir, "icon.png"));
 
   // Castlabs ECS: wait for the Widevine CDM component install before any
   // window can play protected media. Stock Electron has no `components` —
@@ -327,10 +339,11 @@ async function main(): Promise<void> {
     hideWindow: () => win.hide(),
   });
 
-  // 16x16 dark rounded-square with a C — enough for a tray icon.
-  const trayIcon = nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAM0lEQVR4nGNgGAWDHjAyMDAw/P//nxGXAgYGhv+EVcAwCoZ0YBgFgx0YRsFgB4ZRMPCBAQD//wMAaWkX7v8fXv0AAAAASUVORK5CYII=",
-  );
+  // macOS recolors the template for its menu bar; other platforms use the app tile.
+  const trayIcon = nativeImage.createFromPath(
+    join(iconDir, process.platform === "darwin" ? "trayTemplate.png" : "icon.png"),
+  ).resize({ width: process.platform === "darwin" ? 22 : 32 });
+  if (process.platform === "darwin") trayIcon.setTemplateImage(true);
   tray = new Tray(trayIcon);
   tray.setToolTip("Cadence");
   tray.setContextMenu(

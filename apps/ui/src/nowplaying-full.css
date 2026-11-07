@@ -1,71 +1,114 @@
-.np-expand { position: absolute; z-index: 3; top: 24px; right: 28px; display: flex; align-items: center; gap: 8px; padding: 9px 13px; border-radius: 999px; color: rgba(255,255,255,.8); background: rgba(255,255,255,.09); font-size: 13px; cursor: pointer; }
-.np-expand:hover { background: rgba(255,255,255,.17); }
-.full-now { position: fixed; outline: none; inset: 0; z-index: 1000; overflow: hidden; color: white; background: #0d0c14; isolation: isolate; }
-.full-now .np-bg { z-index: -2; }
-.full-wash { position: absolute; inset: 0; z-index: -1; background:
-    radial-gradient(ellipse 105% 85% at 20% 15%, color-mix(in srgb, var(--npf-c0) 72%, transparent), transparent 72%),
-    radial-gradient(ellipse 95% 85% at 85% 85%, color-mix(in srgb, var(--npf-c1) 58%, transparent), transparent 78%),
-    radial-gradient(ellipse 85% 70% at 70% 10%, color-mix(in srgb, var(--npf-c2) 52%, transparent), transparent 72%),
-    radial-gradient(ellipse 60% 55% at 50% 55%, color-mix(in srgb, var(--npf-c0) 26%, transparent), transparent 70%),
-    linear-gradient(115deg, rgba(7,8,15,.24), rgba(8,9,16,.46));
-  pointer-events: none; }
-.full-header { z-index: 2; position: absolute; top: 30px; left: 4.5%; right: 4.5%; display: flex; align-items: center; gap: 17px; color: rgba(255,255,255,.72); font-size: 10px; font-weight: 750; letter-spacing: .19em; }
-.full-close { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; color: white; background: rgba(255,255,255,.12); cursor: pointer; transition: background 160ms, transform 160ms; }
-.full-close:hover { background: rgba(255,255,255,.22); }
-.full-close:active, .np-expand:active { transform: scale(.96); }
-.full-close:focus-visible, .np-expand:focus-visible { outline: 2px solid white; outline-offset: 3px; }
-.full-brand { margin-left: auto; opacity: .65; }
-.full-content { position: absolute; inset: 110px 6% 160px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(35px, 6vw, 100px); align-items: center; max-width: 1400px; margin: auto; }
-.full-record { min-width: 0; width: min(100%, 510px); justify-self: center; }
-.full-art { width: min(100%, 50vh); aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; border-radius: 18px; background: rgba(255,255,255,.08); box-shadow: 0 35px 80px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.1); }
-.full-art img { width: 100%; height: 100%; object-fit: cover; }
-.full-meta { margin-top: 24px; min-width: 0; }
-.full-meta h1 { margin: 0; font-size: clamp(25px, 2.5vw, 38px); line-height: 1.1; letter-spacing: -.035em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.full-meta p { margin: 9px 0 0; color: rgba(255,255,255,.62); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.full-meta p span { opacity: .6; }
-.full-lyrics-card { position: relative; height: 100%; min-height: 0; border-radius: 26px; overflow: hidden; background: rgba(255,255,255,.075); box-shadow: inset 0 1px rgba(255,255,255,.13), 0 24px 80px rgba(0,0,0,.13); backdrop-filter: blur(28px); }
-.full-lyrics-label { position: absolute; top: 27px; left: 34px; right: 34px; display: flex; justify-content: space-between; color: rgba(255,255,255,.55); font-size: 10px; font-weight: 750; letter-spacing: .17em; z-index: 1; }
-.full-lyrics-label span { color: rgba(255,255,255,.38); }
-.full-lyrics-scroll, .full-lyrics-plain { position: absolute; inset: 55px 0 24px; overflow-y: auto; padding: 0 34px; scrollbar-width: none; mask-image: linear-gradient(transparent, black 15%, black 85%, transparent); }
-.full-lyrics-scroll::before, .full-lyrics-scroll::after { content: ''; display: block; height: 38%; }
-.full-lyrics-scroll p { margin: 0 0 24px; color: rgba(255,255,255,.34); font-size: clamp(24px, 2.65vw, 39px); font-weight: 800; line-height: 1.18; letter-spacing: -.035em; filter: blur(1px); transition: color 300ms, filter 300ms, transform 300ms, opacity 300ms; transform-origin: left center; }
-.full-lyrics-scroll p.active { color: white; filter: none; transform: scale(1.045); }
-.full-lyrics-scroll p.past { color: rgba(255,255,255,.22); filter: blur(0.9px); }
-.full-lyrics-scroll p.d1 { color: rgba(255,255,255,.34); filter: blur(1.6px); }
-.full-lyrics-scroll p.d2 { color: rgba(255,255,255,.2); filter: blur(3.2px); }
-.full-lyrics-scroll p.d3 { color: rgba(255,255,255,.12); filter: blur(5px); }
-.full-lyrics-plain { padding-top: 25px; white-space: pre-wrap; color: rgba(255,255,255,.62); font-size: 18px; line-height: 1.8; }
-.full-lyrics-follow { position: absolute; right: 26px; bottom: 18px; z-index: 2; padding: 8px 16px; border-radius: 999px; background: rgba(255,255,255,.14); color: white; font-size: 12px; font-weight: 650; backdrop-filter: blur(12px); transition: background 160ms; }
-.full-lyrics-follow:hover { background: rgba(255,255,255,.24); }
-.full-lyrics-scroll p { cursor: pointer; }
-.full-lyrics-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 35px; color: rgba(255,255,255,.5); text-align: center; }
-.full-controls { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); width: min(540px, calc(100% - 40px)); padding: 14px 26px 10px; border-radius: 30px; background: rgba(18,18,26,.5); box-shadow: inset 0 1px rgba(255,255,255,.13), 0 15px 50px rgba(0,0,0,.25); backdrop-filter: blur(28px); }
-.full-dock .transport { justify-content: center; margin-top: 0; }
-.full-controls .tp-right { display: none; }
-.full-controls .seek { margin: 0; }
-/* dock: transport + utility buttons in one row, transport stays centred */
-.full-dock { position: relative; display: flex; align-items: center; justify-content: center; margin-top: 5px; }
-.full-dock .full-mute, .full-dock .full-queue { position: absolute; right: 0; width: 40px; height: 40px; border-radius: 50%; color: rgba(255,255,255,.72); display: grid; place-items: center; }
-.full-dock .full-mute { right: 44px; }
-.full-dock .full-mute:hover, .full-dock .full-queue:hover { color: white; background: rgba(255,255,255,.08); }
-.full-dock .full-queue[aria-pressed='true'] { color: var(--accent); }
-@media (max-width: 950px), (max-height: 700px) { .full-content { inset: 85px 5% 135px; gap: 35px; } .full-header { top: 18px; } .full-art { width: min(100%, 43vh); } .full-meta { margin-top: 14px; } .full-lyrics-card { border-radius: 20px; } .full-lyrics-label { top: 20px; left: 25px; right: 25px; } .full-lyrics-scroll, .full-lyrics-plain { inset: 45px 0 18px; padding-left: 25px; padding-right: 25px; } .full-lyrics-scroll p { margin-bottom: 18px; } .full-controls { bottom: 14px; padding: 10px 20px 7px; } .full-controls .tp-play { width: 45px; height: 45px; } }
-@media (max-width: 620px), (max-height: 560px) { .full-header { z-index: 3; } .full-record { align-self: stretch; min-height: 0; } .full-art { height: min(100%, 30vh); } .full-content { inset: 72px 20px 132px; grid-template-columns: 1fr; grid-template-rows: minmax(0, 38%) minmax(0, 1fr); gap: 12px; } .full-record { display: flex; align-items: center; gap: 18px; width: 100%; } .full-art { height: min(100%, 25vh); width: auto; max-width: 42vw; flex: none; }
-  .full-record { min-width: 0; }
-  .full-meta { min-width: 0; flex: 1 1 auto; } .full-meta { margin: 0; } .full-meta h1 { white-space: normal; } .full-lyrics-card { width: 100%; } .full-brand { display: none; } }
-@media (prefers-reduced-motion: reduce) { .full-lyrics-scroll { scroll-behavior: auto; } .full-lyrics-scroll p, .full-close { transition: none; } }
+/* ============ Immersive now playing ============ */
 
-/* queue open narrows the record strip */
-.full-now.has-queue .full-lyrics-card { opacity: 0; visibility: hidden; transition: opacity .18s, visibility .18s; }
-.full-now .route-badge { opacity: .55; }
+.npf {
+  --npf-ink: color-mix(in srgb, var(--npf-c0) 14%, #fff);
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  outline: none;
+  color: #fff;
+  background: #0b0b0c;
+  isolation: isolate;
+  user-select: none;
+}
 
-/* dock owns the surface — the transport renders flat inside it */
-.full-controls .full-dock .tp-cluster { background: none; border: 0; box-shadow: none; padding: 0; backdrop-filter: none; }
-/* lyric card aligns with the artwork top */
-.full-lyrics-card { margin-top: 0; }
+/* colour field: shader / CSS wash + a heavily blurred copy of the art */
+.npf-field { position: absolute; inset: 0; z-index: -2; background: radial-gradient(ellipse 80% 90% at 75% 30%, var(--npf-c0), transparent 75%), radial-gradient(ellipse 70% 70% at 90% 95%, var(--npf-c1), transparent 70%), #0b0b0c; }
+.npf-field .np-bg { position: absolute; inset: 0; opacity: 0.85; }
+.npf-blur { position: absolute; inset: -12%; width: 124%; height: 124%; object-fit: cover; filter: blur(90px) saturate(1.5) brightness(0.8); opacity: 0.75; }
+.npf-tint { position: absolute; inset: 0; background: linear-gradient(to right, rgba(0, 0, 0, 0.28), transparent 45%, rgba(0, 0, 0, 0.18)), linear-gradient(to top, rgba(0, 0, 0, 0.45), transparent 35%); }
 
-/* queue stays above the dock in the overlay */
-.queue.over-now { bottom: 132px; height: auto; max-height: calc(100vh - 132px - 70px); }
+/* the artwork itself: full-height on the left, melting into the field */
+.npf-art {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(62vw, 100vh);
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.3);
+  mask-image: linear-gradient(to right, #000 58%, transparent 98%), linear-gradient(to bottom, #000 80%, transparent);
+  mask-composite: intersect;
+}
+.npf-art img { width: 100%; height: 100%; object-fit: cover; }
+.npf:not(.has-card) .npf-art { left: 50%; transform: translateX(-50%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%); }
 
-.full-now.has-queue .full-content { grid-template-columns: minmax(0, 1fr); justify-items: center; }
-.full-now.has-queue .full-record { justify-items: center; text-align: center; }
+.npf-corner { position: absolute; top: 34px; left: 40px; background: rgba(0, 0, 0, 0.28); }
+
+.npf-card {
+  position: absolute;
+  top: 66px;
+  right: 28px;
+  bottom: 140px;
+  width: min(45vw, 720px);
+  border-radius: 28px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(36px) saturate(1.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 30px 80px rgba(0, 0, 0, 0.25);
+  animation: card-in 380ms var(--ease) both;
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } }
+
+/* floating dock */
+.npf-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 36px;
+  transform: translateX(-50%);
+  width: min(960px, calc(100vw - 48px));
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 20px;
+  border-radius: var(--r-pill);
+  background: rgba(16, 16, 18, 0.5);
+  backdrop-filter: blur(30px) saturate(1.3);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.npf-dock .transport { gap: 0; }
+.npf-dock .transport .ctl-btn { width: 34px; height: 34px; }
+.npf-dock .transport .ctl-play { width: 36px; height: 36px; }
+.npf-dock .time-readout { color: rgba(255, 255, 255, 0.6); margin: 0 6px; }
+.npf-dock > .ctl-btn.is-on { color: #fff; background: rgba(255, 255, 255, 0.14); }
+
+.npf-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  margin-right: 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.npf-track-text { flex: 1; min-width: 0; display: grid; line-height: 1.25; }
+.npf-track-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.npf-track-sub { font-size: 12px; color: rgba(255, 255, 255, 0.6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.npf-track .route-badge { align-self: flex-start; margin-top: 6px; font-size: 9px; padding: 1.5px 5px; opacity: 0.75; }
+.npf-track .seek { position: absolute; left: 4px; right: 4px; bottom: -4px; }
+.npf-track .seek-track::before { background: rgba(255, 255, 255, 0.1); }
+
+/* queue replaces the lyrics card; it floats above the dock */
+.queue.over-now { bottom: 108px; height: auto; max-height: calc(100vh - 108px - 70px); }
+
+@media (max-width: 1000px) {
+  .npf-card { width: 52vw; right: 20px; }
+  .npf-dock .time-readout { display: none; }
+}
+@media (max-width: 760px) {
+  .npf-art { width: 100vw; mask-image: linear-gradient(to bottom, #000 40%, transparent 75%); }
+  .npf-card { top: 40vh; left: 16px; right: 16px; width: auto; bottom: 110px; }
+  .npf-dock .vol, .npf-track .route-badge { display: none; }
+  .npf-dock { padding: 0 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .npf-card { animation: none; }
+}

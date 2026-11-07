@@ -99,7 +99,7 @@ describe('MockCadenceApi', () => {
     expect(all.length).toBeGreaterThanOrEqual(35);
     const albums = await api.library.albums({});
     const artists = await api.library.artists({});
-    expect(albums.length).toBe(5);
+    expect(albums.length).toBe(10);
     expect(artists.length).toBeGreaterThanOrEqual(5);
     const byAlbum = await api.library.tracks({ album: albums[0]!.title });
     expect(byAlbum.every((t) => t.album === albums[0]!.title)).toBe(true);
