@@ -236,7 +236,7 @@ export function ProviderSearchView({ nav, query }: ProviderViewProps & { query?:
   // The sidebar carries its query in the search location — adopt it. A new
   // query while already on the page re-submits without a remount.
   useEffect(() => {
-    if (query !== undefined) setText(query);
+    setText(query ?? '');
   }, [query]);
 
   useEffect(() => {

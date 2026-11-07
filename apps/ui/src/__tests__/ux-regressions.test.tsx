@@ -11,6 +11,7 @@ import { sameLocation } from '../App';
 import { ProviderSearchView } from '../components/provider/views';
 import appSource from '../App.tsx?raw';
 import sidebarSource from '../components/Sidebar.tsx?raw';
+import viewsSource from '../components/provider/views.tsx?raw';
 
 /**
  * Regressions from the ui/cider-v3 merge absorbing the Apple Music provider
@@ -99,6 +100,13 @@ describe('catalog search handoff', () => {
     expect(html).toContain('value="midnight sun"');
     // The empty-state prompt only renders when nothing was submitted.
     expect(html).not.toContain('Search the catalog');
+  });
+
+  it('clears the field when the location query goes absent (Back, blank Search)', () => {
+    // No DOM harness in this suite (environment: 'node'), so the adopt
+    // effect is asserted on source: an absent query must reset text to ''.
+    const effect = viewsSource.match(/useEffect\(\(\) => \{\s*setText\(query \?\? ''\);\s*\}, \[query\]\)/);
+    expect(effect).not.toBeNull();
   });
 });
 
