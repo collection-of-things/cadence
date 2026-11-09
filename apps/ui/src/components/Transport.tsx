@@ -17,7 +17,7 @@ export function VolumeControl({ slider = true }: { slider?: boolean }) {
         title={muted ? 'Unmute (M)' : 'Mute (M)'}
         onClick={() => session.toggleMute()}
       >
-        {muted || shown === 0 ? <MuteIcon size={19} /> : <VolumeIcon size={19} />}
+        {muted || shown === 0 ? <MuteIcon size={18} /> : <VolumeIcon size={18} />}
       </button>
       {slider && (
         <input
@@ -36,8 +36,8 @@ export function VolumeControl({ slider = true }: { slider?: boolean }) {
 }
 
 /**
- * Shuffle · previous · play/pause · next · repeat. Glyph-only buttons, no
- * filled play circle — the reference keeps every control at one weight.
+ * Shuffle · previous · play/pause · next · repeat. Quiet glyph buttons
+ * around one solid white play circle.
  */
 export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
   const status = useUi((s) => s.snapshot.status);
@@ -63,10 +63,10 @@ export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
         title="Shuffle"
         onClick={() => session.toggleShuffle()}
       >
-        <ShuffleIcon size={big ? 19 : 18} />
+        <ShuffleIcon size={big ? 18 : 17} />
       </button>
       <button className="ctl-btn" aria-label="Previous track" title="Previous" disabled={!canSkip || !hasTrack} onClick={() => session.previous()}>
-        <PrevIcon size={big ? 24 : 22} />
+        <PrevIcon size={big ? 20 : 18} />
       </button>
       <button
         className={`ctl-btn ctl-play ${busy ? 'is-busy' : ''}`}
@@ -74,12 +74,12 @@ export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
         disabled={(playing && !canPause) || !hasTrack}
         onClick={() => session.togglePlay()}
       >
-        <span className="icon-swap" key={playing ? 'pause' : 'play'}>
-          {playing ? <PauseIcon size={big ? 26 : 24} /> : <PlayIcon size={big ? 26 : 24} />}
+        <span className={`icon-swap ${playing ? '' : 'is-play'}`}>
+          {playing ? <PauseIcon size={big ? 20 : 18} /> : <PlayIcon size={big ? 20 : 18} />}
         </span>
       </button>
       <button className="ctl-btn" aria-label="Next track" title="Next" disabled={!canSkip || !hasTrack} onClick={() => session.next()}>
-        <NextIcon size={big ? 24 : 22} />
+        <NextIcon size={big ? 20 : 18} />
       </button>
       <button
         className={`ctl-btn ctl-side ${repeat !== 'off' ? 'is-on' : ''}`}
@@ -88,7 +88,7 @@ export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
         title={`Repeat: ${repeat}`}
         onClick={() => session.cycleRepeat()}
       >
-        <RepeatIcon size={big ? 19 : 18} />
+        <RepeatIcon size={big ? 18 : 17} />
         {repeat === 'one' && <span className="ctl-one">1</span>}
       </button>
     </div>

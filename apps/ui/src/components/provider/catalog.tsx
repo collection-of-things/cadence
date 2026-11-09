@@ -22,7 +22,9 @@ import { stationToTrack } from '@cadence/protocol';
 import { api, session } from '../../session';
 import { artistsLine, formatTime } from '../../format';
 import { useUi } from '../../hooks';
-import { NoteIcon, PlayIcon, PlusIcon } from '../../icons';
+import { NoteIcon, PlayIcon } from '../../icons';
+import { AddGlyph, useJustAdded } from '../AddGlyph';
+import { TrackMenu } from '../TrackRow';
 import { cleanIpcError } from './errors';
 
 /** Platform -> its playback route. */
@@ -125,15 +127,17 @@ function Card({ art, title, sub, onOpen, onPlay, index }: {
   );
 }
 
-function SongRow({ track, index, tracks, origin }: {
+function SongRow({ track, index, tracks, origin, nav }: {
   track: TrackRef;
   index: number;
   tracks: TrackRef[];
   origin?: { kind: 'album' | 'playlist' | 'manual' | 'provider'; id?: string; name?: string };
+  nav: CatalogNav;
 }) {
   const isCurrent = useUi((s) => s.snapshot.current?.track.id === track.id);
   const playing = useUi((s) => s.snapshot.status === 'playing');
   const play = () => session.playTracks(tracks, index, origin ?? { kind: 'provider' });
+  const { added, flash } = useJustAdded();
   return (
     <div
       className={`album-track-row ${isCurrent ? 'now' : ''}`}
@@ -147,8 +151,8 @@ function SongRow({ track, index, tracks, origin }: {
       }}
     >
       <span className="album-track-index">
-        {isCurrent && playing
-          ? <span className="q-eq on" aria-hidden="true"><i /><i /><i /></span>
+        {isCurrent
+          ? <span className={`q-eq ${playing ? 'on' : ''}`} aria-hidden="true"><i /><i /><i /></span>
           : String(index + 1).padStart(2, '0')}
       </span>
       <span className="home-cover catalog-song-art">
@@ -164,14 +168,16 @@ function SongRow({ track, index, tracks, origin }: {
       <button
         className="album-track-add"
         aria-label={`Play ${track.title} next`}
-        title="Play next"
+        title={added ? 'Plays next' : 'Play next'}
         onClick={(e) => {
           e.stopPropagation();
           session.insertNext(track);
+          flash();
         }}
       >
-        <PlusIcon size={16} />
+        <AddGlyph added={added} />
       </button>
+      <TrackMenu track={track} nav={nav} />
     </div>
   );
 }
@@ -244,6 +250,7 @@ export function CatalogSectionView({ id, title, subtitle, entries, nav }: {
               index={i}
               tracks={songs.map((s) => s.track)}
               origin={{ kind: 'provider', name: title }}
+              nav={nav}
             />
           ))}
         </div>
@@ -326,7 +333,7 @@ export function ProviderPageFrame({ title, loading, error, needsSignIn, route, c
     <div className="home-view">
       <div className="home-scroll">
         <header className="home-intro"><h1>{title}</h1></header>
-        {loading && <div className="home-loading" role="status">Loading…</div>}
+        {loading && <CatalogSkeleton label={`Loading ${title}`} />}
         {!loading && error && (
           <div className="home-empty" role="alert">
             <span className="home-empty-icon"><NoteIcon size={28} /></span>
@@ -347,14 +354,40 @@ export function ProviderPageFrame({ title, loading, error, needsSignIn, route, c
   );
 }
 
+/**
+ * Static placeholder while a catalog page loads: card rails by default,
+ * song rows with `rows`. The label is for assistive tech only.
+ */
+export function CatalogSkeleton({ label, rows = false }: { label: string; rows?: boolean }) {
+  return (
+    <div className="catalog-skeleton" role="status">
+      <span className="sr-only">{label}</span>
+      {rows ? (
+        <div className="catalog-skeleton-rows" aria-hidden="true">
+          {Array.from({ length: 8 }, (_, i) => <span key={i} className="skeleton skeleton-row" />)}
+        </div>
+      ) : (
+        Array.from({ length: 2 }, (_, s) => (
+          <div key={s} className="home-shelf" aria-hidden="true">
+            <span className="skeleton catalog-skeleton-title" />
+            <div className="home-rail">
+              {Array.from({ length: 6 }, (_, i) => <span key={i} className="skeleton catalog-skeleton-card" />)}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** Play affordance for a whole section of songs. */
 export function PlayAllButton({ tracks, origin }: {
   tracks: TrackRef[];
   origin?: { kind: 'album' | 'playlist' | 'manual' | 'provider'; id?: string; name?: string };
 }) {
   return (
-    <button className="album-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
-      <PlayIcon size={19} /> <span>Play</span>
+    <button className="play-pill" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+      <PlayIcon size={16} /> <span>Play</span>
     </button>
   );
 }

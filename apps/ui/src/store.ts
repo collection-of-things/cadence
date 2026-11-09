@@ -174,6 +174,7 @@ export interface UiSession {
   setNowPlayingExpanded(expanded: boolean): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
+  showToast(route: RouteId, message: string, retriable: boolean): void;
   dismissToast(id: number): void;
 }
 
@@ -410,6 +411,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       set({ nowPlayingExpanded: expanded && get().snapshot.current !== null }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
     setPalette: (palette) => set({ palette }),
+    showToast: pushToast,
     dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
   };
   return session;

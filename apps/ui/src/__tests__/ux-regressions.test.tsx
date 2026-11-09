@@ -10,12 +10,12 @@ import { createUiStore, type StoreApiSurface } from '../store';
 import { sameLocation } from '../App';
 import { ProviderSearchView } from '../components/provider/views';
 import appSource from '../App.tsx?raw';
-import sidebarSource from '../components/Sidebar.tsx?raw';
+import topBarSource from '../components/TopBar.tsx?raw';
 import viewsSource from '../components/provider/views.tsx?raw';
 
 /**
  * Regressions from the ui/cider-v3 merge absorbing the Apple Music provider
- * nav: the sidebar dropped the typed query on the way to the catalog search,
+ * nav: the search field dropped the typed query on the way to the catalog search,
  * Local Files search bounced into the streaming library while Apple was
  * active, and the immersive now-playing flag survived a queue clear so the
  * next track reopened it unasked.
@@ -79,8 +79,8 @@ async function makeSession(initial: PlaybackSnapshot) {
 }
 
 describe('catalog search handoff', () => {
-  it('the sidebar carries the typed query into the search location', () => {
-    const openSearch = sidebarSource.match(/const openSearch = \(query: string\) => \{([\s\S]*?)\n  \};/);
+  it('the top bar search carries the typed query into the search location', () => {
+    const openSearch = topBarSource.match(/const openSearch = \(query: string\) => \{([\s\S]*?)\n  \};/);
     expect(openSearch).not.toBeNull();
     const nav = openSearch![1]!.match(/onNavigate\(\{ page: 'search'[^;]*\}\)/);
     expect(nav).not.toBeNull();

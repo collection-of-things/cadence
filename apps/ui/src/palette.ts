@@ -25,6 +25,9 @@ export function extractPalette(url: string): Promise<Rgb[] | null> {
 async function sample(url: string): Promise<Rgb[] | null> {
   const img = new Image();
   img.decoding = 'async';
+  // Ask for CORS so the canvas stays readable: without it every remote or
+  // cadence-art:// cover taints the canvas and sampling silently fails.
+  img.crossOrigin = 'anonymous';
   await new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();
     img.onerror = () => reject(new Error('decode'));

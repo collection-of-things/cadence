@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
+import { catalogSongId, openSongLink, targetForTrack, useLibrarySave } from '../catalogActions';
 import { toggleFavorite, useCollection } from '../collection';
 import { artistsLine, formatTime } from '../format';
 import { useUi } from '../hooks';
 import { MoreIcon, NoteIcon, PlayIcon, StarIcon } from '../icons';
+import type { CatalogNav } from './provider/catalog';
 
 /** Animated level bars marking the playing row. Static when paused. */
 export function NowBars({ playing }: { playing: boolean }) {
@@ -15,8 +17,20 @@ export function NowBars({ playing }: { playing: boolean }) {
   );
 }
 
-/** "…" button with play-next / queue / favourite actions for one track. */
-export function TrackMenu({ track }: { track: TrackRef }) {
+type MenuAction = (fn: () => void) => () => void;
+
+/** Menu row for saving a streaming song; absent once saved or when signed out. */
+function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) {
+  const { state, add } = useLibrarySave(targetForTrack(track));
+  if (state !== 'ready') return null;
+  return <button role="menuitem" onClick={act(add)}>Add to Library</button>;
+}
+
+/**
+ * "…" button with play-next / queue / library / favourite actions for one
+ * track. Pass `nav` where the catalog pages exist to offer Go to Album/Artist.
+ */
+export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const favorite = useCollection((s) => s.favorites.some((t) => t.id === track.id));
@@ -42,11 +56,16 @@ export function TrackMenu({ track }: { track: TrackRef }) {
     };
   }, [open]);
 
-  const act = (fn: () => void) => () => {
+  const act: MenuAction = (fn) => () => {
     fn();
     setOpen(false);
     ref.current?.querySelector<HTMLElement>('.row-more')?.focus();
   };
+  const songId = catalogSongId(track);
+  const goTo = (link: 'album' | 'artist') =>
+    act(() => {
+      if (songId && nav) openSongLink({ route: track.route, songId, link, nav });
+    });
 
   return (
     <div className="row-menu" ref={ref} onClick={(e) => e.stopPropagation()}>
@@ -63,9 +82,12 @@ export function TrackMenu({ track }: { track: TrackRef }) {
         <div className="menu" role="menu">
           <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
           <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>
+          <AddToLibraryItem track={track} act={act} />
           <button role="menuitem" onClick={act(() => toggleFavorite(track))}>
             {favorite ? 'Remove from Favourite Songs' : 'Add to Favourite Songs'}
           </button>
+          {songId && nav && <button role="menuitem" onClick={goTo('album')}>Go to Album</button>}
+          {songId && nav && <button role="menuitem" onClick={goTo('artist')}>Go to Artist</button>}
         </div>
       )}
     </div>
@@ -98,7 +120,6 @@ export function TrackRow({ track, index, variant, albumArtist, onPlay }: TrackRo
       aria-label={`Play ${track.title} by ${artists}`}
       aria-current={isCurrent || undefined}
       title={unavailable ? track.availabilityDetail ?? 'Unavailable' : undefined}
-      style={{ '--i': index } as CSSProperties}
       onClick={onPlay}
       onKeyDown={(e) => {
         if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {

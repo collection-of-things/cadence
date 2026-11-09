@@ -1,10 +1,10 @@
 import type { ProviderId, RouteId } from '@cadence/protocol';
 
 const PROVIDER_META: Record<ProviderId, { label: string }> = {
-  local: { label: 'LOCAL' },
-  spotify: { label: 'SPOTIFY' },
-  apple: { label: 'APPLE' },
-  youtube: { label: 'YOUTUBE' },
+  local: { label: 'Local' },
+  spotify: { label: 'Spotify' },
+  apple: { label: 'Apple Music' },
+  youtube: { label: 'YouTube' },
 };
 
 export function providerForRoute(route: RouteId): ProviderId {

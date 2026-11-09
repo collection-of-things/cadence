@@ -4,7 +4,7 @@
  * the same CatalogPage surface.
  */
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CatalogArtist,
   CatalogContainer,
@@ -16,11 +16,19 @@ import { stationToTrack } from '@cadence/protocol';
 import { api, session } from '../../session';
 import { formatTime } from '../../format';
 import { useUi } from '../../hooks';
-import { NoteIcon, PlayIcon, PlusIcon, SearchIcon, ShuffleIcon } from '../../icons';
+import { ClockIcon, NoteIcon, PlayIcon, SearchIcon, ShuffleIcon, SongIcon } from '../../icons';
+import { AddGlyph, useJustAdded } from '../AddGlyph';
+import { LibraryButton } from '../LibraryButton';
+import { TrackListToolbar, useTrackListControls } from '../TrackListToolbar';
+import { targetForContainer } from '../../catalogActions';
 import { DEFAULT_PALETTE, extractPalette, type Rgb } from '../../palette';
+import { pageTheme } from '../../theme';
+import { usePublishPageTint } from '../../pageTint';
+import '../home.css';
 import {
   CatalogPageView,
   CatalogSectionView,
+  CatalogSkeleton,
   ProviderPageFrame,
   routeForPlatform,
   useCatalogPage,
@@ -190,7 +198,7 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
           </div>
         )}
         {authorized && loading && pages.length === 0 && (
-          <div className="home-loading" role="status">Loading your library…</div>
+          <CatalogSkeleton label="Loading your library" />
         )}
         {authorized && error && (
           <div className="home-empty" role="alert">
@@ -271,7 +279,7 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
             onChange={(e) => setText(e.currentTarget.value)}
           />
         </div>
-        {loading && <div className="home-loading" role="status">Searching…</div>}
+        {loading && <CatalogSkeleton label="Searching" />}
         {!loading && error && (
           <div className="home-empty" role="alert">
             <span className="home-empty-icon"><NoteIcon size={28} /></span>
@@ -288,15 +296,15 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
 }
 
 /** Album/playlist detail — driven by the catalog, styled like AlbumView. */
-export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps & {
+export function CatalogDetailView({ container, nav }: ProviderViewProps & {
   container: CatalogContainer;
-  onBack(): void;
 }) {
   const request: CatalogRequest = container.isLibraryItem
     ? { kind: 'libraryDetail', collection: container.kind === 'album' ? 'albums' : 'playlists', id: container.id }
     : { kind: container.kind, id: container.id };
   const { page, error, loading } = useCatalogPage(container.route, request);
   const [palette, setPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
+  const queued = useJustAdded();
 
   const artworkUrl = page?.artwork?.url ?? container.artwork?.url;
   useEffect(() => {
@@ -313,16 +321,18 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
     };
   }, [artworkUrl]);
 
-  const trackEntries =
-    page?.sections.flatMap((s) => s.entries).filter(
-      (e): e is Extract<CatalogEntry, { kind: 'song' }> => e.kind === 'song',
-    ) ?? [];
-  const tracks: TrackRef[] = trackEntries.map((e) => e.track);
+  const tracks = useMemo<TrackRef[]>(
+    () => page?.sections.flatMap((s) => s.entries).flatMap((e) => (e.kind === 'song' ? [e.track] : [])) ?? [],
+    [page],
+  );
+  const { shown, controls } = useTrackListControls(tracks);
+  const shownEntries = useMemo<CatalogEntry[]>(() => shown.map((track) => ({ kind: 'song', track })), [shown]);
   const totalDuration = tracks.reduce((sum, t) => sum + t.durationMs, 0);
-  const tone = palette[0] ?? DEFAULT_PALETTE[0]!;
-  const pageStyle = { '--album-rgb': tone.join(' ') } as CSSProperties;
+  // The page wears this cover's colours: the flood, Play and the playing row.
+  const pageStyle = useMemo(() => pageTheme(palette), [palette]);
+  usePublishPageTint(pageStyle);
+  const byline = page?.subtitle ?? container.subtitle;
   const origin = { kind: container.kind, id: container.id, name: container.title } as const;
-  const eyebrow = container.kind === 'album' ? 'ALBUM' : 'PLAYLIST';
 
   const shuffledPlay = () => {
     const items = [...tracks];
@@ -334,58 +344,60 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
   };
 
   return (
-    <div className="album-page" style={pageStyle}>
-      <div className="album-page-glow" aria-hidden="true" />
-      <div className="album-page-scroll">
-        <button className="album-back" onClick={onBack}>
-          <BackArrow /> <span>Back</span>
-        </button>
+    <div className="album album-page" style={pageStyle}>
+      <div className="stage-scroll album-scroll">
         <section className="album-hero">
-          <div className="album-artwork-wrap">
+          <div className="album-art">
             {artworkUrl
-              ? <img className="album-artwork" src={artworkUrl} alt={`${container.title} artwork`} />
-              : <div className="album-artwork album-artwork-empty"><NoteIcon size={58} /></div>}
+              ? <img src={artworkUrl} alt={`${container.title} artwork`} draggable={false} />
+              : <NoteIcon size={58} />}
           </div>
-          <div className="album-details">
-            <span className="album-eyebrow">{eyebrow}</span>
+          <div className="album-info">
             <h1>{page?.title ?? container.title}</h1>
-            {(page?.subtitle ?? container.subtitle) && (
-              <p className="album-artist-name">{page?.subtitle ?? container.subtitle}</p>
+            {byline && (
+              <div className="album-byline">
+                <span className="album-avatar" aria-hidden="true">
+                  {artworkUrl ? <img src={artworkUrl} alt="" /> : byline.slice(0, 1)}
+                </span>
+                <span>{byline}</span>
+              </div>
             )}
-            <div className="album-facts" aria-label="Details">
-              {container.year !== undefined && <span className="album-fact">{container.year}</span>}
-              <span className="album-fact">
-                {page?.truncated ? `first ${tracks.length} tracks` : `${tracks.length || container.itemCount || 0} tracks`}
+            <div className="album-chips" aria-label="Details">
+              <span className="chip"><NoteIcon size={12} />{container.kind === 'album' ? 'Album' : 'Playlist'}</span>
+              {container.year !== undefined && <span className="chip"><ClockIcon size={12} />{container.year}</span>}
+              <span className="chip">
+                <SongIcon size={12} />
+                {page?.truncated ? `First ${tracks.length} tracks` : `${tracks.length || container.itemCount || 0} tracks`}
               </span>
-              {totalDuration > 0 && <span className="album-fact">{formatTime(totalDuration)}</span>}
+              {totalDuration > 0 && <span className="chip">{formatTime(totalDuration)}</span>}
             </div>
             <div className="album-actions">
-              <button className="album-shuffle" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={shuffledPlay}>
+              <button className="round-btn album-round" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={shuffledPlay}>
                 <ShuffleIcon size={18} />
               </button>
-              <button className="album-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
-                <PlayIcon size={19} /> <span>Play</span>
+              <button className="play-pill album-play-pill" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+                <PlayIcon size={17} /> Play
               </button>
-              <button className="album-add" aria-label="Add to queue" title="Add to queue" disabled={!tracks.length}
-                onClick={() => tracks.forEach((t) => session.append(t))}>
-                <PlusIcon size={19} />
+              <button className="round-btn album-round" aria-label="Add to queue" title={queued.added ? 'Added to queue' : 'Add to queue'} disabled={!tracks.length}
+                onClick={() => {
+                  tracks.forEach((t) => session.append(t));
+                  queued.flash();
+                }}>
+                <AddGlyph added={queued.added} size={18} />
               </button>
+              <LibraryButton target={targetForContainer(container)} className="round-btn album-round" size={18} />
             </div>
           </div>
         </section>
         <section className="album-tracklist" aria-label={`${container.title} track list`}>
-          <div className="album-tracklist-head">
-            <h2>Tracks</h2>
-            {tracks.length > 0 && <span>{tracks.length} songs</span>}
-          </div>
-          {loading && <div className="album-track-status" role="status">Loading tracks…</div>}
+          {loading && <CatalogSkeleton label="Loading tracks" rows />}
           {!loading && error && <div className="album-track-status" role="alert">{error}</div>}
           {!loading && !error && tracks.length === 0 && (
             <div className="album-track-status">No tracks on this {container.kind}.</div>
           )}
-          {!loading && !error && page && (
-            <CatalogPageView page={{ sections: page.sections.filter((s) => s.entries.length > 0) }} nav={nav} />
-          )}
+          {!loading && !error && tracks.length > 0 && <TrackListToolbar {...controls} />}
+          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No tracks match.</p>}
+          {!loading && !error && <CatalogSectionView id="tracks" title="Tracks" entries={shownEntries} nav={nav} />}
         </section>
       </div>
     </div>
@@ -393,9 +405,8 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
 }
 
 /** Artist page — header + sections (top songs, albums, similar). */
-export function ArtistView({ artist, nav, onBack }: ProviderViewProps & {
+export function ArtistView({ artist, nav }: ProviderViewProps & {
   artist: CatalogArtist;
-  onBack(): void;
 }) {
   const { page, error, loading } = useCatalogPage(artist.route, { kind: 'artist', id: artist.id });
   const topTracks =
@@ -405,11 +416,10 @@ export function ArtistView({ artist, nav, onBack }: ProviderViewProps & {
 
   return (
     <ProviderPageFrame title={artist.name} loading={loading} error={error} route={artist.route}>
-      <button className="album-back" onClick={onBack}><BackArrow /> <span>Back</span></button>
       {topTracks.length > 0 && (
-        <div className="album-actions" style={{ padding: '0 0 12px' }}>
-          <button className="album-play" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
-            <PlayIcon size={19} /> <span>Play top songs</span>
+        <div className="album-actions artist-actions">
+          <button className="play-pill" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
+            <PlayIcon size={16} /> <span>Play top songs</span>
           </button>
         </div>
       )}
@@ -418,6 +428,3 @@ export function ArtistView({ artist, nav, onBack }: ProviderViewProps & {
   );
 }
 
-function BackArrow() {
-  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.8 5.5-6.5 6.5 6.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
-}

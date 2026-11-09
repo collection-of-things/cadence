@@ -706,6 +706,17 @@ export class MockCadenceApi implements CadenceApi {
         }
         case 'lyrics':
           return { sections: [], lyrics: '[00:00.50]Signal on the wire\n[00:04.00]Numbers in the rain' };
+        case 'songLinks':
+          return {
+            sections: [{
+              id: 'song-links',
+              title: '',
+              entries: [
+                { kind: 'album', album: { kind: 'album', id: 'al.mock-1', route, provider: 'apple', title: 'Mock Album' } },
+                { kind: 'artist', artist: { kind: 'artist', id: 'ar.mock-1', route, provider: 'apple', name: 'Mock Artist' } },
+              ],
+            }],
+          };
         case 'addToLibrary':
           return { sections: [] };
       }

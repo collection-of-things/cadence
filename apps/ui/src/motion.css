@@ -1,81 +1,134 @@
 /* ============ Motion ============
-   One place for transitions and keyframes. Short (120–380ms), ease-out,
-   transform/opacity only on the hot paths. The reduced-motion rule in
-   styles.css collapses every duration here. */
+   Every animation in the app lives in this file. The rules:
+   - Opacity and transform wherever possible, so they run off the main
+     thread. Button colours, the sung lyric and the shell's edges are the
+     exceptions.
+   - The stage and the colour field behind it are one moving edge: the same
+     left/right values, the same transition, only while .app.is-moving. The
+     stage also drops its soft shadow for the slide, so nothing smears across
+     the see-through window.
+   - Entrances are @starting-style transitions, so a repeat toggle carries on
+     from whatever is on screen instead of restarting.
+   - No overshoot: nothing here is thrown, so nothing bounces.
+   - Keyboard shortcuts get no motion (instant.ts).
+   - Reduced motion keeps the fades and drops everything that travels. */
 
 :root {
-  --t-fast: 140ms;
-  --t-med: 220ms;
-  --t-slow: 380ms;
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* critically damped spring, response 0.3s */
+  --spring-ui: linear(0, 0.055, 0.175, 0.312, 0.445, 0.562, 0.66, 0.74, 0.803, 0.852, 0.89, 0.919, 0.94, 0.956, 0.968, 0.977, 0.983, 0.988, 0.991, 0.994, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  /* SHELL_MOVE_MS in SidePanel.tsx matches this */
+  --shell-move: 260ms var(--ease-drawer);
+  --t-spring: 360ms;
+  --t-press: 110ms;
+  --t-fade: 160ms;
 }
 
-/* ---- page changes: the new page rises in ---- */
-.page { position: absolute; inset: 0; animation: page-in var(--t-slow) var(--ease-out) both; }
-@keyframes page-in {
-  from { opacity: 0; transform: translateY(10px); }
+/* ---- static states that used to sit beside their animations ---- */
+.page { position: absolute; inset: 0; }
+.stage-main > .platform-fade { position: absolute; inset: 0; }
+.icon-swap, .add-glyph { display: grid; }
+.add-glyph.is-added { color: var(--acc); }
+
+/* press: rows highlight on pointer-down, before the click lands */
+.q-row:active, .album-track-row:active, .artist-row:active, .src-hit:active, .track-row:active { background: oklch(1 0 0 / 0.1); }
+.side-section-head:active { color: var(--t2); }
+
+/* ---- fades, for everyone ---- */
+
+/* buttons: fills and icon colours ease on hover, the switch tiles dim */
+:is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .shelf-arrow, .side-row, .side-row-icon, .side-section-head, .side-switch button) {
+  transition: color 110ms ease, background-color 110ms ease;
 }
-.album-wash { animation: wash-in 600ms var(--ease-out) both; }
-@keyframes wash-in { from { opacity: 0; } }
-.album-hero .album-art { animation: art-in 480ms var(--ease-out) both; }
-@keyframes art-in { from { opacity: 0; transform: scale(0.96); } }
+.svc-tile { transition: opacity 200ms ease; }
+.side-chevron { transition: opacity 110ms ease; }
 
-/* shelves and grids: cards cascade in */
-.shelf-rail > *, .album-grid > *, .track-list > .track-row {
-  animation: card-in var(--t-slow) var(--ease-out) both;
-  animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+/* the side panels */
+.stage { transition: box-shadow 140ms ease-out; }
+.side-panel, .app > .sidebar { transition: opacity 200ms ease; }
+:root[data-sidebar='hidden'] .app > .sidebar { transition: opacity 200ms ease, visibility 0s linear 200ms; }
+@starting-style {
+  .side-panel { opacity: 0; }
 }
-@keyframes card-in { from { opacity: 0; transform: translateY(8px); } }
 
-/* ---- selection: fills glide instead of snapping ---- */
-.side-row, .page-tab, .track-row, .q-row, .chrome-btn, .ctl-btn, .round-btn, .ghost-btn, .row-more, .menu [role='menuitem'] {
-  transition: background-color var(--t-med) var(--ease), color var(--t-med) var(--ease), transform var(--t-fast) var(--ease), opacity var(--t-med);
+/* opening Now Playing: the shell recedes as the room comes up */
+.app.is-immersive, .app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
+.npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out; }
+@starting-style {
+  .npf-art, .npf-lyrics, .npf-corner { opacity: 0; }
 }
-.side-row:active, .page-tab:active, .chrome-btn:active:not(:disabled) { transform: scale(0.96); }
-.track-row:active { transform: scale(0.995); }
-.side-row.is-active .side-row-icon { animation: pop var(--t-slow) var(--ease-spring); }
-.page-tab { animation: tab-in var(--t-med) var(--ease-out) both; }
-@keyframes tab-in { from { opacity: 0; transform: scale(0.9); } }
 
-/* ---- actions ---- */
-@keyframes pop {
-  0% { transform: scale(1); }
-  40% { transform: scale(1.28); }
-  100% { transform: scale(1); }
+/* track change: the new cover and title dissolve in */
+.npf-art img.is-swap { transition: opacity 280ms ease-out; }
+.pb-open.is-swap { transition: opacity 180ms ease-out; }
+@starting-style {
+  .npf-art img.is-swap, .pb-open.is-swap { opacity: 0; }
 }
-.pb-fav.is-on svg, .round-btn.is-on svg, .tr-fav svg { animation: pop var(--t-slow) var(--ease-spring); }
 
-/* play ↔ pause glyph swap */
-.icon-swap { display: grid; animation: icon-swap var(--t-med) var(--ease-spring); }
-@keyframes icon-swap { from { opacity: 0; transform: scale(0.6) rotate(-12deg); } }
+/* the sung line brightens as the lyrics advance */
+.lyrics-scroll p { transition: color 240ms ease-out; }
 
-/* popover menu grows from its button */
-.menu { transform-origin: top right; animation: menu-in var(--t-fast) var(--ease-out); }
-@keyframes menu-in { from { opacity: 0; transform: scale(0.94) translateY(-4px); } }
-
-/* track change: player art and text cross-fade in */
-.pb-art img, .pb-meta { animation: fade-in var(--t-slow) var(--ease-out); }
-@keyframes fade-in { from { opacity: 0; } }
-.pb-meta { animation-name: meta-in; }
-@keyframes meta-in { from { opacity: 0; transform: translateX(-6px); } }
-
-/* ---- lyrics ---- */
-.lyrics-rail { animation: rail-in var(--t-slow) var(--ease-out) both; }
-@keyframes rail-in { from { opacity: 0; transform: translateX(24px); } }
-.lyrics-scroll p { transition-duration: 480ms; }
-.lyrics-rail .lyrics-scroll p { transform-origin: left center; }
-.lyrics-rail .lyrics-scroll p.active { transform: scale(1.04); }
-.lyrics-scroll { scroll-behavior: smooth; }
-
-/* ---- immersive player ---- */
-.npf { animation: npf-in var(--t-slow) var(--ease-out); }
-@keyframes npf-in { from { opacity: 0; } }
-.npf-art img { animation: npf-art-in 700ms var(--ease-out); }
-@keyframes npf-art-in { from { opacity: 0; transform: scale(1.06); } }
-.npf-dock { animation: dock-in 460ms var(--ease-out) both; animation-delay: 80ms; }
-@keyframes dock-in { from { opacity: 0; transform: translate(-50%, 16px); } }
-.npf-corner { animation: fade-in var(--t-slow) var(--ease-out) both; animation-delay: 120ms; }
-
-@media (prefers-reduced-motion: reduce) {
-  .lyrics-scroll { scroll-behavior: auto; }
+/* switching service swaps the whole library */
+.platform-fade { transition: opacity var(--t-fade) ease-out; }
+.npf-nav { transition: opacity 200ms ease-out; }
+.toast { transition: opacity 180ms ease-out; }
+.menu { transition: opacity 120ms ease-out; }
+.sheet { transition: opacity 180ms ease-out; }
+.add-glyph.is-added { transition: opacity 140ms ease-out; }
+@starting-style {
+  .platform-fade, .npf-nav, .toast, .menu, .sheet, .add-glyph.is-added { opacity: 0; }
 }
+
+/* ---- movement, only for people who are fine with it ---- */
+@media (prefers-reduced-motion: no-preference) {
+  /* pressing: scales down on pointer-down */
+  :is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .shelf-arrow, .side-row, .side-switch button) {
+    transition: color 110ms ease, background-color 110ms ease, transform var(--t-press) var(--ease-out);
+  }
+  :is(.poster-open, .square-open, .home-album-card, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
+
+  /* switches: the indicator glides to the chosen side */
+  .side-switch-ind { transition: transform 300ms var(--spring-ui); }
+  .side-chevron { transition: opacity 110ms ease, transform 160ms var(--ease-out); }
+
+  /* the toggles: the stage and its colour field slide over the side panels */
+  .app.is-moving .stage {
+    box-shadow: 0 0 0 1px oklch(1 0 0 / 0.08);
+    transition: left var(--shell-move), right var(--shell-move);
+  }
+  .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move); }
+  .side-panel, .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease; }
+  :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease, visibility 0s linear 260ms; }
+  @starting-style {
+    .side-panel { transform: translateX(20px); }
+  }
+
+  /* the player lifts off the bottom edge into Now Playing and settles back */
+  .playerbar { transition: transform var(--t-spring) var(--spring-ui); }
+  .npf-art img:not(.is-swap) { transition: transform var(--t-spring) var(--spring-ui); }
+  .npf-corner { transition: opacity 220ms ease-out, transform var(--shell-move); }
+  .npf-lyrics .lyrics-scroll p { transition: color 240ms ease-out, transform var(--t-spring) var(--spring-ui); }
+  @starting-style {
+    .playerbar.is-floating { transform: translateY(14px); }
+    .playerbar.is-docked { transform: translateY(-14px); }
+    .npf-art img:not(.is-swap) { transform: scale(1.03); }
+  }
+
+  /* each surface enters from what opened it and leaves the same way */
+  .npf-nav { transition: opacity 200ms ease-out, transform var(--t-spring) var(--spring-ui); }
+  .toast { transition: opacity 180ms ease-out, transform 240ms var(--ease-out); }
+  .toast.is-leaving { transition-duration: 180ms; }
+  .menu { transform-origin: top right; transition: opacity 120ms ease-out, transform 140ms var(--ease-out); }
+  .sheet { transition: opacity 180ms ease-out, transform 180ms var(--ease-out); }
+  .add-glyph.is-added { transition: opacity 140ms ease-out, transform 140ms var(--ease-out); }
+  @starting-style {
+    .npf-nav { transform: translateX(-16px); }
+    .toast { transform: translateY(10px); }
+    .menu { transform: scale(0.96); }
+    .sheet { transform: translateY(-6px) scale(0.97); }
+    .add-glyph.is-added { transform: scale(0.8); }
+  }
+}
+
+/* Keyboard-initiated changes land on the next frame (see instant.ts). */
+:root[data-instant] :is(.app, .app > .sidebar, .stage, .ambient, .side-panel, .side-switch-ind, .playerbar, .ambient-veil, .npf-art, .npf-art img, .npf-lyrics, .npf-corner) { transition: none !important; }

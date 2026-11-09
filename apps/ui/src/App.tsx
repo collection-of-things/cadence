@@ -7,10 +7,9 @@ import { AlbumView } from './components/AlbumView';
 import { FavoritesView } from './components/FavoritesView';
 import { HomeView } from './components/HomeView';
 import { LibraryView, type LibraryTab } from './components/LibraryView';
-import { LyricsRail } from './components/LyricsRail';
 import { NowPlayingFull } from './components/NowPlayingFull';
 import { PlayerBar } from './components/PlayerBar';
-import { QueuePanel } from './components/QueuePanel';
+import { SHELL_MOVE_MS, SidePanel, usePanelMounted, type PanelTab } from './components/SidePanel';
 import { Sidebar } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
@@ -26,7 +25,12 @@ import {
 } from './components/provider/views';
 import type { CatalogNav } from './components/provider/catalog';
 import { positionNow, useMediaSession, useUi } from './hooks';
+import { withoutMotion } from './instant';
+import { usePageTint } from './pageTint';
 import { extractPalette, DEFAULT_PALETTE } from './palette';
+import { useSidebarOpen } from './sidebarOpen';
+import { applyTheme, themeFromPalette } from './theme';
+import { Ambient } from './visuals/Ambient';
 
 /** Where the browse stage is. The now-playing overlay is not a location. */
 export type Location =
@@ -41,8 +45,6 @@ export type Location =
   | { page: 'album'; album: LibraryAlbum }
   | { page: 'detail'; container: CatalogContainer }
   | { page: 'artist'; artist: CatalogArtist };
-
-const TABS_MAX = 6;
 
 export function sameLocation(a: Location, b: Location): boolean {
   if (a.page !== b.page) return false;
@@ -66,20 +68,43 @@ function pageKey(location: Location): string {
   return location.page;
 }
 
+/**
+ * True from the commit that changes the shell's shape until its slide ends.
+ * Derived during render so the stage gets its transition in that same commit.
+ */
+function useShellMoving(shape: string): boolean {
+  const [settled, setSettled] = useState(shape);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(shape), SHELL_MOVE_MS + 40);
+    return () => clearTimeout(timer);
+  }, [shape]);
+  return shape !== settled;
+}
+
 export function App() {
   const view = useUi((s) => s.view);
   const viewNonce = useUi((s) => s.viewNonce);
   const platform = useUi((s) => s.platform);
-  const hasTrack = useUi((s) => s.snapshot.current !== null);
   const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const track = useUi((s) => s.snapshot.current?.track);
   const [location, setLocation] = useState<Location>({ page: 'home' });
   const [backStack, setBackStack] = useState<Location[]>([]);
   const [forwardStack, setForwardStack] = useState<Location[]>([]);
-  // Recently opened album pages, shown as tabs in the top bar.
-  const [tabs, setTabs] = useState<LibraryAlbum[]>([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const palette = useUi((s) => s.palette);
+  const pageTint = usePageTint();
+  const hasTrack = useUi((s) => s.snapshot.current !== null);
+  const queueOpen = useUi((s) => s.queueOpen);
+  const sidebar = useSidebarOpen();
+  // The right panel: Up Next when the queue is open, otherwise lyrics.
   const [railOpen, setRailOpen] = useState(false);
+  const railOpenRef = useRef(railOpen);
+  railOpenRef.current = railOpen;
+  // L and the lyrics button: show lyrics, or close the panel if they already show.
+  const toggleLyrics = useCallback(() => {
+    const showing = railOpenRef.current && !session.store.getState().queueOpen;
+    session.setQueueOpen(false);
+    setRailOpen(!showing);
+  }, []);
   const locationRef = useRef(location);
   locationRef.current = location;
   const searchNonce = useRef(0);
@@ -88,6 +113,11 @@ export function App() {
   useEffect(() => {
     if (track) recordPlayed(track);
   }, [track]);
+
+  // The artwork's colours tint the whole shell (and every portal).
+  useEffect(() => {
+    applyTheme(themeFromPalette(palette));
+  }, [palette]);
 
   const artUrl = track?.artwork?.url;
   useEffect(() => {
@@ -123,15 +153,6 @@ export function App() {
     setBackStack((stack) => [...stack, current]);
     setForwardStack([]);
     setLocation(next);
-    if (next.page === 'album') {
-      const album = next.album;
-      // Re-opening a tab keeps its place; only new albums append.
-      setTabs((list) =>
-        list.some((a) => a.id === album.id)
-          ? list.map((a) => (a.id === album.id ? album : a))
-          : [...list, album].slice(-TABS_MAX),
-      );
-    }
   }, []);
 
   // External view requests (store.setView from capture scripts, other
@@ -211,7 +232,7 @@ export function App() {
           break;
         case 'q':
         case 'Q':
-          session.setQueueOpen(!s.queueOpen);
+          withoutMotion(() => session.setQueueOpen(!s.queueOpen));
           break;
         case 'm':
         case 'M':
@@ -219,7 +240,7 @@ export function App() {
           break;
         case 'l':
         case 'L':
-          if (s.snapshot.current) setRailOpen((open) => !open);
+          if (s.snapshot.current) withoutMotion(toggleLyrics);
           break;
       }
     };
@@ -229,36 +250,58 @@ export function App() {
 
   const openAlbum = (album: LibraryAlbum) => navigate({ page: 'album', album });
   const openNowPlaying = () => session.setNowPlayingExpanded(true);
+  const closeNowPlaying = useCallback(() => session.setNowPlayingExpanded(false), []);
   const catalogNav: CatalogNav = {
     openAlbum: (container) => navigate({ page: 'detail', container }),
     openPlaylist: (container) => navigate({ page: 'detail', container }),
     openArtist: (artist) => navigate({ page: 'artist', artist }),
   };
   const isApple = platform === 'apple';
-  const rail = railOpen && hasTrack;
+  const panelTab: PanelTab = queueOpen ? 'queue' : 'lyrics';
+  // Now Playing has its own Up Next, so the panel unmounts under it but keeps its space.
+  const panelShown = queueOpen || (railOpen && hasTrack);
+  const panelOpen = !expanded && panelShown;
+  const lyricsShown = panelOpen && panelTab === 'lyrics';
+  const panelMounted = usePanelMounted(panelOpen);
+  // Closing the queue flips panelTab; the panel keeps its tab while it slides away.
+  const shownPanelTab = useRef(panelTab);
+  if (panelOpen) shownPanelTab.current = panelTab;
+  const shellMoving = useShellMoving(`${sidebar.open}:${panelShown}`);
+  const showTab = (tab: PanelTab) => {
+    setRailOpen(tab === 'lyrics');
+    session.setQueueOpen(tab === 'queue');
+  };
+  const closePanel = () => {
+    setRailOpen(false);
+    session.setQueueOpen(false);
+  };
 
   return (
-    <div className={`app ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${rail ? 'has-rail' : ''}`}>
-      <Sidebar location={location} collapsed={sidebarCollapsed} onNavigate={navigate} />
+    <>
+    <div
+      className={`app ${expanded ? 'is-immersive' : ''} ${panelShown ? 'has-rail' : ''} ${shellMoving ? 'is-moving' : ''}`}
+      data-svc={isApple ? 'apple' : 'local'}
+      style={pageTint.active ? { '--shell-tint': pageTint.style?.['--acc'] } : undefined}
+    >
+      <Sidebar location={location} onNavigate={navigate} />
       <div className="stage">
+        {pageTint.style && <div className={`page-wash ${pageTint.active ? 'is-on' : ''}`} style={pageTint.style} aria-hidden="true" />}
         {/* The transport must be the first play-named control in the document:
             page-level buttons ("Play album", "Play <track> next") legitimately
-            share the name space, so the fixed player bar leads DOM order. */}
-        {!expanded && <PlayerBar onOpenNowPlaying={openNowPlaying} />}
+            share the name space, so the docked player leads DOM order. */}
+        {!expanded && <PlayerBar placement="docked" lyricsOn={lyricsShown} onToggleLyrics={toggleLyrics} onToggleFullScreen={openNowPlaying} />}
         <TopBar
-          location={location}
-          tabs={tabs}
           canGoBack={backStack.length > 0}
           canGoForward={forwardStack.length > 0}
-          sidebarCollapsed={sidebarCollapsed}
-          railOpen={rail}
           onBack={goBack}
           onForward={goForward}
-          onOpenAlbum={openAlbum}
-          onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
-          onToggleRail={() => setRailOpen((open) => !open)}
+          onNavigate={navigate}
+          sidebarOpen={sidebar.open}
+          onToggleSidebar={sidebar.toggle}
         />
         <main className="stage-main">
+          {/* Keyed by platform: switching service cross-fades the stage. */}
+          <div className="platform-fade" key={platform}>
           <div className="page" key={pageKey(location)}>
           {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
           {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
@@ -275,19 +318,21 @@ export function App() {
           {location.page === 'favorites' && <FavoritesView />}
           {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}
           {location.page === 'detail' && (
-            <CatalogDetailView container={location.container} nav={catalogNav} onBack={goBack} />
+            <CatalogDetailView container={location.container} nav={catalogNav} />
           )}
           {location.page === 'artist' && (
-            <ArtistView artist={location.artist} nav={catalogNav} onBack={goBack} />
+            <ArtistView artist={location.artist} nav={catalogNav} />
           )}
           {location.page === 'sources' && <SourcesView />}
           </div>
+          </div>
         </main>
       </div>
-      {rail && <LyricsRail />}
-      <QueuePanel />
-      {expanded && createPortal(<NowPlayingFull onClose={() => session.setNowPlayingExpanded(false)} />, document.body)}
+      {panelMounted && <SidePanel open={panelOpen} tab={shownPanelTab.current} onTab={showTab} onClose={closePanel} />}
+      {expanded && createPortal(<NowPlayingFull onClose={closeNowPlaying} location={location} onNavigate={navigate} panelShown={panelShown} />, document.body)}
       {createPortal(<Toasts />, document.body)}
     </div>
+    <Ambient />
+    </>
   );
 }

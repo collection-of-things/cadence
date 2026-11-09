@@ -87,6 +87,7 @@ const CATALOG_REQUEST_KINDS: ReadonlySet<string> = new Set([
   "library",
   "libraryDetail",
   "lyrics",
+  "songLinks",
   "addToLibrary",
 ]);
 const ENTRY_KINDS: ReadonlySet<string> = new Set(["song", "album", "playlist", "artist", "station"]);
@@ -164,8 +165,9 @@ export function parseCatalogQuery(
       if (e) return err(e);
       break;
     }
-    case "lyrics": {
-      const e = checkId(req.songId, "lyrics");
+    case "lyrics":
+    case "songLinks": {
+      const e = checkId(req.songId, req.kind);
       if (e) return err(e);
       break;
     }

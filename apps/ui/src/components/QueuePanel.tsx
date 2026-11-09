@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
 import { session } from '../session';
 import { formatTime } from '../format';
 import { useUi } from '../hooks';
 import { displayOrder } from '../store';
+import { withoutMotion } from '../instant';
 import { CloseIcon, DownIcon, UpIcon } from '../icons';
 import { providerForRoute, RouteBadge } from './RouteBadge';
 
 function QueueRow({ item, index, current }: { item: QueueItem; index: number; current: boolean }) {
   const shuffle = useUi((s) => s.queue.shuffle);
+  const playing = useUi((s) => s.snapshot.status === 'playing');
   const count = useUi((s) => s.queue.items.length);
   const [dragOver, setDragOver] = useState(false);
   const t = item.track;
@@ -44,7 +45,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
         if (e.key === 'Enter' && e.target === e.currentTarget) session.playQueueId(item.queueId);
       }}
     >
-      <span className={`q-eq ${current ? 'on' : ''}`} aria-hidden="true">
+      <span className={`q-eq ${current && playing ? 'on' : ''}`} aria-hidden="true">
         <i /><i /><i />
       </span>
       {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" loading="lazy" /> : <span className="q-art" />}
@@ -81,11 +82,14 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
   );
 }
 
+/**
+ * The play queue as a list: the owner line, then virtualised rows. It is
+ * mounted only while shown (the side panel's Up Next tab, or Now Playing's
+ * right column), and owns Escape while mounted.
+ */
 export function QueuePanel() {
-  const open = useUi((s) => s.queueOpen);
   const queue = useUi((s) => s.queue);
   const currentQid = useUi((s) => s.snapshot.current?.queueId);
-  const npExpanded = useUi((s) => s.nowPlayingExpanded);
   const scrollRef = useRef<HTMLDivElement>(null);
   const order = displayOrder(queue);
   const virtualizer = useVirtualizer({
@@ -95,15 +99,14 @@ export function QueuePanel() {
     overscan: 10,
   });
 
-  // Land on the playing row when the panel opens.
+  // Land on the playing row when the list mounts; Escape closes it.
   useEffect(() => {
-    if (!open) return;
     // Escape hands focus back to whatever opened the queue.
     const opener = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopImmediatePropagation();
-        session.setQueueOpen(false);
+        withoutMotion(() => session.setQueueOpen(false));
         const fallback = [...document.querySelectorAll<HTMLElement>('[data-queue-toggle]')].find((el) => el.getClientRects().length > 0);
         (opener?.isConnected && opener !== document.body ? opener : fallback)?.focus();
       }
@@ -113,17 +116,11 @@ export function QueuePanel() {
     if (pos > 0) virtualizer.scrollToIndex(pos, { align: 'center' });
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
-  return createPortal(
-    <aside className={`queue ${open ? 'open' : ''} ${npExpanded ? 'over-now' : ''}`} aria-hidden={!open} aria-label="Queue">
-      <div className="q-head">
-        <h2>Up Next</h2>
-        <span className="q-owner">{queue.owner === 'provider' ? 'provider queue' : `${order.length} tracks`}</span>
-        <button className="icon-btn" aria-label="Close queue" onClick={() => session.setQueueOpen(false)}>
-          <CloseIcon size={16} />
-        </button>
-      </div>
+  return (
+    <aside className="queue open" aria-label="Queue">
+      <span className="q-owner">{queue.owner === 'provider' ? 'Playing from the provider queue' : `${order.length} ${order.length === 1 ? 'track' : 'tracks'}`}</span>
       {order.length === 0 ? (
         <div className="q-empty">Queue is empty.</div>
       ) : (
@@ -141,7 +138,6 @@ export function QueuePanel() {
           </div>
         </div>
       )}
-    </aside>,
-    document.body,
+    </aside>
   );
 }

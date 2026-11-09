@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
 import { api, session } from '../session';
 import { albumKey, useCollection } from '../collection';
@@ -71,7 +71,7 @@ function Cover({ album, eager }: { album: LibraryAlbum; eager?: boolean }) {
 /** Tall poster card with the caption laid over a dark fade. */
 function PosterCard({ album, label, index, onOpen }: { album: LibraryAlbum; label: string | undefined; index: number; onOpen(): void }) {
   return (
-    <div className="poster-card" style={{ '--i': index } as CSSProperties}>
+    <div className="poster-card">
       <button className="poster-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
         <span className="poster-art"><Cover album={album} eager /></span>
         <span className="poster-caption">
@@ -90,7 +90,7 @@ function PosterCard({ album, label, index, onOpen }: { album: LibraryAlbum; labe
 /** Square card with title and artist below the artwork. */
 function SquareCard({ album, index, onOpen }: { album: LibraryAlbum; index: number; onOpen(): void }) {
   return (
-    <div className="square-card" style={{ '--i': index } as CSSProperties}>
+    <div className="square-card">
       <button className="square-open" onClick={onOpen} aria-label={`Open ${album.title} by ${album.artist}`}>
         <span className="square-art"><Cover album={album} /></span>
         <span className="square-title">{album.title}</span>

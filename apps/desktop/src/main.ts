@@ -4,6 +4,7 @@ import {
   dialog,
   Menu,
   nativeImage,
+  nativeTheme,
   net,
   powerMonitor,
   protocol,
@@ -74,7 +75,8 @@ let uiRootPath: string | null = null;
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "cadence-art",
-    privileges: { supportFetchAPI: true, stream: true, bypassCSP: false },
+    // corsEnabled + the header below let the UI read cover pixels for its colours.
+    privileges: { supportFetchAPI: true, stream: true, bypassCSP: false, corsEnabled: true },
   },
   {
     // The UI bundle loads over this scheme: <script type="module"> is
@@ -87,7 +89,14 @@ protocol.registerSchemesAsPrivileged([
 
 process.env.CADENCE_APP_VERSION = app.getVersion();
 
+/** Windows 11 22H2 and later can draw acrylic glass behind the window. */
+function supportsAcrylic(): boolean {
+  return process.platform === "win32" && Number(process.getSystemVersion().split(".")[2]) >= 22621;
+}
+
 function createWindow(): BrowserWindow {
+  // Acrylic follows the app theme; without this a light-mode PC gets pale glass.
+  nativeTheme.themeSource = "dark";
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -95,14 +104,15 @@ function createWindow(): BrowserWindow {
     minHeight: 480,
     title: "Cadence",
     icon: join(iconDir, "icon.png"),
-    backgroundColor: "#0b0b0c",
+    // The side panels show this through their translucent surface.
+    ...(supportsAcrylic() ? { backgroundMaterial: "acrylic" as const } : { backgroundColor: "#1b1a19" }),
     // Frameless chrome: the renderer's top bar is the title bar. Windows and
     // Linux draw native window controls over its right edge (the UI reads
     // env(titlebar-area-*) to keep clear); macOS keeps inset traffic lights.
     titleBarStyle: "hidden",
     ...(process.platform === "darwin"
       ? { trafficLightPosition: { x: 18, y: 20 } }
-      : { titleBarOverlay: { color: "#00000000", symbolColor: "#ffffff", height: 56 } }),
+      : { titleBarOverlay: { color: "#00000000", symbolColor: "#e9e9ee", height: 48 } }),
     webPreferences: {
       preload: join(distDir, "preload.cjs"),
       contextIsolation: true,
@@ -183,7 +193,11 @@ async function main(): Promise<void> {
     if (u.host !== "artwork") return new Response(null, { status: 404 });
     const candidate = resolve(decodeURIComponent(u.pathname.slice(1)));
     if (!candidate.startsWith(thumbRoot + sep)) return new Response(null, { status: 403 });
-    return net.fetch(pathToFileURL(candidate).toString());
+    return net.fetch(pathToFileURL(candidate).toString()).then((res) => {
+      const headers = new Headers(res.headers);
+      headers.set("Access-Control-Allow-Origin", "*");
+      return new Response(res.body, { status: res.status, headers });
+    });
   });
   const store = new SettingsStore(settingsPath(userData));
 

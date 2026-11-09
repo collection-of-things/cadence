@@ -2,7 +2,7 @@ interface P {
   size?: number;
 }
 
-const SW = 1.5;
+const SW = 1.8;
 
 function Svg({ size = 20, children, label }: P & { children: React.ReactNode; label?: string }) {
   return (
@@ -12,7 +12,7 @@ function Svg({ size = 20, children, label }: P & { children: React.ReactNode; la
   );
 }
 
-/** Stroked path shorthand: currentColor, 1.5px, round caps/joins. */
+/** Stroked path shorthand: currentColor, 1.8px, round caps/joins. */
 function strokeProps() {
   return { stroke: 'currentColor', strokeWidth: SW, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
 }
@@ -205,6 +205,13 @@ export const LyricsIcon = (p: P) => (
   <Svg {...p}>
     <path d="M5 4.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-6.5L8 21v-3.5H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" {...strokeProps()} />
     <path d="M9.6 8.4 8.4 11h1.8v2H7.8v-2.2l1-2.4h.8ZM14.6 8.4 13.4 11h1.8v2h-2.4v-2.2l1-2.4h.8Z" fill="currentColor" />
+  </Svg>
+);
+/** A circled plus for "Add to Library", which becomes a circled check once saved. */
+export const LibraryIcon = ({ saved = false, ...p }: P & { saved?: boolean }) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.5" {...strokeProps()} />
+    <path d={saved ? 'm8.2 12.3 2.6 2.6 5-5.4' : 'M12 8.2v7.6M8.2 12h7.6'} {...strokeProps()} />
   </Svg>
 );
 export const SidebarIcon = (p: P) => (
