@@ -36,7 +36,7 @@ export function Sidebar({ location, collapsed, onNavigate }: SidebarProps) {
   const [closed, setClosed] = useState<Record<SectionId, boolean>>({ cadence: false, library: false, pins: false, playlists: false });
   const isApple = platform === 'apple';
   const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
-  const needsAppleSignIn = isApple && appleCap !== undefined && appleCap.state !== 'ready';
+  const needsAppleSignIn = isApple && appleCap?.state === 'unauthenticated';
 
   const row = (key: string, label: string, icon: ReactNode, active: boolean, go: () => void, trailing?: ReactNode) => (
     <button

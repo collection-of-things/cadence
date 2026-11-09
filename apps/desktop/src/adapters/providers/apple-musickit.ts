@@ -127,6 +127,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     }
     if (ok) {
       this.installed = true;
+      // The controller posts authorization while its installation eval is
+      // still pending. Publish again now that capabilities() can report it.
+      this.emit({ kind: "capabilitiesChanged" });
     } else {
       this.installBackoffUntil = Date.now() + 15_000;
     }

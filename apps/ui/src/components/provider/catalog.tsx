@@ -2,8 +2,7 @@
  * Provider catalog UI — the shared machinery that renders Apple Music's world
  * (and later YouTube Music / Spotify) through the one CatalogPage surface.
  *
- * Deliberately reuses the shell's existing visual language (.home-*, .src-*,
- * .album-*) — Screen owns the design system; this file only supplies data.
+ * Uses the shell's scroll frame and provider-scoped catalog styling.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,6 +23,7 @@ import { artistsLine, formatTime } from '../../format';
 import { useUi } from '../../hooks';
 import { NoteIcon, PlayIcon, PlusIcon } from '../../icons';
 import { cleanIpcError } from './errors';
+import './provider.css';
 
 /** Platform -> its playback route. */
 export function routeForPlatform(platform: PlatformId): RouteId | null {
@@ -49,6 +49,7 @@ export function useCatalogPage(
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const authorization = useUi((s) => s.capabilities.find((cap) => cap.route === route)?.state);
   const reqKey = request === null ? 'null' : JSON.stringify(request);
   useEffect(() => {
     let live = true;
@@ -75,7 +76,7 @@ export function useCatalogPage(
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, reqKey, nonce, ...deps]);
+  }, [route, reqKey, nonce, authorization, ...deps]);
   return {
     page,
     error,
@@ -109,17 +110,17 @@ function Card({ art, title, sub, onOpen, onPlay, index }: {
   index: number;
 }) {
   return (
-    <button className="home-album-card" onClick={onOpen ?? onPlay} aria-label={title}>
-      <span className="home-cover">
+    <button className="catalog-album-card" onClick={onOpen ?? onPlay} aria-label={title}>
+      <span className="catalog-cover">
         {art ? <img src={art.url} alt="" loading={index > 3 ? 'lazy' : 'eager'} /> : (
-          <span className="home-cover-empty"><NoteIcon size={36} /></span>
+          <span className="catalog-cover-empty"><NoteIcon size={36} /></span>
         )}
-        <span className="home-cover-shade" />
-        <span className="home-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
+        <span className="catalog-cover-shade" />
+        <span className="catalog-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
       </span>
-      <span className="home-card-caption">
-        <span className="home-card-title">{title}</span>
-        {sub && <span className="home-card-artist">{sub}</span>}
+      <span className="catalog-card-caption">
+        <span className="catalog-card-title">{title}</span>
+        {sub && <span className="catalog-card-artist">{sub}</span>}
       </span>
     </button>
   );
@@ -136,7 +137,7 @@ function SongRow({ track, index, tracks, origin }: {
   const play = () => session.playTracks(tracks, index, origin ?? { kind: 'provider' });
   return (
     <div
-      className={`album-track-row ${isCurrent ? 'now' : ''}`}
+      className={`catalog-detail-track-row ${isCurrent ? 'now' : ''}`}
       tabIndex={0}
       onClick={play}
       onKeyDown={(e) => {
@@ -146,23 +147,23 @@ function SongRow({ track, index, tracks, origin }: {
         }
       }}
     >
-      <span className="album-track-index">
+      <span className="catalog-detail-track-index">
         {isCurrent && playing
           ? <span className="q-eq on" aria-hidden="true"><i /><i /><i /></span>
           : String(index + 1).padStart(2, '0')}
       </span>
-      <span className="home-cover catalog-song-art">
+      <span className="catalog-cover catalog-song-art">
         {track.artwork ? <img src={track.artwork.url} alt="" loading="lazy" /> : (
-          <span className="home-cover-empty"><NoteIcon size={16} /></span>
+          <span className="catalog-cover-empty"><NoteIcon size={16} /></span>
         )}
       </span>
-      <span className="album-track-copy">
-        <span className="album-track-title">{track.title}</span>
-        <span className="album-track-artist">{artistsLine(track.artists)}</span>
+      <span className="catalog-detail-track-copy">
+        <span className="catalog-detail-track-title">{track.title}</span>
+        <span className="catalog-detail-track-artist">{artistsLine(track.artists)}</span>
       </span>
-      <span className="album-track-duration">{formatTime(track.durationMs)}</span>
+      <span className="catalog-detail-track-duration">{formatTime(track.durationMs)}</span>
       <button
-        className="album-track-add"
+        className="catalog-detail-track-add"
         aria-label={`Play ${track.title} next`}
         title="Play next"
         onClick={(e) => {
@@ -200,7 +201,7 @@ export function CatalogSectionView({ id, title, subtitle, entries, nav }: {
   const scroll = (direction: -1 | 1) => {
     const el = railRef.current;
     if (!el) return;
-    const card = el.querySelector('.home-album-card') as HTMLElement | null;
+    const card = el.querySelector('.catalog-album-card') as HTMLElement | null;
     el.scrollBy({ left: direction * ((card?.offsetWidth ?? 260) + 14) * 2, behavior: 'smooth' });
   };
 
@@ -218,25 +219,25 @@ export function CatalogSectionView({ id, title, subtitle, entries, nav }: {
   };
 
   return (
-    <section className="home-shelf" aria-label={title} data-section-id={id}>
-      <div className="home-shelf-head">
+    <section className="catalog-shelf" aria-label={title} data-section-id={id}>
+      <div className="catalog-shelf-head">
         <div>
           <h2>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
         </div>
         {others.length > 0 && (
-          <div className="shelf-controls">
-            <button className="shelf-arrow" aria-label={`Scroll ${title} left`} disabled={edges.left} onClick={() => scroll(-1)}>
+          <div className="catalog-shelf-controls">
+            <button className="catalog-shelf-arrow" aria-label={`Scroll ${title} left`} disabled={edges.left} onClick={() => scroll(-1)}>
               <Arrow direction="back" />
             </button>
-            <button className="shelf-arrow" aria-label={`Scroll ${title} right`} disabled={edges.right} onClick={() => scroll(1)}>
+            <button className="catalog-shelf-arrow" aria-label={`Scroll ${title} right`} disabled={edges.right} onClick={() => scroll(1)}>
               <Arrow direction="forward" />
             </button>
           </div>
         )}
       </div>
       {songs.length > 0 && (
-        <div className="album-track-list catalog-track-list">
+        <div className="catalog-track-list">
           {songs.map((e, i) => (
             <SongRow
               key={e.track.id}
@@ -249,7 +250,7 @@ export function CatalogSectionView({ id, title, subtitle, entries, nav }: {
         </div>
       )}
       {others.length > 0 && (
-        <div className="home-rail" ref={railRef} onScroll={updateEdges}>
+        <div className="catalog-rail" ref={railRef} onScroll={updateEdges}>
           {others.map((e, i) => {
             if (e.kind === 'album' || e.kind === 'playlist') {
               const c = e.kind === 'album' ? e.album : e.playlist;
@@ -304,8 +305,8 @@ export function CatalogPageView({ page, nav }: { page: CatalogPage; nav: Catalog
         <CatalogSectionView key={s.id} id={s.id} title={s.title} {...(s.subtitle ? { subtitle: s.subtitle } : {})} entries={s.entries} nav={nav} />
       ))}
       {page.sections.length === 0 && (
-        <div className="home-empty" role="status">
-          <span className="home-empty-icon"><NoteIcon size={28} /></span>
+        <div className="catalog-empty" role="status">
+          <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
           <div><h2>Nothing here yet</h2><p>This page came back empty.</p></div>
         </div>
       )}
@@ -323,13 +324,13 @@ export function ProviderPageFrame({ title, loading, error, needsSignIn, route, c
   children: React.ReactNode;
 }) {
   return (
-    <div className="home-view">
-      <div className="home-scroll">
-        <header className="home-intro"><h1>{title}</h1></header>
-        {loading && <div className="home-loading" role="status">Loading…</div>}
+    <div className="catalog-view">
+      <div className="stage-scroll catalog-scroll">
+        <header className="page-head catalog-intro"><h1>{title}</h1></header>
+        {loading && <div className="catalog-loading" role="status">Loading…</div>}
         {!loading && error && (
-          <div className="home-empty" role="alert">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
+          <div className="catalog-empty" role="alert">
+            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
             <div>
               <h2>Could not load {title}</h2>
               <p>{error}</p>
@@ -353,7 +354,7 @@ export function PlayAllButton({ tracks, origin }: {
   origin?: { kind: 'album' | 'playlist' | 'manual' | 'provider'; id?: string; name?: string };
 }) {
   return (
-    <button className="album-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+    <button className="catalog-detail-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
       <PlayIcon size={19} /> <span>Play</span>
     </button>
   );

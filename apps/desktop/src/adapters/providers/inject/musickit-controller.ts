@@ -94,11 +94,42 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     return verb(path, params || {});
   }
 
+  let accountStorefront = null;
+  let accountToken = null;
+  async function storefront() {
+    if (!mk.isAuthorized) return mk.storefrontId || 'us';
+    // The site's /us/browse bootstrap can be signed into an Indian account.
+    // Preview requests tolerate this; full playback rejects CONTENT_EQUIVALENT.
+    if (!accountStorefront || accountToken !== mk.musicUserToken) {
+      const response = await amp('/v1/me/storefront');
+      const id = response && response.data && response.data[0] && response.data[0].id;
+      if (typeof id !== 'string' || !/^[a-z]{2}$/.test(id)) {
+        throw new Error('Could not determine your Apple Music account region. Try again.');
+      }
+      accountStorefront = id;
+      accountToken = mk.musicUserToken;
+    }
+    mk.storefrontId = accountStorefront;
+    return accountStorefront;
+  }
+
+  async function requireFullPlayback() {
+    if (!mk.isAuthorized) throw new Error('Sign in to Apple Music to play full songs.');
+    const subscribed = typeof mk.hasMusicSubscription === 'function'
+      ? await mk.hasMusicSubscription() : await mk.hasMusicSubscription;
+    if (subscribed === false) throw new Error('An active Apple Music subscription is required to play full songs.');
+    await storefront();
+    // music.apple.com can leave its shared SDK in PREVIEW_ONLY even for a
+    // signed-in subscriber. This public setter selects protected full audio.
+    mk.previewOnly = false;
+  }
+
   // --- queue bookkeeping -------------------------------------------------
   // We mirror the coordinator's intent minimally: the mk queue always holds
   // [current, ...mirrored successors]. 'appended' tracks ids we pushed via
   // playLater so refresh calls can dedupe/replace instead of piling up.
   let appended = [];
+  let changingQueue = false;
 
   function queueInfo() {
     const q = mk.queue;
@@ -123,28 +154,34 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
 
   async function setQueueAndPlay(spec, positionMs) {
-    const arg = itemSpecToQueueArg(spec);
-    appended = [];
-    if (spec.type === 'station') {
-      try { await mk.setQueue(arg); }
-      catch (e) {
-        if (typeof mk.setStationQueue === 'function') await mk.setStationQueue(spec.id);
-        else throw e;
+    await requireFullPlayback();
+    changingQueue = true;
+    try {
+      const arg = itemSpecToQueueArg(spec);
+      appended = [];
+      if (spec.type === 'station') {
+        try { await mk.setQueue(arg); }
+        catch (e) {
+          if (typeof mk.setStationQueue === 'function') await mk.setStationQueue(spec.id);
+          else throw e;
+        }
+      } else {
+        try {
+          await mk.setQueue(arg);
+        } catch (e) {
+          if (spec.type !== 'song') throw e;
+          // Library-minted ids occasionally need the items form.
+          await mk.setQueue({ items: [{ id: spec.id, type: 'song' }] });
+        }
       }
-    } else {
-      try {
-        await mk.setQueue(arg);
-      } catch (e) {
-        if (spec.type !== 'song') throw e;
-        // Library-minted ids occasionally need the items form.
-        await mk.setQueue({ items: [{ id: spec.id, type: 'song' }] });
-      }
+      if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
+      await mk.play();
+      // Seek after loading the stream, including zero. Seeking before play
+      // can target the previous item; skipping zero retains its old position.
+      if (spec.type !== 'station') await mk.seekToTime(Math.max(0, positionMs || 0) / 1000);
+    } finally {
+      changingQueue = false;
     }
-    if (positionMs && positionMs > 0) {
-      try { await mk.seekToTime(positionMs / 1000); } catch (e) {}
-    }
-    if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
-    await mk.play();
     post(true);
     return true;
   }
@@ -169,21 +206,35 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   let last = '';
   let lastNowPlayingId = null;
   let lastNowPlayingPos = -1;
+  let previewError = '';
   function post(force) {
     const item = mk.nowPlayingItem;
     const st = mk.playbackState;
     const qi = queueInfo();
-    const dur = Math.round((item && item.playDuration) || (mk.currentPlaybackDuration * 1000) || 0);
+    const streamDuration = Math.round((mk.currentPlaybackDuration || 0) * 1000);
+    const catalogDuration = item && item.attributes && Number(item.attributes.durationInMillis) || 0;
+    const dur = catalogDuration || streamDuration;
     const posMs = Math.round((mk.currentPlaybackTime || 0) * 1000);
+    const clipped = !changingQueue && catalogDuration > 0 && streamDuration > 0 &&
+      streamDuration + 2000 < catalogDuration &&
+      (st === STATES.playing || st === STATES.ended || st === STATES.completed);
+    if (clipped) {
+      const key = String(item.id) + ':' + streamDuration;
+      if (previewError !== key) {
+        previewError = key;
+        mk.pause();
+        emit('error', { message: 'Apple Music returned a preview instead of the full song. Playback stopped; try signing in again.' });
+      }
+    } else if (!changingQueue && st === STATES.playing) previewError = '';
     // Only MusicKit's terminal states mean the track ended — a transient
     // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
     // Lingering 'ended' states post-transition are stale unless the position
     // is actually at the tail — a real end has already played the track out.
     const naturalEnd =
-      (st === STATES.ended || st === STATES.completed) &&
+      !changingQueue && !clipped && (st === STATES.ended || st === STATES.completed) &&
       (item === null ? true : dur === 0 ? false : posMs >= dur - 1500);
     const s = {
-      state: st === STATES.playing ? 'playing'
+      state: clipped ? 'paused' : changingQueue ? 'buffering' : st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'
         : st === STATES.loading || st === STATES.waiting
           || st === STATES.stalled || st === STATES.seeking ? 'buffering'
@@ -227,7 +278,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   window.__cadenceCtl = {
     mk,
     // --- introspection ---
-    storefront() { try { return mk.storefrontId; } catch (e) { return 'us'; } },
+    storefront,
     isAuthorized() { try { return !!mk.isAuthorized; } catch (e) { return false; } },
     state() { post(true); return true; },
     // --- data ---
@@ -236,6 +287,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     play: setQueueAndPlay,
     // Skip inside the mirrored queue (manual next landing on a prefetch).
     async skipTo(spec) {
+      await requireFullPlayback();
       const qi = queueInfo();
       if (qi.nextItemId === String(spec.id)) { await mk.skipToNextItem(); }
       else { await setQueueAndPlay(spec, 0); }
@@ -243,7 +295,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       return true;
     },
     pause() { mk.pause(); post(true); return true; },
-    resume() { return mk.play().then(() => (post(true), true)); },
+    async resume() { await requireFullPlayback(); await mk.play(); post(true); return true; },
     seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },

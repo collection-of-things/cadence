@@ -97,6 +97,24 @@ describe("apple adapter page events", () => {
     events = m.events;
   });
 
+  it("publishes ready after authorization arrives during controller installation", async () => {
+    (adapter as any).installed = false;
+    const states: string[] = [];
+    const pending: Promise<void>[] = [];
+    adapter.onEvent((event) => {
+      if (event.kind === "capabilitiesChanged") {
+        pending.push(adapter.capabilities().then((caps) => { states.push(caps.state); }));
+      }
+    });
+    sess.eval = async () => {
+      sess.emit("playerState", { state: "idle", isAuthorized: true, positionMs: 0, durationMs: 0 });
+      return true;
+    };
+    await adapter.prepare();
+    await Promise.all(pending);
+    expect(states.at(-1)).toBe("ready");
+  });
+
   it("ignores station ended/nowPlaying changes inside a stream", () => {
     (adapter as any).current = { queueId: "q1", providerId: "st1", station: true };
     sess.emit("playerState", { state: "ended", ended: true, isAuthorized: true, positionMs: 0 });

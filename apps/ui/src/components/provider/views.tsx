@@ -159,16 +159,16 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
     .map((e) => e.track);
 
   return (
-    <div className="home-view">
-      <div className="home-scroll">
-        <header className="home-intro">
+    <div className="catalog-view">
+      <div className="stage-scroll catalog-scroll">
+        <header className="page-head catalog-intro">
           <h1>Library</h1>
         </header>
-        <nav className="src-pills catalog-tabs" aria-label="Library sections">
+        <nav className="catalog-tabs" aria-label="Library sections">
           {LIBRARY_TABS.map((t) => (
             <button
               key={t}
-              className={`src-pill ${tab === t ? 'on' : ''}`}
+              className={`catalog-tab ${tab === t ? 'on' : ''}`}
               onClick={() => setTab(t)}
             >
               {TAB_LABELS[t]}
@@ -176,8 +176,8 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
           ))}
         </nav>
         {!authorized && (
-          <div className="home-empty">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
+          <div className="catalog-empty">
+            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
             <div>
               <h2>Sign in to see your library</h2>
               <p>Your streaming library appears here once you are signed in.</p>
@@ -190,11 +190,11 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
           </div>
         )}
         {authorized && loading && pages.length === 0 && (
-          <div className="home-loading" role="status">Loading your library…</div>
+          <div className="catalog-loading" role="status">Loading your library…</div>
         )}
         {authorized && error && (
-          <div className="home-empty" role="alert">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
+          <div className="catalog-empty" role="alert">
+            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
             <div><h2>Could not load your library</h2><p>{error}</p></div>
           </div>
         )}
@@ -207,8 +207,8 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
           />
         )}
         {authorized && !loading && !error && pages.length === 0 && (
-          <div className="home-empty" role="status">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
+          <div className="catalog-empty" role="status">
+            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
             <div><h2>Nothing saved yet</h2><p>Music you add to your library will show up here.</p></div>
           </div>
         )}
@@ -257,10 +257,10 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
   const { page, error, loading } = useCatalogPage(route, request, [nonce]);
 
   return (
-    <div className="home-view">
-      <div className="home-scroll">
-        <header className="home-intro"><h1>Search</h1></header>
-        <div className="src-field catalog-search-field">
+    <div className="catalog-view">
+      <div className="stage-scroll catalog-scroll">
+        <header className="page-head catalog-intro"><h1>Search</h1></header>
+        <div className="catalog-search-field">
           <SearchIcon size={16} />
           <input
             type="search"
@@ -271,16 +271,16 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
             onChange={(e) => setText(e.currentTarget.value)}
           />
         </div>
-        {loading && <div className="home-loading" role="status">Searching…</div>}
+        {loading && <div className="catalog-loading" role="status">Searching…</div>}
         {!loading && error && (
-          <div className="home-empty" role="alert">
-            <span className="home-empty-icon"><NoteIcon size={28} /></span>
+          <div className="catalog-empty" role="alert">
+            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
             <div><h2>Search failed</h2><p>{error}</p></div>
           </div>
         )}
         {!loading && !error && page && <CatalogPageView page={page} nav={nav} />}
         {!loading && !error && !page && !debounced && (
-          <div className="home-empty"><div><h2>Search the catalog</h2><p>Songs, albums, artists, playlists and radio.</p></div></div>
+          <div className="catalog-empty"><div><h2>Search the catalog</h2><p>Songs, albums, artists, playlists and radio.</p></div></div>
         )}
       </div>
     </div>
@@ -320,7 +320,7 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
   const tracks: TrackRef[] = trackEntries.map((e) => e.track);
   const totalDuration = tracks.reduce((sum, t) => sum + t.durationMs, 0);
   const tone = palette[0] ?? DEFAULT_PALETTE[0]!;
-  const pageStyle = { '--album-rgb': tone.join(' ') } as CSSProperties;
+  const pageStyle = { '--catalog-detail-rgb': tone.join(' ') } as CSSProperties;
   const origin = { kind: container.kind, id: container.id, name: container.title } as const;
   const eyebrow = container.kind === 'album' ? 'ALBUM' : 'PLAYLIST';
 
@@ -334,54 +334,54 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
   };
 
   return (
-    <div className="album-page" style={pageStyle}>
-      <div className="album-page-glow" aria-hidden="true" />
-      <div className="album-page-scroll">
-        <button className="album-back" onClick={onBack}>
+    <div className="catalog-detail-page" style={pageStyle}>
+      <div className="catalog-detail-page-glow" aria-hidden="true" />
+      <div className="stage-scroll catalog-detail-page-scroll">
+        <button className="catalog-detail-back" onClick={onBack}>
           <BackArrow /> <span>Back</span>
         </button>
-        <section className="album-hero">
-          <div className="album-artwork-wrap">
+        <section className="catalog-detail-hero">
+          <div className="catalog-detail-artwork-wrap">
             {artworkUrl
-              ? <img className="album-artwork" src={artworkUrl} alt={`${container.title} artwork`} />
-              : <div className="album-artwork album-artwork-empty"><NoteIcon size={58} /></div>}
+              ? <img className="catalog-detail-artwork" src={artworkUrl} alt={`${container.title} artwork`} />
+              : <div className="catalog-detail-artwork catalog-detail-artwork-empty"><NoteIcon size={58} /></div>}
           </div>
-          <div className="album-details">
-            <span className="album-eyebrow">{eyebrow}</span>
+          <div className="catalog-detail-details">
+            <span className="catalog-detail-eyebrow">{eyebrow}</span>
             <h1>{page?.title ?? container.title}</h1>
             {(page?.subtitle ?? container.subtitle) && (
-              <p className="album-artist-name">{page?.subtitle ?? container.subtitle}</p>
+              <p className="catalog-detail-artist-name">{page?.subtitle ?? container.subtitle}</p>
             )}
-            <div className="album-facts" aria-label="Details">
-              {container.year !== undefined && <span className="album-fact">{container.year}</span>}
-              <span className="album-fact">
+            <div className="catalog-detail-facts" aria-label="Details">
+              {container.year !== undefined && <span className="catalog-detail-fact">{container.year}</span>}
+              <span className="catalog-detail-fact">
                 {page?.truncated ? `first ${tracks.length} tracks` : `${tracks.length || container.itemCount || 0} tracks`}
               </span>
-              {totalDuration > 0 && <span className="album-fact">{formatTime(totalDuration)}</span>}
+              {totalDuration > 0 && <span className="catalog-detail-fact">{formatTime(totalDuration)}</span>}
             </div>
-            <div className="album-actions">
-              <button className="album-shuffle" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={shuffledPlay}>
+            <div className="catalog-detail-actions">
+              <button className="catalog-detail-shuffle" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={shuffledPlay}>
                 <ShuffleIcon size={18} />
               </button>
-              <button className="album-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+              <button className="catalog-detail-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
                 <PlayIcon size={19} /> <span>Play</span>
               </button>
-              <button className="album-add" aria-label="Add to queue" title="Add to queue" disabled={!tracks.length}
+              <button className="catalog-detail-add" aria-label="Add to queue" title="Add to queue" disabled={!tracks.length}
                 onClick={() => tracks.forEach((t) => session.append(t))}>
                 <PlusIcon size={19} />
               </button>
             </div>
           </div>
         </section>
-        <section className="album-tracklist" aria-label={`${container.title} track list`}>
-          <div className="album-tracklist-head">
+        <section className="catalog-detail-tracklist" aria-label={`${container.title} track list`}>
+          <div className="catalog-detail-tracklist-head">
             <h2>Tracks</h2>
             {tracks.length > 0 && <span>{tracks.length} songs</span>}
           </div>
-          {loading && <div className="album-track-status" role="status">Loading tracks…</div>}
-          {!loading && error && <div className="album-track-status" role="alert">{error}</div>}
+          {loading && <div className="catalog-detail-track-status" role="status">Loading tracks…</div>}
+          {!loading && error && <div className="catalog-detail-track-status" role="alert">{error}</div>}
           {!loading && !error && tracks.length === 0 && (
-            <div className="album-track-status">No tracks on this {container.kind}.</div>
+            <div className="catalog-detail-track-status">No tracks on this {container.kind}.</div>
           )}
           {!loading && !error && page && (
             <CatalogPageView page={{ sections: page.sections.filter((s) => s.entries.length > 0) }} nav={nav} />
@@ -405,10 +405,10 @@ export function ArtistView({ artist, nav, onBack }: ProviderViewProps & {
 
   return (
     <ProviderPageFrame title={artist.name} loading={loading} error={error} route={artist.route}>
-      <button className="album-back" onClick={onBack}><BackArrow /> <span>Back</span></button>
+      <button className="catalog-detail-back" onClick={onBack}><BackArrow /> <span>Back</span></button>
       {topTracks.length > 0 && (
-        <div className="album-actions" style={{ padding: '0 0 12px' }}>
-          <button className="album-play" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
+        <div className="catalog-detail-actions" style={{ padding: '0 0 12px' }}>
+          <button className="catalog-detail-play" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
             <PlayIcon size={19} /> <span>Play top songs</span>
           </button>
         </div>
