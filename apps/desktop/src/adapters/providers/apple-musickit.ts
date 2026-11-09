@@ -73,6 +73,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     storefront: async () => this.evalCtl<string>("storefront()"),
   });
   private generation = 0;
+  /** Invalidates late play completions after a stop or account teardown. */
+  private playAttempt = 0;
   private authorized = false;
   private installed = false;
   private destroyed = false;
@@ -261,7 +263,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
-    this.session.setAudioMuted(false);
+    // Silence the old item before waiting for queue mirroring or page work.
+    // MusicKit can keep the old stream alive while setQueue/play are loading.
+    this.session.setAudioMuted(true);
+    const attempt = ++this.playAttempt;
     this.generation = lease.generationId;
     this.installBackoffUntil = 0; // a real play request waits for install
     if (this.signedOut) throw new Error("Apple Music is signed out");
@@ -277,7 +282,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
       // prefetched successor, instead of reloading the stream.
       const wasMirrored =
         (opts.positionMs ?? 0) === 0 &&
-        this.mirrored.some((m) => m.queueId === item.queueId);
+        spec.type !== "station" &&
+        !this.current?.station &&
+        this.mirrored.some((m) => m.providerId === spec.id);
       this.mirrored = [];
       this.unknownNpId = null;
       this.tailStuckSince = 0;
@@ -291,6 +298,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
             `play(${JSON.stringify(spec)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`,
           );
         }
+        if (attempt !== this.playAttempt || this.signedOut || this.destroyed) return;
+        this.session.setAudioMuted(false);
         this.emit({
           kind: "started",
           generationId: lease.generationId,
@@ -375,8 +384,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async stop(lease: PlaybackLease): Promise<void> {
-    this.session.setAudioMuted(true);
     if (lease.generationId !== this.generation) return;
+    this.playAttempt++;
+    this.session.setAudioMuted(true);
     // The coordinator's handoff counts on confirmed silence — propagate
     // failures instead of leaving a second source audible.
     await this.session.eval(`window.__cadenceCtl.pause()`);
@@ -602,6 +612,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   private signOutInFlight: Promise<void> | null = null;
 
   async signOut(): Promise<void> {
+    this.playAttempt++;
     // Invalidate before joining — a sign-in queued behind an in-flight
     // teardown must not proceed when a LATER sign-out lands.
     this.signedOut = true; // suppress lazy warm-up before/after clearing
@@ -655,6 +666,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   }
 
   async dispose(): Promise<void> {
+    this.playAttempt++;
     this.destroyed = true;
     this.signInCleanup?.();
     this.signInCleanup = null;

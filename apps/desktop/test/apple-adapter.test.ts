@@ -224,6 +224,14 @@ describe("apple adapter page events", () => {
     expect(events.some((e) => e.kind === "started")).toBe(true);
   });
 
+  it("reuses the prefetched song when a manual selection creates fresh queue ids", async () => {
+    (adapter as unknown as { current: unknown }).current = { queueId: "old-a", providerId: "sA", station: false };
+    (adapter as unknown as { mirrored: unknown[] }).mirrored = [{ queueId: "old-b", providerId: "sB", station: false }];
+    await adapter.play(item("new-b", "sB"), { generationId: 3, route: "apple-musickit", queueId: "new-b", issuedAtMs: 0 }, {});
+    expect(sess.evals.some(e => e.includes("skipTo"))).toBe(true);
+    expect(sess.evals.some(e => e.includes("__cadenceCtl.play("))).toBe(false);
+  });
+
   it("a prefetch queued behind play() lands after it", async () => {
     (adapter as any).current = { queueId: "q1", providerId: "sA", station: false };
     const play = adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });

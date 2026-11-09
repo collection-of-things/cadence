@@ -66,6 +66,28 @@ async function harness(options: { authorized?: boolean; subscription?: boolean }
 const song = { type: "song", id: "s1" } as const;
 
 describe("real injected MusicKit controller", () => {
+  it("pauses the old stream before waiting for subscription checks or the new queue", async () => {
+    const { ctl, mk, calls } = await harness();
+    mk.playbackState = 2;
+    let release: (value: boolean) => void = () => {};
+    mk.hasMusicSubscription = () => new Promise(resolve => { release = resolve; });
+    const switching = ctl.play(song, 0);
+    const stateBeforeNetwork = mk.playbackState;
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    release(true);
+    await switching;
+    expect(stateBeforeNetwork).toBe(3);
+    expect(calls[0]).toEqual({ pause: true });
+  });
+
+  it("does not seek again when the new stream is already at zero", async () => {
+    const { ctl, mk, calls } = await harness();
+    const load = mk.setQueue;
+    mk.setQueue = async () => { await load(); mk.currentPlaybackTime = 0; };
+    await ctl.play(song, 0);
+    expect(calls.some(c => "seek" in c)).toBe(false);
+  });
+
   it("uses the subscriber's storefront and full playback rather than the site's preview default", async () => {
     const { ctl, mk, calls } = await harness();
     await ctl.play(song, 0);

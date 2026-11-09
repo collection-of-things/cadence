@@ -99,6 +99,36 @@ function rig() {
 }
 
 describe("apple route x coordinator", () => {
+  it("keeps the old stream muted until a manually selected replacement is ready", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+    expect(r.page.muted).toBe(false);
+    let releasePlay: (value: boolean) => void = () => {};
+    r.page.playGate = new Promise(resolve => { releasePlay = resolve; });
+    const replace = r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("b")], startIndex: 0 });
+    for (let i = 0; i < 100 && r.page.evals.filter(expr => expr.startsWith("window.__cadenceCtl.play(")).length < 2; i++) await Promise.resolve();
+    expect(r.page.evals.filter(expr => expr.startsWith("window.__cadenceCtl.play("))).toHaveLength(2);
+    const mutedWhileLoading = r.page.muted;
+    releasePlay(true);
+    await replace;
+    expect(mutedWhileLoading).toBe(true);
+    expect(r.page.muted).toBe(false);
+  });
+
+  it("a stopped pending play cannot unmute itself when its page call resolves late", async () => {
+    const r = rig();
+    let releasePlay: (value: boolean) => void = () => {};
+    r.page.playGate = new Promise(resolve => { releasePlay = resolve; });
+    const pending = r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+    for (let i = 0; i < 100 && !r.page.evals.some(expr => expr.startsWith("window.__cadenceCtl.play(")); i++) await Promise.resolve();
+    const lease = r.coordinator.getSnapshot().lease;
+    expect(lease).not.toBeNull();
+    await r.apple.stop(lease!);
+    releasePlay(true);
+    await pending;
+    expect(r.page.muted).toBe(true);
+  });
+
   it("preserves an unplayed Apple Play-next queue across quit/restart", async () => {
     const r = rig();
     await r.coordinator.handleCommand({ kind: "insertNext", items: [appleItem("a"), appleItem("b")] });

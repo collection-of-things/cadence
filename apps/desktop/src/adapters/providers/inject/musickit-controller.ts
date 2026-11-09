@@ -154,9 +154,12 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
 
   async function setQueueAndPlay(spec, positionMs) {
-    await requireFullPlayback();
     changingQueue = true;
     try {
+      // Stop the old stream immediately, before any asynchronous account or
+      // queue work. Loading the replacement must never replay its old tail.
+      await mk.pause();
+      await requireFullPlayback();
       const arg = itemSpecToQueueArg(spec);
       appended = [];
       if (spec.type === 'station') {
@@ -178,7 +181,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       await mk.play();
       // Seek after loading the stream, including zero. Seeking before play
       // can target the previous item; skipping zero retains its old position.
-      if (spec.type !== 'station') await mk.seekToTime(Math.max(0, positionMs || 0) / 1000);
+      const targetSeconds = Math.max(0, positionMs || 0) / 1000;
+      if (spec.type !== 'station' && (targetSeconds > 0 || mk.currentPlaybackTime > 0)) {
+        await mk.seekToTime(targetSeconds);
+      }
     } finally {
       changingQueue = false;
     }
