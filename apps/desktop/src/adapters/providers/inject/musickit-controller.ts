@@ -1,3 +1,5 @@
+import { MUSICKIT_OUTPUT_JS } from "./musickit-output.js";
+
 /**
  * Injected controller for the Apple Music route.
  *
@@ -64,6 +66,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     }
   }
   if (!mk) { emit('error', { message: 'MusicKit instance unavailable' }); return false; }
+
+  ${MUSICKIT_OUTPUT_JS}
+  const audioOutput = createMusicKitOutput();
 
   const STATES = (MK && MK.PlaybackStates) || {
     none: 0, loading: 1, playing: 2, paused: 3, stopped: 4,
@@ -159,6 +164,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       // Stop the old stream immediately, before any asynchronous account or
       // queue work. Loading the replacement must never replay its old tail.
       await mk.pause();
+      audioOutput.reset();
       await requireFullPlayback();
       const arg = itemSpecToQueueArg(spec);
       appended = [];
@@ -178,7 +184,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
         }
       }
       if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
+      await audioOutput.wake();
       await mk.play();
+      await audioOutput.prepare();
       // Seek after loading the stream, including zero. Seeking before play
       // can target the previous item; skipping zero retains its old position.
       const targetSeconds = Math.max(0, positionMs || 0) / 1000;
@@ -213,6 +221,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   let lastNowPlayingId = null;
   let lastNowPlayingPos = -1;
   let previewError = '';
+  let terminalKey = '';
+  let terminalReadyAt = 0;
   function post(force) {
     const item = mk.nowPlayingItem;
     const st = mk.playbackState;
@@ -236,11 +246,28 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
     // Lingering 'ended' states post-transition are stale unless the position
     // is actually at the tail — a real end has already played the track out.
-    const naturalEnd =
+    let naturalEnd =
       !changingQueue && !clipped && (st === STATES.ended || st === STATES.completed) &&
       (item === null ? true : dur === 0 ? false : posMs >= dur - 1500);
+    let drainingTail = false;
+    if (naturalEnd && audioOutput.tailMs() > 0) {
+      const key = String(item && item.id) + ':' + qi.position;
+      if (terminalKey !== key) {
+        terminalKey = key;
+        const delay = audioOutput.tailMs();
+        terminalReadyAt = Date.now() + delay;
+        // Re-sample current state, rather than delivering a captured end:
+        // a manual replacement or promotion invalidates this terminal state.
+        setTimeout(() => post(true), delay);
+      }
+      drainingTail = Date.now() < terminalReadyAt;
+      if (drainingTail) naturalEnd = false;
+    } else if (!naturalEnd) {
+      terminalKey = '';
+    }
+    if (!changingQueue && !drainingTail && st !== STATES.playing) audioOutput.idle();
     const s = {
-      state: clipped ? 'paused' : changingQueue ? 'buffering' : st === STATES.playing ? 'playing'
+      state: clipped ? 'paused' : changingQueue ? 'buffering' : drainingTail || st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'
         : st === STATES.loading || st === STATES.waiting
           || st === STATES.stalled || st === STATES.seeking ? 'buffering'
@@ -293,15 +320,18 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     play: setQueueAndPlay,
     // Skip inside the mirrored queue (manual next landing on a prefetch).
     async skipTo(spec) {
+      audioOutput.reset();
       await requireFullPlayback();
+      await audioOutput.wake();
       const qi = queueInfo();
       if (qi.nextItemId === String(spec.id)) { await mk.skipToNextItem(); }
       else { await setQueueAndPlay(spec, 0); }
+      await audioOutput.prepare();
       post(true);
       return true;
     },
-    pause() { mk.pause(); post(true); return true; },
-    async resume() { await requireFullPlayback(); await mk.play(); post(true); return true; },
+    async pause() { await mk.pause(); await audioOutput.pause(); post(true); return true; },
+    async resume() { await requireFullPlayback(); await audioOutput.wake(); await mk.play(); await audioOutput.prepare(); post(true); return true; },
     seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },
