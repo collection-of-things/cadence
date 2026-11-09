@@ -26,6 +26,7 @@ import { NoteIcon, PlayIcon } from '../../icons';
 import { AddGlyph, useJustAdded } from '../AddGlyph';
 import { TrackMenu } from '../TrackRow';
 import { cleanIpcError } from './errors';
+import './provider.css';
 
 /** Platform -> its playback route. */
 export function routeForPlatform(platform: PlatformId): RouteId | null {
@@ -51,6 +52,7 @@ export function useCatalogPage(
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const authorization = useUi((s) => s.capabilities.find((cap) => cap.route === route)?.state);
   const reqKey = request === null ? 'null' : JSON.stringify(request);
   useEffect(() => {
     let live = true;
@@ -77,7 +79,7 @@ export function useCatalogPage(
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, reqKey, nonce, ...deps]);
+  }, [route, reqKey, nonce, authorization, ...deps]);
   return {
     page,
     error,

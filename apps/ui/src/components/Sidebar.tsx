@@ -53,7 +53,7 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
   const [closed, setClosed] = useState<Record<SectionId, boolean>>({ music: false, library: false, pins: false, playlists: false });
   const isApple = platform === 'apple';
   const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
-  const appleSignedOut = appleCap !== undefined && appleCap.state !== 'ready';
+  const appleSignedOut = appleCap?.state === 'unauthenticated';
   const applePlaylists = useApplePlaylists(isApple && appleCap?.state === 'ready');
   const switchIndex = Math.max(0, PLATFORMS.findIndex((p) => p.id === platform));
 

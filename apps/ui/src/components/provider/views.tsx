@@ -427,4 +427,3 @@ export function ArtistView({ artist, nav }: ProviderViewProps & {
     </ProviderPageFrame>
   );
 }
-

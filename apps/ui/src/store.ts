@@ -308,14 +308,18 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     runtime,
     dispatch,
     async init() {
+      // Provider warm-up can authorize while the initial IPC reads are still
+      // pending. Subscribe first and keep those newer capability records.
+      unsubs.push(api.onEvent(dispatch));
+      unsubs.push(api.library.onScanProgress((scan) => set({ scan })));
       const [snapshot, queue, capabilities] = await Promise.all([api.getSnapshot(), api.getQueue(), api.getCapabilities()]);
       const gen = snapshot.lease?.generationId ?? -1;
-      set({ snapshot, queue, capabilities, generationId: Math.max(gen, get().generationId), ready: true });
+      const latest = new Map(capabilities.map(cap => [cap.route, cap]));
+      for (const cap of get().capabilities) latest.set(cap.route, cap);
+      set({ snapshot, queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
       syncClock(snapshot);
       const platform = await api.platform?.active().catch(() => 'local' as const);
       if (platform) set({ platform });
-      unsubs.push(api.onEvent(dispatch));
-      unsubs.push(api.library.onScanProgress((scan) => set({ scan })));
     },
     dispose() {
       for (const u of unsubs) u();

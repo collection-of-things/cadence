@@ -92,6 +92,23 @@ describe('init', () => {
     expect(s.queue.items).toHaveLength(3);
     expect(s.generationId).toBe(1);
   });
+
+  it('keeps authorization events received while the initial capability request is pending', async () => {
+    const api = makeApi();
+    const { MockCadenceApi } = await import('../mock/MockCadenceApi');
+    const mock = new MockCadenceApi();
+    const apple = (await mock.getCapabilities()).find(c => c.route === 'apple-musickit')!;
+    mock.dispose();
+    let release!: (value: typeof apple[]) => void;
+    api.api.getCapabilities = () => new Promise(resolve => { release = resolve; });
+    const loading = createUiStore(api.api);
+    const pending = loading.init();
+    api.emit({ kind: 'capabilities', route: 'apple-musickit', capabilities: { ...apple, state: 'ready' } });
+    release([{ ...apple, state: 'unauthenticated' }]);
+    await pending;
+    expect(loading.store.getState().capabilities.find(c => c.route === 'apple-musickit')?.state).toBe('ready');
+    loading.dispose();
+  });
 });
 
 describe('event -> state mapping', () => {
