@@ -8,6 +8,7 @@ type Item = { id: string; attributes: { durationInMillis: number }; playParams: 
 interface Controller {
   play(spec: { type: "song" | "station"; id: string }, positionMs: number): Promise<boolean>;
   resume(): Promise<boolean>;
+  setVolume(volume: number): boolean;
   state(): boolean;
   storefront(): Promise<string>;
 }
@@ -19,6 +20,7 @@ async function harness(options: { authorized?: boolean; subscription?: boolean }
   const events: { name: string; data: Record<string, unknown> }[] = [];
   const listeners = new Map<string, () => void>();
   const mk = {
+    volume: 1,
     isAuthorized: options.authorized ?? true,
     previewOnly: true,
     musicUserToken: "test-account-token",
@@ -66,6 +68,31 @@ async function harness(options: { authorized?: boolean; subscription?: boolean }
 const song = { type: "song", id: "s1" } as const;
 
 describe("real injected MusicKit controller", () => {
+  it("keeps a constant output margin and linear volume without dynamic gain", async () => {
+    const { ctl, mk } = await harness();
+    ctl.setVolume(1);
+    const full = mk.volume;
+    expect(full).toBeCloseTo(0.7943282347, 9);
+    ctl.setVolume(.5);
+    expect(mk.volume).toBe(full * .5);
+    ctl.setVolume(0);
+    expect(mk.volume).toBe(0);
+    ctl.setVolume(1.5);
+    expect(mk.volume).toBe(full);
+  });
+
+  it("retains requested volume if MusicKit resets its level while loading", async () => {
+    const { ctl, mk } = await harness();
+    ctl.setVolume(.5);
+    const wanted = mk.volume;
+    const play = mk.play;
+    mk.play = async () => { mk.volume = 1; await play(); };
+    await ctl.play(song, 0);
+    expect(mk.volume).toBe(wanted);
+    await ctl.resume();
+    expect(mk.volume).toBe(wanted);
+  });
+
   it("pauses the old stream before waiting for subscription checks or the new queue", async () => {
     const { ctl, mk, calls } = await harness();
     mk.playbackState = 2;
