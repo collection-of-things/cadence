@@ -78,7 +78,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   const outputHeadroom = Math.pow(10, -2 / 20);
   const initialVolume = Number(mk.volume);
   let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
-  function applyOutputVolume() { mk.volume = outputVolume; }
+  function applyOutputVolume() { if (mk.volume !== outputVolume) mk.volume = outputVolume; }
+  applyOutputVolume();
 
   const STATES = (MK && MK.PlaybackStates) || {
     none: 0, loading: 1, playing: 2, paused: 3, stopped: 4,
@@ -295,7 +296,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     if (!item) lastNowPlayingId = null;
   }
 
-  mk.addEventListener('playbackStateDidChange', () => post(true));
+  mk.addEventListener('playbackStateDidChange', () => { applyOutputVolume(); post(true); });
   mk.addEventListener('playbackTimeDidChange', () => post(false));
   mk.addEventListener('nowPlayingItemDidChange', () => post(true));
   if (MK.Events && MK.Events.authorizationStatusDidChange) {
@@ -385,7 +386,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   // Always post on the tick — a frozen boundary state must keep reaching the
   // adapter (position-at-tail detection depends on periodic samples, and a
   // deduped silence looks identical to healthy idle playback).
-  setInterval(() => post(true), 750);
+  setInterval(() => { applyOutputVolume(); post(true); }, 750);
   return true;
   } finally {
     // A failed install must not poison later retries (navigations re-inject).

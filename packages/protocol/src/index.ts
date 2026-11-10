@@ -157,7 +157,7 @@ export interface ActiveOutput {
   sampleRateHz: number;
   channels: number;
   bitDepth: number | "float";
-  /** True when Cadence's EQ, ReplayGain and resampler are bypassed. OS/device conversion is not verified by this flag. */
+  /** True when fidelity mode bypasses Cadence's EQ, ReplayGain and resampler. Idle playback may also need no DSP without this flag. OS/device conversion is not verified. */
   fidelityBypass: boolean;
   exclusive: boolean;
 }

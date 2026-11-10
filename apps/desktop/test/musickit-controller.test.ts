@@ -20,6 +20,7 @@ async function harness(options: { authorized?: boolean; subscription?: boolean; 
   const events: { name: string; data: Record<string, unknown> }[] = [];
   const listeners = new Map<string, () => void>();
   const configurations: { bitrate?: number }[] = [];
+  const ticks: (() => void)[] = [];
   const mk = {
     volume: options.initialVolume ?? 1,
     bitrate: 64,
@@ -76,11 +77,11 @@ async function harness(options: { authorized?: boolean; subscription?: boolean; 
       scripts: [{ id: "serialized-server-data", type: "application/json", textContent: '{"token":"eyJtest-only-token"}' }],
       documentElement: { innerHTML: "" },
     },
-    setInterval: () => 1,
+    setInterval: (tick: () => void) => { ticks.push(tick); return 1; },
     setTimeout: options.configureFallback ? (fn: () => void) => { fn(); return 1; } : setTimeout,
   });
   if (!window.__cadenceCtl) throw new Error("Controller did not install");
-  return { ctl: window.__cadenceCtl, mk, calls, events, listeners, configurations };
+  return { ctl: window.__cadenceCtl, mk, calls, events, listeners, configurations, tick: () => ticks.forEach(tick => tick()) };
 }
 
 const song = { type: "song", id: "s1" } as const;
@@ -155,6 +156,22 @@ describe("real injected MusicKit controller", () => {
     const muted = await harness({ initialVolume: 0 });
     await muted.ctl.play(song, 0);
     expect(muted.mk.volume).toBe(0);
+  });
+
+  it("applies volume at install and restores it on state changes and status ticks", async () => {
+    const initial = await harness({ initialVolume: .5 });
+    expect(initial.mk.volume).toBeCloseTo(.3971641174, 9);
+    for (const volume of [0, .5, 1]) {
+      const { ctl, mk, listeners, tick } = await harness();
+      ctl.setVolume(volume);
+      const wanted = mk.volume;
+      mk.volume = 1;
+      listeners.get("playbackStateDidChange")?.();
+      expect(mk.volume).toBe(wanted);
+      mk.volume = 1;
+      tick();
+      expect(mk.volume).toBe(wanted);
+    }
   });
 
   it("pauses the old stream before waiting for subscription checks or the new queue", async () => {

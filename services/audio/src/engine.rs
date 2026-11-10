@@ -4038,6 +4038,66 @@ mod tests {
     }
 
     #[test]
+    fn default_integer_file_decode_preserves_source_values() {
+        struct ManualSink;
+        impl Sink for ManualSink { fn stop(&mut self) {} }
+        for bits in [24u16, 32] {
+            let values: Vec<i32> = if bits == 24 {
+                [1, -3, 8_388_607, -8_388_608, 7_654_321, -7_654_321].into_iter().map(|v| v << 8).collect()
+            } else { vec![1_600_000_001, -1_600_000_003, i32::MAX, i32::MIN, 37, -39] };
+            let payload: Vec<u8> = values.iter().flat_map(|v| {
+                let bytes = v.to_le_bytes();
+                if bits == 24 { bytes[1..].to_vec() } else { bytes.to_vec() }
+            }).collect();
+            let align = 2 * (bits / 8);
+            let mut wav = b"RIFF".to_vec();
+            wav.extend_from_slice(&(36 + payload.len() as u32).to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16u32.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&2u16.to_le_bytes());
+            wav.extend_from_slice(&44_100u32.to_le_bytes());
+            wav.extend_from_slice(&(44_100u32 * align as u32).to_le_bytes());
+            wav.extend_from_slice(&align.to_le_bytes());
+            wav.extend_from_slice(&bits.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            wav.extend_from_slice(&payload);
+            let path = std::env::temp_dir().join(format!("cadence-integer-source-{}-{bits}.wav", std::process::id()));
+            std::fs::write(&path, wav).unwrap();
+            let caps = Arc::new(crate::sink::NullCaps { rate: 44_100, channels: 2, fast: false });
+            let neg = Negotiated {
+                rate: 44_100, channels: 2, kind: PcmKind::S32,
+                device_name: caps.name(), positions: crate::sink::resolve_positions(None, 2),
+            };
+            let (core, _, fft) = Engine::make_core(neg, None);
+            let engine = Engine::new(
+                EngineConfig::default(), Arc::new(|_| {}), Box::new(ManualSink),
+                caps, fft, Arc::clone(&core),
+            );
+            engine.load(LoadParams {
+                queue_id: "integer-file".into(), generation_id: 1,
+                source: SourceSpec::File { path: path.clone() },
+                start_paused: true, position_ms: 0, replay_gain_db: None,
+            }).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !core.lock().unwrap().active.as_ref().unwrap().ready.load(Ordering::Acquire) {
+                assert!(std::time::Instant::now() < deadline, "file decoder did not become ready");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let mut out = vec![0i32; values.len()];
+            {
+                let mut c = core.lock().unwrap();
+                c.paused = false;
+                c.pull_s32(&mut out);
+            }
+            engine.shutdown();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(out, values, "{bits}-bit file changed at unity");
+        }
+    }
+
+    #[test]
     fn s32_sink_crosses_integer_and_processed_boundaries_without_gaps() {
         for integer_first in [true, false] {
             let neg = Negotiated {
