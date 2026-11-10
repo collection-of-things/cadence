@@ -101,9 +101,9 @@ function FidelitySection() {
   const bypassed = useUi((s) => s.snapshot.output?.fidelityBypass ?? false);
   const sub = enabled
     ? bypassed
-      ? 'Active: bypassing EQ and resampling at the source rate.'
-      : 'On — bypass applies when the device accepts the source format.'
-    : 'Bypasses EQ and resampling when the device accepts the source format.';
+      ? 'At source rate with EQ and ReplayGain bypassed. System resampling may still apply.'
+      : 'On: app processing bypass is unavailable for this output format.'
+    : 'Bypasses Cadence’s EQ, ReplayGain and resampling where supported.';
   return (
     <section className="set-sec" aria-label="Fidelity mode">
       <div className="set-row">

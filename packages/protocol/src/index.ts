@@ -157,7 +157,7 @@ export interface ActiveOutput {
   sampleRateHz: number;
   channels: number;
   bitDepth: number | "float";
-  /** True when DSP/EQ/resample is bypassed end-to-end (strict fidelity mode). */
+  /** True when Cadence's EQ, ReplayGain and resampler are bypassed. OS/device conversion is not verified by this flag. */
   fidelityBypass: boolean;
   exclusive: boolean;
 }

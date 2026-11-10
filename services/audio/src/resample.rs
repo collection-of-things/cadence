@@ -25,7 +25,7 @@ pub enum ResamplePlan {
 /// `out_rate`: the negotiated output stream rate (== src_rate when bypassing).
 ///
 /// Returns (plan, fidelity_bypass). `fidelity_bypass` is reported honestly in
-/// event.output — true only when the strict mode actually bypassed end-to-end.
+/// event.output and describes Cadence's DSP pipeline, not downstream OS/device conversion.
 pub fn plan(
     src_rate: u32,
     out_rate: u32,
