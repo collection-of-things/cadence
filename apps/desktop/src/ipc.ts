@@ -9,6 +9,7 @@ import {
   InvalidIpcPayload,
   parseCatalogQuery,
   parseLibraryQuery,
+  parseLyricsOffset,
   parsePaths,
   parsePlaybackCommand,
   parseEqBands,
@@ -75,6 +76,7 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   ipcMain.handle(C.libraryTrack, (_e, id: unknown) =>
     library.track(assertOk(parseTrackId(id))),
   );
+  ipcMain.handle(C.libraryCounts, () => library.counts());
   ipcMain.handle(C.libraryAddFolders, () => library.addFoldersAndScan());
   ipcMain.handle(C.libraryScan, async (_e, paths: unknown) => {
     await library.scan(assertOk(parsePaths(paths)));
@@ -84,6 +86,13 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     const parsed = parsePaths(paths);
     if (isOk(parsed)) library.removeRoots(parsed.value);
     return parsed;
+  });
+  ipcMain.handle(C.libraryImportLyrics, (_e, id: unknown) =>
+    library.importLyrics(assertOk(parseTrackId(id))),
+  );
+  ipcMain.handle(C.librarySetLyricsOffset, (_e, payload: unknown) => {
+    const { trackId, offsetMs } = assertOk(parseLyricsOffset(payload));
+    return library.setLyricsOffset(trackId, offsetMs);
   });
 
   if (deps.audio !== undefined) {

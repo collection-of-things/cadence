@@ -286,6 +286,14 @@ async function main(): Promise<void> {
     scanner,
     store,
     pickFolders: makeElectronFolderPicker((opts) => dialog.showOpenDialog(opts)),
+    pickLyricsFile: async () => {
+      const res = await dialog.showOpenDialog({
+        title: "Choose a lyrics file",
+        properties: ["openFile"],
+        filters: [{ name: "Lyrics", extensions: ["lrc", "txt"] }],
+      });
+      return res.canceled ? null : (res.filePaths[0] ?? null);
+    },
     createWatcher: chokidarWatcherFactory,
   });
   if (library.roots().length > 0) {

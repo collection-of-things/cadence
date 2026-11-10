@@ -81,7 +81,7 @@
 .seek-track:hover::before, .seek-track:hover::after, .seek-track:focus-within::before, .seek-track:focus-within::after { height: 6px; margin-top: -3px; }
 .seek-track:hover .seek-knob, .seek-track:focus-within .seek-knob { opacity: 1; transform: none; }
 .seek-input { position: absolute; inset: 0; width: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.seek-track:has(.seek-input:focus-visible)::before { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
+:root[data-input='keyboard'] .seek-track:has(.seek-input:focus-visible)::before { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
 .seek-off .seek-track { cursor: default; }
 .seek-off .seek-input { cursor: default; }
 .seek-off .seek-track::after { opacity: 0.4; }
@@ -135,6 +135,6 @@
 }
 .vol-input:hover::-webkit-slider-thumb, .vol-input:focus-visible::-webkit-slider-thumb { opacity: 1; }
 .vol-input:focus-visible { outline: none; }
-.vol-input:focus-visible::-webkit-slider-runnable-track { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
+:root[data-input='keyboard'] .vol-input:focus-visible::-webkit-slider-runnable-track { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
 
 .time-readout { flex: none; min-width: 92px; color: var(--t3); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }

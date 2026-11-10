@@ -1,4 +1,7 @@
-import { useEffect, useSyncExternalStore, type CSSProperties } from 'react';
+import { useEffect, useMemo, useSyncExternalStore, type CSSProperties } from 'react';
+import { useArtworkPalette } from './palette';
+import { accentRgb, usePrefs } from './prefs';
+import { pageTheme } from './theme';
 
 /**
  * The open page's cover colours (from pageTheme in theme.ts). An album or
@@ -30,10 +33,22 @@ export function usePageTint(): TintState {
   );
 }
 
-/** Publish this page's tint while it is mounted. Pass a memoised style. */
+/** Publish this page's tint while it is mounted. Pass a style with a stable identity. */
 export function usePublishPageTint(style: CSSProperties): void {
   useEffect(() => {
     setPageTint(style);
     return () => setPageTint(null);
   }, [style]);
+}
+
+/**
+ * The colours an album or playlist page wears, taken from its cover. Returns
+ * the style for the page root and publishes the same tint to the shell.
+ */
+export function useCoverTheme(artworkUrl: string | undefined): CSSProperties {
+  const palette = useArtworkPalette(artworkUrl);
+  const accent = usePrefs((p) => p.accent);
+  const style = useMemo(() => pageTheme(palette, accentRgb(accent)), [palette, accent]);
+  usePublishPageTint(style);
+  return style;
 }

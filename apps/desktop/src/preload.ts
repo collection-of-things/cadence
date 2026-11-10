@@ -43,11 +43,15 @@ const api: CadenceApi = {
     albums: (q?: LibraryQuery) => invoke(C.libraryAlbums, q),
     artists: (q?: LibraryQuery) => invoke(C.libraryArtists, q),
     track: (id: string) => invoke(C.libraryTrack, id),
+    counts: () => invoke(C.libraryCounts),
     addFoldersAndScan: () => invoke(C.libraryAddFolders),
     scan: (paths: string[]) => invoke(C.libraryScan, paths),
     onScanProgress: (cb: (p: ScanProgress) => void) => subscribe(C.scanProgress, cb),
     roots: () => invoke(C.libraryRoots),
     removeRoots: (paths: string[]) => invoke(C.libraryRemoveRoots, paths),
+    importLyrics: (trackId: string) => invoke(C.libraryImportLyrics, trackId),
+    setLyricsOffset: (trackId: string, offsetMs: number) =>
+      invoke(C.librarySetLyricsOffset, { trackId, offsetMs }),
   },
 
   audio: {

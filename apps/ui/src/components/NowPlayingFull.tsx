@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useUi } from '../hooks';
+import { prefs } from '../prefs';
 import { session } from '../session';
 import { withoutMotion } from '../instant';
-import type { Location } from '../App';
-import { NoteIcon, SidebarIcon } from '../icons';
+import { useEscapeLayer } from '../layers';
+import type { Location } from '../navigation';
+import { ChevronIcon, NoteIcon, SidebarIcon } from '../icons';
 import { Lyrics } from './Lyrics';
-import { PlayerBar } from './PlayerBar';
+import { PlayerBar, useSwapClass } from './PlayerBar';
 import { QueuePanel } from './QueuePanel';
 import { Sidebar } from './Sidebar';
-import { useTrackLyrics } from './useTrackLyrics';
 import './lyrics.css';
 import '../nowplaying-full.css';
 
@@ -32,8 +33,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
   const [panelAtOpen] = useState(panelShown);
   const track = useUi((s) => s.snapshot.current?.track);
   const paused = useUi((s) => s.snapshot.status !== 'playing');
-  const trackLyrics = useTrackLyrics(track);
-  const [lyricsOn, setLyricsOn] = useState(true);
+  const [lyricsOn, setLyricsOn] = useState(() => prefs.getState().lyricsInNowPlaying);
   // The corner button slides the sidebar in over Now Playing; picking a page
   // there leaves Now Playing for it.
   const [navOpen, setNavOpen] = useState(false);
@@ -48,30 +48,23 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
   };
   const dialogRef = useRef<HTMLElement>(null);
   // Track changes animate; opening Now Playing has its own entrance.
-  const firstTrackId = useRef(track?.id);
-  const swap = track !== undefined && track.id !== firstTrackId.current ? 'is-swap' : '';
+  const swap = useSwapClass(track?.id);
   const touch = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
-    // Inert the browse app so Tab can't leak behind the portal; the queue
-    // and toasts are body children and stay live.
+    // Inert the browse app so Tab stays in the dialog, including its queue.
+    // Toast buttons live outside the dialog and stay reachable.
     const appEl = document.querySelector<HTMLElement>('.app');
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        // An open queue owns Escape (it closes and restores focus itself).
-        if (session.store.getState().queueOpen) return;
-        withoutMotion(onClose);
-        return;
-      }
       if (event.key !== 'Tab') return;
       const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
       const controls: HTMLElement[] = [];
       dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
         .forEach((el) => visible(el) && controls.push(el));
-      document.querySelectorAll<HTMLElement>('.queue.open button:not(:disabled), .queue.open [tabindex]:not([tabindex="-1"]), .toasts button:not(:disabled)')
+      document.querySelectorAll<HTMLElement>('.toasts button:not(:disabled)')
         .forEach((el) => visible(el) && controls.push(el));
       if (!controls.length) return;
       const idx = controls.indexOf(document.activeElement as HTMLElement);
@@ -88,6 +81,9 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
       else (document.activeElement as HTMLElement | null)?.blur?.();
     };
   }, [onClose]);
+
+  // An open queue ranks above Now Playing, so Escape closes that first.
+  useEscapeLayer('nowPlaying', true, () => withoutMotion(onClose));
 
   if (!track) return null;
   const art = track.artwork?.url;
@@ -131,6 +127,9 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
         >
           <SidebarIcon size={18} />
         </button>
+        <button className="chrome-btn" aria-label="Back" title="Back" onClick={onClose}>
+          <ChevronIcon dir="left" size={18} />
+        </button>
       </div>
 
       {navOpen && (
@@ -147,7 +146,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
 
       {column === 'lyrics' && (
         <div className="npf-lyrics">
-          <Lyrics key={track.id} raw={trackLyrics} />
+          <Lyrics key={track.id} track={track} />
         </div>
       )}
       {column === 'queue' && (

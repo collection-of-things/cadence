@@ -7,13 +7,13 @@ import { artistsLine } from '../format';
 import { useUi } from '../hooks';
 import { CollapseIcon, ExpandIcon, LyricsIcon, NoteIcon, QueueIcon, StarIcon } from '../icons';
 import { LibraryButton } from './LibraryButton';
-import { providerForRoute, RouteBadge } from './RouteBadge';
+import { RouteBadge } from './RouteBadge';
 import { SeekBar, TimeReadout } from './SeekBar';
 import { Transport, VolumeControl } from './Transport';
 import './playerbar.css';
 
 /** "is-swap" once the track changes after mount, so only real track changes animate. */
-function useSwapClass(trackId: string | undefined): string {
+export function useSwapClass(trackId: string | undefined): string {
   const first = useRef(trackId);
   return trackId !== undefined && trackId !== first.current ? 'is-swap' : '';
 }
@@ -61,8 +61,9 @@ interface PlayerBarProps {
 /**
  * The one player on every screen, in three columns: artwork, title and
  * save actions; the seek line above the transport; then volume, lyrics,
- * queue (the side panel's tab order) and full screen. The transport leads DOM order so it is the first
- * play-named control in the document; the grid places it visually.
+ * queue (the side panel's tab order) and full screen. The transport leads
+ * DOM order so it is the first play-named control in the document; the grid
+ * places it visually.
  */
 export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScreen }: PlayerBarProps) {
   const track = useUi((s) => s.snapshot.current?.track);
@@ -100,7 +101,7 @@ export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScr
         )}
         {track && <LibraryButton target={targetForTrack(track)} className="ctl-btn pb-fav" size={17} />}
         {track && <FavoriteButton track={track} />}
-        {track && <RouteBadge provider={providerForRoute(track.route)} title={`Route: ${track.route}`} />}
+        {track && <RouteBadge route={track.route} />}
       </div>
       <div className="pb-right">
         <VolumeControl />

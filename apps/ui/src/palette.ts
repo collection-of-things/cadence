@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 export type Rgb = [number, number, number];
 
 export const DEFAULT_PALETTE: Rgb[] = [
@@ -20,6 +22,25 @@ export function extractPalette(url: string): Promise<Rgb[] | null> {
     cache.set(url, p);
   }
   return p;
+}
+
+/** The palette of a cover, or the default until it is sampled or when there is no cover. */
+export function useArtworkPalette(url: string | undefined): Rgb[] {
+  const [palette, setPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
+  useEffect(() => {
+    let live = true;
+    if (!url) {
+      setPalette(DEFAULT_PALETTE);
+      return;
+    }
+    void extractPalette(url).then((result) => {
+      if (live) setPalette(result ?? DEFAULT_PALETTE);
+    });
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  return palette;
 }
 
 async function sample(url: string): Promise<Rgb[] | null> {

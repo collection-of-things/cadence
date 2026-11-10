@@ -2,7 +2,10 @@
 
 .shelf { margin-bottom: 36px; }
 .shelf-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 34px; margin-bottom: 12px; }
-.shelf-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; }
+.shelf-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; white-space: nowrap; }
+/* title with an optional quiet subtitle beside it */
+.shelf-title { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.shelf-title p { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--t4); }
 .shelf-arrows { display: flex; gap: 2px; margin-right: -6px; }
 .shelf-arrows .round-btn { width: 30px; height: 30px; border-radius: 9px; color: var(--t3); }
 
@@ -102,7 +105,7 @@
    comes from pageTheme() in theme.ts. */
 .album { position: absolute; inset: 0; --row-pill: transparent; --row-pill-hi: oklch(1 0 0 / 0.07); }
 /* quiet alternating bands; the playing row is the only solid one */
-.album :is(.track-list, .album-track-list) > :nth-child(even) { --row-pill: oklch(1 0 0 / 0.03); }
+.album .track-list > :nth-child(even) { --row-pill: oklch(1 0 0 / 0.03); }
 .album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: none; }
 .album-corner { position: absolute; top: calc(var(--topbar-h) + 14px); right: 24px; display: flex; gap: 8px; }
 .album-corner .round-btn { width: 36px; height: 36px; border-radius: 50%; color: oklch(0.93 0 0); background: var(--capsule); }
@@ -143,8 +146,17 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+/* a chip that acts: Flat in settings, Sign in beside a search error */
+.chip-btn { cursor: pointer; }
+.chip-btn:active:not(:disabled) { transform: scale(0.96); }
+@media (hover: hover) and (pointer: fine) {
+  .chip-btn:hover:not(:disabled) { background: oklch(1 0 0 / 0.18); color: #fff; }
+}
+
 /* shuffle · Play · add: Play is the large one in the middle */
 .album-actions { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
+/* an artist page has no hero: the actions sit right under the title */
+.artist-actions { margin: 0 0 30px; }
 .album-actions .album-round { width: 44px; height: 44px; border-radius: 50%; color: var(--t1); background: oklch(0 0 0 / 0.26); }
 .album-actions .album-play-pill { height: 46px; min-width: 146px; padding: 0 30px; border-radius: 999px; font-size: 15px; font-weight: 600; gap: 9px; box-shadow: none; }
 @media (hover: hover) and (pointer: fine) {
@@ -185,12 +197,17 @@
   .track-row.is-current:hover { background: color-mix(in oklab, var(--acc) 90%, #fff); }
   .track-row:hover .row-more { opacity: 1; }
 }
-.track-row:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent); }
+/* the number cell is the row's play button: focusing it rings the whole row */
+:root[data-input='keyboard'] .track-row:has(.tr-index:focus-visible) { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent); }
 .track-row:focus-within .row-more { opacity: 1; }
 .track-row.is-off { opacity: 0.45; }
 .track-row-list { grid-template-columns: 36px 42px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 64px 40px; }
+.track-row-song { grid-template-columns: 36px 42px minmax(0, 1fr) 64px 40px; }
 
-.tr-index { position: relative; display: grid; place-items: center end; padding-right: 4px; color: var(--t4); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tr-index { position: relative; display: grid; place-items: center end; align-self: stretch; padding-right: 4px; color: var(--t4); font-size: 12.5px; font-variant-numeric: tabular-nums; cursor: default; }
+.tr-index:focus-visible { outline: none; }
+.track-row:has(.tr-index:focus-visible) .tr-num { display: none; }
+.track-row:has(.tr-index:focus-visible) .tr-play { display: grid; }
 .tr-play { display: none; color: var(--t1); }
 .track-row:hover .tr-num { display: none; }
 .track-row:hover .tr-play { display: grid; }

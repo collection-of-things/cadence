@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { prefs } from '../prefs';
 import { session } from '../session';
 import type { UiState } from '../store';
 import type { Rgb } from '../palette';
@@ -166,8 +167,10 @@ export function Ambient() {
       }
       if (!document.hidden) raf = requestAnimationFrame(tick);
     };
+    // Reduced motion and the Moving background setting both hold one frame.
+    const still = () => reduced.matches || !prefs.getState().movingBackground;
     const kick = () => {
-      if (reduced.matches) {
+      if (still()) {
         settle();
         return;
       }
@@ -200,7 +203,8 @@ export function Ambient() {
       kick();
     };
     const onVisible = () => (document.hidden ? stop() : kick());
-    const onReduced = () => (reduced.matches ? (stop(), settle()) : kick());
+    const onReduced = () => (still() ? (stop(), settle()) : kick());
+    const unsubscribePrefs = prefs.subscribe(onReduced);
     addEventListener('pointermove', onInput, { passive: true });
     addEventListener('keydown', onInput);
     addEventListener('blur', onBlur);
@@ -213,6 +217,7 @@ export function Ambient() {
     return () => {
       stop();
       unsubscribe();
+      unsubscribePrefs();
       removeEventListener('pointermove', onInput);
       removeEventListener('keydown', onInput);
       removeEventListener('blur', onBlur);

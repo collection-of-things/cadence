@@ -1,7 +1,8 @@
 import { useState, useSyncExternalStore } from 'react';
 import type { CatalogContainer, RouteId, TrackRef } from '@cadence/protocol';
 import type { CatalogNav } from './components/provider/catalog';
-import { cleanIpcError } from './components/provider/errors';
+import { cleanIpcError } from './ipcError';
+import { routeState } from './routes';
 import { useUi } from './hooks';
 import { api, session } from './session';
 
@@ -45,7 +46,7 @@ export function useLibrarySave(target: LibraryTarget): { state: LibrarySaveState
   const [busy, setBusy] = useState(false);
   const key = target.kind === 'addable' ? `${target.route}:${target.collection}:${target.id}` : null;
   const justSaved = useSyncExternalStore(subscribe, () => key !== null && savedThisSession.has(key));
-  const signedIn = useUi((s) => target.kind === 'addable' && s.capabilities.find((c) => c.route === target.route)?.state === 'ready');
+  const signedIn = useUi((s) => target.kind === 'addable' && routeState(s, target.route) === 'ready');
 
   const state: LibrarySaveState =
     target.kind === 'saved' || justSaved ? 'saved'

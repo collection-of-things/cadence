@@ -33,6 +33,33 @@
   font-weight: 600;
 }
 .lyrics-follow:hover { background: rgba(255, 255, 255, 0.26); }
+/* local files: attach a lyrics file, nudge the timing. Quiet until pointed at. */
+.lyrics-tools {
+  position: absolute;
+  z-index: 2;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: oklch(1 0 0 / 0.1);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-shadow: none;
+  opacity: 0.55;
+  transition: opacity 140ms ease-out;
+}
+.lyrics-tools:hover, .lyrics-tools:focus-within { opacity: 1; }
+.lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
+.lyrics-tools button:disabled { color: oklch(1 0 0 / 0.6); }
+.lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
+@media (hover: hover) and (pointer: fine) {
+  .lyrics-tools button:hover:not(:disabled) { background: oklch(1 0 0 / 0.16); }
+}
 
 /* ---- side panel: neutral glass beneath the stage (Lyrics | Up Next) ---- */
 .lyrics-rail {
@@ -96,3 +123,4 @@
 .npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: 22px; font-weight: 600; line-height: 1.6; color: oklch(1 0 0 / 0.78); }
 .npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: clamp(22px, 2vw, 30px); font-weight: 700; letter-spacing: -0.012em; color: oklch(1 0 0 / 0.3); }
 .npf-lyrics .lyrics-follow { right: 8px; bottom: 8px; }
+.npf-lyrics .lyrics-tools { left: 8px; bottom: 8px; }

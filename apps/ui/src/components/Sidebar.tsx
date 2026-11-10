@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { CatalogContainer, CatalogRequest, PlatformId } from '@cadence/protocol';
-import type { Location } from '../App';
+import type { Location } from '../navigation';
+import { routeState } from '../routes';
 import { session } from '../session';
 import { useCollection } from '../collection';
 import { useUi } from '../hooks';
@@ -49,12 +50,11 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
   const pins = useCollection((s) => s.pins);
   const favoriteCount = useCollection((s) => s.favorites.length);
   const platform = useUi((s) => s.platform);
-  const capabilities = useUi((s) => s.capabilities);
+  const appleState = useUi((s) => routeState(s, 'apple-musickit'));
   const [closed, setClosed] = useState<Record<SectionId, boolean>>({ music: false, library: false, pins: false, playlists: false });
   const isApple = platform === 'apple';
-  const appleCap = capabilities.find((c) => c.route === 'apple-musickit');
-  const appleSignedOut = appleCap?.state === 'unauthenticated';
-  const applePlaylists = useApplePlaylists(isApple && appleCap?.state === 'ready');
+  const appleSignedOut = appleState === 'unauthenticated';
+  const applePlaylists = useApplePlaylists(isApple && appleState === 'ready');
   const switchIndex = Math.max(0, PLATFORMS.findIndex((p) => p.id === platform));
 
   const row = (key: string, label: string, icon: ReactNode, active: boolean, go: () => void, trailing?: ReactNode, extra = '') => (
@@ -101,7 +101,7 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
           <img src={`${import.meta.env.BASE_URL}brand/mark.svg`} width="24" height="24" alt="" />
           <span className="side-brand-name">Cadence</span>
         </div>
-        <div className="side-switch" role="radiogroup" aria-label="Music service" style={{ '--n': PLATFORMS.length, '--i': switchIndex } as CSSProperties}>
+        <div className="side-switch" role="radiogroup" aria-label="Music service" style={{ '--n': PLATFORMS.length, '--i': switchIndex } satisfies CSSProperties}>
           <span className="side-switch-ind" aria-hidden="true" />
           {PLATFORMS.map((p) => {
             const pending = p.id === 'apple' && appleSignedOut;

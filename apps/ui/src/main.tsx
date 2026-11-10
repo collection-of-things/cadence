@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { trackInputMode } from './inputMode';
 import { session } from './session';
 // Inter with its optical-size axis: display sizes get the tighter cut.
 import '@fontsource-variable/inter/opsz.css';
@@ -14,6 +15,8 @@ import './motion.css';
 
 // Frameless window chrome differs per OS (traffic lights vs. overlay controls).
 document.documentElement.dataset.platform = navigator.userAgent.includes('Mac') ? 'mac' : 'other';
+
+trackInputMode();
 
 void session.init();
 

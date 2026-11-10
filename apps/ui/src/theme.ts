@@ -51,13 +51,14 @@ function swatchesOf(palette: Rgb[]): [Rgb, ...Rgb[]] {
 /**
  * Turn an artwork palette into the shell's colours. The most saturated
  * swatch becomes the accent, pushed into a lightness band that reads on
- * near-black; the deep tones come from the first two swatches.
+ * near-black; the deep tones come from the first two swatches. A fixed
+ * `accent` (Settings, Appearance) replaces the artwork's own.
  */
-export function themeFromPalette(palette: Rgb[]): Theme {
+export function themeFromPalette(palette: Rgb[], accent?: Rgb): Theme {
   const swatches = swatchesOf(palette);
   const [first, second = first] = swatches;
   const vivid = swatches.reduce((best, c) => (toHsl(c)[1] > toHsl(best)[1] ? c : best), first);
-  const [h, s, l] = toHsl(vivid);
+  const [h, s, l] = toHsl(accent ?? vivid);
   const acc = fromHsl([h, clamp(s, 0.5, 0.9), clamp(l, 0.6, 0.72)]);
   const accInk = fromHsl([h, 0.6, 0.07]);
   const deep = (c: Rgb, light: number) => {
@@ -94,8 +95,8 @@ export function applyTheme(theme: Theme, root: HTMLElement = document.documentEl
  * Play and the playing row match this cover, not the track playing) and two
  * tints that flood the page from the top.
  */
-export function pageTheme(palette: Rgb[]): CSSProperties {
-  const theme = themeFromPalette(palette);
+export function pageTheme(palette: Rgb[], accent?: Rgb): CSSProperties {
+  const theme = themeFromPalette(palette, accent);
   const swatches = swatchesOf(palette);
   const [first, second = first] = swatches;
   const vivid = swatches.reduce((best, c) => (toHsl(c)[1] > toHsl(best)[1] ? c : best), first);

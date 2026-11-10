@@ -2,15 +2,12 @@ import { useEffect, useRef } from 'react';
 import { session } from '../session';
 import { formatTime } from '../format';
 import { positionNow, useUi } from '../hooks';
+import { activeCapabilities } from '../routes';
 import './controls.css';
 
 function useCanSeek(): { duration: number; disabled: boolean } {
   const duration = useUi((s) => s.snapshot.durationMs);
-  const canSeek = useUi((s) => {
-    const route = s.snapshot.lease?.route ?? s.snapshot.current?.track.route;
-    const cap = s.capabilities.find((c) => c.route === route);
-    return cap ? cap.playback.canSeek : true;
-  });
+  const canSeek = useUi((s) => activeCapabilities(s)?.playback.canSeek ?? true);
   return { duration, disabled: !canSeek || duration <= 0 };
 }
 

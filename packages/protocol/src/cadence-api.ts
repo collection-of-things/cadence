@@ -7,6 +7,7 @@
 import type {
   CoordinatorEvent,
   LibraryAlbum,
+  LibraryCounts,
   LibraryQuery,
   PlaybackCommand,
   PlaybackSnapshot,
@@ -34,12 +35,21 @@ export interface CadenceApi {
     albums(q?: LibraryQuery): Promise<LibraryAlbum[]>;
     artists(q?: LibraryQuery): Promise<{ name: string; albumCount: number; trackCount: number }[]>;
     track(id: string): Promise<TrackRef | null>;
+    /** Totals for the whole library, without loading it. */
+    counts(): Promise<LibraryCounts>;
     /** Pick folders via native dialog and start a scan. Returns false if cancelled. */
     addFoldersAndScan(): Promise<boolean>;
     scan(paths: string[]): Promise<void>;
     onScanProgress(cb: (p: ScanProgress) => void): () => void;
     roots(): Promise<string[]>;
     removeRoots(paths: string[]): Promise<unknown>;
+    /**
+     * Pick a lyrics file (.lrc or .txt) for a local track and attach it.
+     * Resolves to the updated track, or null if the dialog was cancelled.
+     */
+    importLyrics(trackId: string): Promise<TrackRef | null>;
+    /** Shift a local track's lyric timing; positive shows lines later. */
+    setLyricsOffset(trackId: string, offsetMs: number): Promise<TrackRef | null>;
   };
 
   // --- audio engine ------------------------------------------------------------

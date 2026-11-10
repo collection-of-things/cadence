@@ -11,7 +11,6 @@ import type {
   PlatformId,
   PlaybackCommand,
   PlaybackSnapshot,
-  QueueItem,
   QueueState,
   RouteCapabilities,
   RouteId,
@@ -424,6 +423,7 @@ export class MockCadenceApi implements CadenceApi {
         const t = q.text.toLowerCase();
         out = out.filter((a) => a.title.toLowerCase().includes(t) || a.artist.toLowerCase().includes(t));
       }
+      if (q?.artist) out = out.filter((a) => a.artist === q.artist);
       return clone(out);
     },
     artists: async (_q?: LibraryQuery) => {
@@ -441,6 +441,7 @@ export class MockCadenceApi implements CadenceApi {
       return [...map.values()];
     },
     track: async (id: string) => clone(this.tracks.find((t) => t.id === id) ?? null),
+    counts: async () => ({ albums: this.albums.length, tracks: this.tracks.length }),
     addFoldersAndScan: async () => {
       this.simulateScan();
       return true;
@@ -454,6 +455,18 @@ export class MockCadenceApi implements CadenceApi {
     },
     roots: async () => ['/music', '/music/flac'],
     removeRoots: async (paths: string[]) => ({ removed: paths.length }),
+    importLyrics: async (trackId: string) => {
+      const track = this.tracks.find((t) => t.id === trackId);
+      if (!track) return null;
+      track.lyrics = '[00:00.50]Signal on the wire\n[00:04.00]Numbers in the rain';
+      return clone(track);
+    },
+    setLyricsOffset: async (trackId: string, offsetMs: number) => {
+      const track = this.tracks.find((t) => t.id === trackId);
+      if (!track) return null;
+      track.lyricsOffsetMs = offsetMs;
+      return clone(track);
+    },
   };
 
   private simulateScan() {

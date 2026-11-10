@@ -15,7 +15,8 @@ import type {
 } from '@cadence/protocol';
 import type { Rgb } from './palette';
 import { DEFAULT_PALETTE } from './palette';
-import { providerForRoute } from './components/RouteBadge';
+import { cleanIpcError } from './ipcError';
+import { providerForRoute } from './routes';
 
 export interface Toast {
   id: number;
@@ -70,9 +71,6 @@ export interface UiState {
   scan: ScanProgress;
   /** The active streaming platform ("local" = none). Drives the whole shell. */
   platform: PlatformId;
-  view: 'now' | 'library' | 'sources' | 'home';
-  viewNonce: number;
-  libraryQuery: string;
   nowPlayingExpanded: boolean;
   queueOpen: boolean;
   palette: Rgb[];
@@ -131,6 +129,16 @@ export function displayOrder(q: QueueState): number[] {
   return q.items.map((_, i) => i);
 }
 
+/** A copy of the list in random order (Fisher-Yates). */
+export function shuffled<T>(items: readonly T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
+
 let toastSeq = 0;
 let queueSeq = 0;
 
@@ -155,9 +163,13 @@ export interface UiSession {
   toggleMute(): void;
   cycleRepeat(): void;
   toggleShuffle(): void;
+  /** Replace the queue with these tracks and start at `startIndex`. */
   playTracks(tracks: TrackRef[], startIndex: number, origin?: QueueItem['origin']): void;
+  /** Replace the queue with these tracks in random order and start. */
+  playShuffled(tracks: TrackRef[], origin?: QueueItem['origin']): void;
   insertNext(track: TrackRef): void;
-  append(track: TrackRef): void;
+  /** Add one or more tracks to the end of the queue, in one command. */
+  append(tracks: TrackRef | TrackRef[]): void;
   removeQueueItems(queueIds: string[]): void;
   moveQueueItem(fromIndex: number, toIndex: number): void;
   playQueueId(queueId: string): void;
@@ -169,8 +181,6 @@ export interface UiSession {
   setEq(bands: EqBand[]): void;
   listDevices(): Promise<AudioDevice[]>;
   setDevice(name: string | null): void;
-  setView(view: UiState['view']): void;
-  setLibraryQuery(query: string): void;
   setNowPlayingExpanded(expanded: boolean): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
@@ -193,9 +203,6 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     scan: { phase: 'idle', scanned: 0 },
     platform: 'local',
     eqBands: [],
-    view: 'now',
-    viewNonce: 0,
-    libraryQuery: '',
     nowPlayingExpanded: false,
     queueOpen: false,
     palette: DEFAULT_PALETTE,
@@ -298,7 +305,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
 
   const cmd = (c: PlaybackCommand) => {
     api.sendCommand(c).catch((err: unknown) => {
-      pushToast(get().snapshot.lease?.route ?? 'local', err instanceof Error ? err.message : 'Command failed', true);
+      pushToast(get().snapshot.lease?.route ?? 'local', cleanIpcError(err, 'Command failed'), true);
     });
   };
 
@@ -362,27 +369,25 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const items = tracks.map((t) => queueItemFor(t, origin));
       cmd({ kind: 'setQueue', items, startIndex, autoplay: true });
     },
+    playShuffled: (tracks, origin) => session.playTracks(shuffled(tracks), 0, origin),
     insertNext: (track) => cmd({ kind: 'insertNext', items: [queueItemFor(track, { kind: 'manual' })] }),
-    append: (track) => cmd({ kind: 'append', items: [queueItemFor(track, { kind: 'manual' })] }),
+    append(tracks) {
+      const items = [tracks].flat().map((t) => queueItemFor(t, { kind: 'manual' }));
+      if (items.length) cmd({ kind: 'append', items });
+    },
     removeQueueItems: (queueIds) => cmd({ kind: 'remove', queueIds }),
     moveQueueItem: (fromIndex, toIndex) => cmd({ kind: 'move', fromIndex, toIndex }),
     playQueueId: (queueId) => cmd({ kind: 'play', queueId }),
     signInRoute(route) {
       if (!api.routes) return;
-      void api.routes.signIn(route).catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : 'Sign-in failed';
-        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
-      });
+      void api.routes.signIn(route).catch((e: unknown) => pushToast(route, cleanIpcError(e, 'Sign-in failed'), true));
     },
     signOutRoute(route) {
       if (!api.routes) return;
       void api.routes.signOut(route).then(() => {
         // Signing out of the active platform drops the shell back to local.
         if (get().platform === providerForRoute(route)) set({ platform: 'local' });
-      }).catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : 'Sign-out failed';
-        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
-      });
+      }).catch((e: unknown) => pushToast(route, cleanIpcError(e, 'Sign-out failed'), true));
     },
     setPlatform(platform) {
       set({ platform });
@@ -409,8 +414,6 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const route = get().snapshot.lease?.route ?? 'local';
       void api.audio.setDevice(name).catch(() => pushToast(route, 'Could not switch output device', true));
     },
-    setView: (view) => set({ view, viewNonce: get().viewNonce + 1 }),
-    setLibraryQuery: (libraryQuery) => set({ libraryQuery }),
     setNowPlayingExpanded: (expanded) =>
       set({ nowPlayingExpanded: expanded && get().snapshot.current !== null }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),

@@ -3,7 +3,6 @@ import { useUi } from '../hooks';
 import { CloseIcon } from '../icons';
 import { Lyrics } from './Lyrics';
 import { QueuePanel } from './QueuePanel';
-import { useTrackLyrics } from './useTrackLyrics';
 import './lyrics.css';
 
 export type PanelTab = 'lyrics' | 'queue';
@@ -39,7 +38,6 @@ interface SidePanelProps {
  */
 export function SidePanel({ open, tab, onTab, onClose }: SidePanelProps) {
   const track = useUi((s) => s.snapshot.current?.track);
-  const lyrics = useTrackLyrics(track);
   const tabs: { id: PanelTab; label: string }[] = [
     { id: 'lyrics', label: 'Lyrics' },
     { id: 'queue', label: 'Up Next' },
@@ -76,7 +74,7 @@ export function SidePanel({ open, tab, onTab, onClose }: SidePanelProps) {
         {tab === 'queue' ? (
           <QueuePanel />
         ) : track ? (
-          <Lyrics key={track.id} raw={lyrics} />
+          <Lyrics key={track.id} track={track} />
         ) : (
           <div className="lyrics-empty">Play something to see its lyrics.</div>
         )}

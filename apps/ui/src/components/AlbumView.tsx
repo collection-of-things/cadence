@@ -1,62 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
+import type { LibraryAlbum } from '@cadence/protocol';
 import { api, session } from '../session';
 import { togglePin, useCollection } from '../collection';
-import { useUi } from '../hooks';
 import { CheckIcon, ClockIcon, NoteIcon, PinIcon, PlayIcon, ShuffleIcon, SongIcon } from '../icons';
+import { useLibraryRead } from '../library';
+import { useCoverTheme } from '../pageTint';
 import { AddGlyph, useJustAdded } from './AddGlyph';
-import { DEFAULT_PALETTE, extractPalette, type Rgb } from '../palette';
-import { pageTheme } from '../theme';
-import { usePublishPageTint } from '../pageTint';
 import { TrackListToolbar, useTrackListControls } from './TrackListToolbar';
 import { TrackRow } from './TrackRow';
 import './home.css';
 
-function shuffled<T>(items: T[]): T[] {
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j]!, out[i]!];
-  }
-  return out;
-}
-
-const NO_TRACKS: TrackRef[] = [];
-
 /** Album detail: artwork-washed hero, facts, actions and a filterable track list. */
 export function AlbumView({ album }: { album: LibraryAlbum }) {
-  const [tracks, setTracks] = useState<TrackRef[] | null>(null);
-  const [palette, setPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
-  const { shown, controls } = useTrackListControls(tracks ?? NO_TRACKS);
-  const scan = useUi((s) => s.scan);
+  const tracks = useLibraryRead(() => api.library.tracks({ album: album.title, artist: album.artist }), [album.title, album.artist], []);
+  const { shown, controls } = useTrackListControls(tracks);
   const pinned = useCollection((s) => s.pins.some((p) => p.id === album.id));
-
-  useEffect(() => {
-    let live = true;
-    setTracks(null);
-    void api.library.tracks({ album: album.title, artist: album.artist })
-      .then((result) => live && setTracks(result))
-      .catch(() => live && setTracks([]));
-    return () => {
-      live = false;
-    };
-  }, [album.title, album.artist, scan.phase]);
-
-  useEffect(() => {
-    let live = true;
-    if (!album.artwork?.url) return;
-    void extractPalette(album.artwork.url).then((result) => live && setPalette(result ?? DEFAULT_PALETTE));
-    return () => {
-      live = false;
-    };
-  }, [album.artwork?.url]);
 
   const genre = tracks?.[0]?.genre?.[0];
   const year = album.year ?? tracks?.[0]?.year;
   const count = tracks?.length ?? album.trackCount;
   // The page wears this cover's colours: the flood, Play and the playing row.
-  const style = useMemo(() => pageTheme(palette), [palette]);
-  usePublishPageTint(style);
+  const style = useCoverTheme(album.artwork?.url);
   const origin = { kind: 'album' as const, id: album.id, name: album.title };
   const ready = !!tracks?.length;
   const queued = useJustAdded();
@@ -94,7 +57,7 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
               <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'track' : 'tracks'}</span>
             </div>
             <div className="album-actions">
-              <button className="round-btn album-round" aria-label="Shuffle album" title="Shuffle" disabled={!ready} onClick={() => tracks && session.playTracks(shuffled(tracks), 0, origin)}>
+              <button className="round-btn album-round" aria-label="Shuffle album" title="Shuffle" disabled={!ready} onClick={() => tracks && session.playShuffled(tracks, origin)}>
                 <ShuffleIcon size={18} />
               </button>
               <button className="play-pill album-play-pill" disabled={!ready} onClick={() => tracks && session.playTracks(tracks, 0, origin)}>
@@ -106,7 +69,7 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
                 title={queued.added ? 'Added to queue' : 'Add to queue'}
                 disabled={!ready}
                 onClick={() => {
-                  tracks?.forEach((t) => session.append(t));
+                  if (tracks) session.append(tracks);
                   queued.flash();
                 }}
               >

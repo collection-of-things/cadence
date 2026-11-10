@@ -190,7 +190,7 @@ export function parseCatalogQuery(
   return ok({ route: route.value, request: req as unknown as CatalogRequest });
 }
 
-/** Parse a track id for library.track. */
+/** Parse the EQ band list for audio.setEq. */
 export function parseEqBands(
   u: unknown,
 ): Result<{ freqHz: number; gainDb: number }[], InvalidIpcPayload> {
@@ -209,9 +209,27 @@ export function parseEqBands(
   return ok(u as { freqHz: number; gainDb: number }[]);
 }
 
+/** Parse a track id for library.track. */
 export function parseTrackId(u: unknown): Result<string, InvalidIpcPayload> {
   if (typeof u === "string" && u.length > 0) return ok(u);
   return fail("expected a non-empty track id");
+}
+
+/** Lyric sync nudges stay within this many milliseconds either way. */
+const MAX_LYRICS_OFFSET_MS = 30_000;
+
+/** Parse {trackId, offsetMs} for library.setLyricsOffset; the offset is clamped. */
+export function parseLyricsOffset(
+  u: unknown,
+): Result<{ trackId: string; offsetMs: number }, InvalidIpcPayload> {
+  if (!isObj(u)) return fail("lyrics offset expects {trackId, offsetMs}");
+  const trackId = parseTrackId(u.trackId);
+  if (!isOk(trackId)) return err(trackId.error);
+  if (typeof u.offsetMs !== "number" || !Number.isFinite(u.offsetMs)) {
+    return fail("lyrics offsetMs must be a finite number");
+  }
+  const offsetMs = Math.max(-MAX_LYRICS_OFFSET_MS, Math.min(MAX_LYRICS_OFFSET_MS, Math.round(u.offsetMs)));
+  return ok({ trackId: trackId.value, offsetMs });
 }
 
 /** Parse a LibraryQuery (all fields optional, type-checked). */

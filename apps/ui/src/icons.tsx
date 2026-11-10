@@ -231,12 +231,6 @@ export const ExpandIcon = (p: P) => (
     <path d="M15 4h5v5M9 20H4v-5M20 4l-7 7M4 20l7-7" {...strokeProps()} />
   </Svg>
 );
-export const ScreenIcon = (p: P) => (
-  <Svg {...p}>
-    <rect x="3" y="4.5" width="18" height="12" rx="2" {...strokeProps()} />
-    <path d="M8.5 20h7M12 16.5V20" {...strokeProps()} />
-  </Svg>
-);
 export const SortIcon = (p: P) => (
   <Svg {...p}>
     <path d="M7 4v15m0 0-3-3m3 3 3-3M13 6h7M13 11h5M13 16h3" {...strokeProps()} />
@@ -251,18 +245,6 @@ export const RefreshIcon = (p: P) => (
 export const CheckIcon = (p: P) => (
   <Svg {...p}>
     <path d="m5 12.5 4.5 4.5L19 7.5" {...strokeProps()} strokeWidth={1.9} />
-  </Svg>
-);
-export const QueueNextIcon = (p: P) => (
-  <Svg {...p}>
-    <path d="M4 6h11M4 11h11M4 16h6" {...strokeProps()} />
-    <path d="M17 13v7M13.5 16.5h7" {...strokeProps()} />
-  </Svg>
-);
-export const ArtOnlyIcon = (p: P) => (
-  <Svg {...p}>
-    <rect x="3.5" y="5" width="17" height="14" rx="2.5" {...strokeProps()} />
-    <path d="M7.5 5v14M16.5 5v14" {...strokeProps()} />
   </Svg>
 );
 export const BrowseIcon = (p: P) => (

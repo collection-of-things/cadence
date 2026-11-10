@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type {
   CoordinatorEvent,
   PlaybackCommand,
@@ -23,7 +23,7 @@ function track(id: string, route: TrackRef['route'] = 'local'): TrackRef {
   };
 }
 
-function qItem(id: string, n = 0): QueueItem {
+function qItem(id: string): QueueItem {
   return { queueId: `q-${id}`, track: track(id) };
 }
 

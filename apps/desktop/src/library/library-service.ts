@@ -1,7 +1,8 @@
-import { sep } from "node:path";
+import { extname, sep } from "node:path";
 import { stat } from "node:fs/promises";
 import type {
   LibraryAlbum,
+  LibraryCounts,
   LibraryQuery,
   ScanProgress,
   TrackRef,
@@ -11,7 +12,7 @@ import { isOk } from "../result.js";
 import type { SettingsStore } from "../coordinator/settings-store.js";
 import type { FolderPicker } from "./folder-picker.js";
 import type { LibraryDb } from "./library-db.js";
-import type { LibraryScanner } from "./scanner.js";
+import { AUDIO_EXTENSIONS, readLyricsFile, sidecarLyricsPath, type LibraryScanner } from "./scanner.js";
 
 /** Handle for a running filesystem watcher. */
 export interface WatcherHandle {
@@ -31,6 +32,8 @@ export interface LibraryServiceDeps {
   readonly scanner: LibraryScanner;
   readonly store: SettingsStore;
   readonly pickFolders: FolderPicker;
+  /** Native "choose a lyrics file" dialog; resolves null when cancelled. */
+  readonly pickLyricsFile?: () => Promise<string | null>;
   readonly createWatcher?: CreateWatcher;
   /** Files per batch before yielding to the event loop (never block the UI). */
   readonly batchSize?: number;
@@ -46,6 +49,7 @@ export class LibraryService {
   private readonly scanner: LibraryScanner;
   private readonly store: SettingsStore;
   private readonly pickFolders: FolderPicker;
+  private readonly pickLyricsFile: (() => Promise<string | null>) | undefined;
   private readonly createWatcher: CreateWatcher | undefined;
   private readonly batchSize: number;
   private readonly progressListeners = new Set<(p: ScanProgress) => void>();
@@ -58,6 +62,7 @@ export class LibraryService {
     this.scanner = deps.scanner;
     this.store = deps.store;
     this.pickFolders = deps.pickFolders;
+    this.pickLyricsFile = deps.pickLyricsFile;
     this.createWatcher = deps.createWatcher;
     this.batchSize = deps.batchSize ?? 25;
   }
@@ -144,9 +149,35 @@ export class LibraryService {
     return this.db.artists(q);
   }
 
+  /** Album and track totals for the whole library. */
+  counts(): LibraryCounts {
+    return this.db.counts();
+  }
+
   /** One track by id, or null. */
   track(id: string): TrackRef | null {
     return this.db.track(id);
+  }
+
+  /**
+   * Let the listener pick a lyrics file for a track and attach it. Resolves
+   * to the updated track, or null when the dialog was cancelled. Rejects when
+   * the file holds no readable lyrics.
+   */
+  async importLyrics(trackId: string): Promise<TrackRef | null> {
+    if (this.pickLyricsFile === undefined || this.db.track(trackId) === null) return null;
+    const file = await this.pickLyricsFile();
+    if (file === null) return null;
+    const text = await readLyricsFile(file);
+    if (text === null) throw new Error("That file has no lyrics in it");
+    this.db.setLyricsOverride(trackId, text);
+    return this.db.track(trackId);
+  }
+
+  /** Store a track's lyric sync nudge and return the updated track. */
+  setLyricsOffset(trackId: string, offsetMs: number): TrackRef | null {
+    this.db.setLyricsOffset(trackId, offsetMs);
+    return this.db.track(trackId);
   }
 
   /** Start (or restart) the filesystem watcher over current roots. */
@@ -181,7 +212,28 @@ export class LibraryService {
       this.db.deleteByPath(e.path);
       return;
     }
+    if (extname(e.path).toLowerCase() === ".lrc") {
+      void this.refreshSidecarLyrics(e.path);
+      return;
+    }
     void this.scan([e.path]);
+  }
+
+  /** A .lrc file appeared or changed: update the song it sits beside. */
+  private async refreshSidecarLyrics(lrcPath: string): Promise<void> {
+    const base = lrcPath.slice(0, -extname(lrcPath).length);
+    for (const ext of AUDIO_EXTENSIONS) await this.syncSidecarLyrics(base + ext);
+  }
+
+  /**
+   * Copy a song's .lrc sidecar into the index when it differs from what the
+   * last scan read, so lyrics dropped beside an unchanged song still show.
+   */
+  private async syncSidecarLyrics(audioPath: string): Promise<void> {
+    const stored = this.db.scannedLyrics(audioPath);
+    if (stored === undefined) return;
+    const lyrics = await readLyricsFile(sidecarLyricsPath(audioPath));
+    if (lyrics !== null && lyrics !== stored) this.db.setScannedLyrics(audioPath, lyrics);
   }
 
   private async runScan(paths: string[]): Promise<void> {
@@ -198,6 +250,7 @@ export class LibraryService {
     for (const f of files) {
       const st = await this.fileStampUnchanged(f);
       if (st) {
+        await this.syncSidecarLyrics(f);
         scanned += 1;
         continue;
       }

@@ -163,12 +163,17 @@ button:disabled {
   opacity: 0.35;
 }
 
-button:focus-visible,
-input:focus-visible,
-[role='button']:focus-visible {
+/* Focus rings show only while the listener is tabbing (inputMode.ts). Focus
+   the app moves itself, like into a sheet that just opened, draws nothing. */
+:focus-visible {
+  outline: none;
+}
+:where(:root[data-input='keyboard']) button:focus-visible,
+:where(:root[data-input='keyboard']) input:focus-visible,
+:where(:root[data-input='keyboard']) select:focus-visible,
+:where(:root[data-input='keyboard']) [role='button']:focus-visible {
   outline: 2px solid oklch(0.8 0.05 285 / 0.9);
   outline-offset: 2px;
-  border-radius: 6px;
 }
 
 /* ---------- generic bits ---------- */
@@ -188,25 +193,6 @@ input:focus-visible,
 .icon-btn:active:not(:disabled) { transform: scale(0.96); }
 .icon-btn.on { color: var(--acc); }
 
-.q-count {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--acc);
-  color: var(--acc-ink);
-  font-size: 10px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Quiet filled button; .btn-acc is the one loud action on a page. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -224,11 +210,9 @@ input:focus-visible,
 }
 .btn:active:not(:disabled) { transform: scale(0.965); }
 .btn-ghost { background: transparent; color: var(--t2); }
-.btn-acc { background: var(--acc); color: var(--acc-ink); box-shadow: 0 4px 14px -4px color-mix(in oklab, var(--acc) 55%, transparent); }
 @media (hover: hover) and (pointer: fine) {
   .btn:hover:not(:disabled) { background: oklch(1 0 0 / 0.13); }
   .btn-ghost:hover:not(:disabled) { background: var(--well); color: var(--t1); }
-  .btn-acc:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #fff); }
 }
 
 .route-badge {
@@ -273,7 +257,7 @@ input:focus-visible,
 @media (hover: hover) and (pointer: fine) {
   .q-row:hover { background: var(--well); }
 }
-.q-row:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent); }
+:root[data-input='keyboard'] .q-row:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent); }
 .q-row.now { background: color-mix(in oklab, var(--acc) 24%, transparent); }
 .q-row.now .q-title { color: color-mix(in oklab, var(--acc) 35%, #fff); }
 .q-row.drop { box-shadow: 0 -2px 0 var(--acc); }
@@ -799,51 +783,41 @@ input:focus-visible,
 .toast-msg { flex: 1; min-width: 0; }
 .toast-msg em { color: var(--t4); font-style: normal; }
 
-/* ---------- settings sheet ---------- */
+/* ---------- settings page ---------- */
 
-.settings {
-  position: relative;
+/* a section list on the left, the chosen section's card on the right */
+.set-layout { display: flex; align-items: flex-start; gap: 28px; }
+.set-nav { position: sticky; top: 0; flex: none; width: 190px; display: flex; flex-direction: column; gap: 2px; }
+.set-body { flex: 1; min-width: 0; max-width: 640px; }
+.set-group-title { margin: 0 0 12px; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; line-height: 1.25; }
+.set-card { border-radius: var(--r-lg); background: var(--well); overflow: hidden; }
+.set-row .btn { flex: none; }
+.set-sub .src-state { margin-right: 8px; }
+.set-value { flex: none; font-size: 13px; color: var(--t2); font-variant-numeric: tabular-nums; }
+.set-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--t2); }
+.set-skeleton { height: 18px; width: 60%; border-radius: 6px; background: var(--well-hi); }
+
+/* one choice out of a few: a filled pill marks the chosen one */
+.set-seg { flex: none; display: flex; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: oklch(0 0 0 / 0.28); }
+.set-seg button { min-width: 44px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: var(--t3); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.set-seg button.is-on { color: var(--t1); background: var(--well-hi); }
+
+/* accent swatches: the chosen one carries a dot */
+.set-swatches { flex: none; display: flex; align-items: center; gap: 8px; }
+.set-swatch { position: relative; width: 24px; height: 24px; border-radius: 50%; }
+.set-swatch.is-on::after { content: ''; position: absolute; inset: 8px; border-radius: 50%; background: oklch(0.14 0 0); }
+.set-swatch-auto { height: 28px; padding: 0 12px; border-radius: var(--r-pill); color: var(--t3); font-size: 12.5px; font-weight: 600; background: oklch(0 0 0 / 0.28); }
+.set-swatch-auto.is-on { color: var(--t1); background: var(--well-hi); }
+@media (hover: hover) and (pointer: fine) {
+  .set-seg button:not(.is-on):hover, .set-swatch-auto:not(.is-on):hover { color: var(--t1); }
 }
 
-.sheet-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 44;
-}
-
-.sheet {
-  position: fixed;
-  top: 62px;
-  right: 18px;
-  width: 372px;
-  max-height: calc(100vh - 64px);
-  overflow-y: auto;
-  background: var(--sheen), oklch(0.19 0.007 285 / 0.9);
-  backdrop-filter: blur(60px) saturate(1.8);
-  -webkit-backdrop-filter: blur(60px) saturate(1.8);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  z-index: 45;
-  padding-bottom: 6px;
-  transform-origin: top right;
-}
-
-.sheet:focus {
-  outline: none;
-}
-
-.sheet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 12px 6px 16px;
-}
-
-.sheet-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.009em;
+/* narrow stage: the section list becomes a row of pills above the card */
+@container stage (max-width: 820px) {
+  .set-layout { flex-direction: column; gap: 16px; }
+  .set-nav { position: static; width: auto; flex-direction: row; flex-wrap: wrap; }
+  .set-nav .side-row { width: auto; }
+  .set-body { width: 100%; }
 }
 
 .set-sec {
@@ -1004,11 +978,11 @@ input:focus-visible,
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  border: 0;
 }
 
 .dev-select:hover {
   background-color: rgba(255, 255, 255, 0.07);
-  border-color: var(--border);
 }
 
 .dev-select option {
@@ -1070,6 +1044,8 @@ input:focus-visible,
 .lib .album-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px 10px; margin: 0 -10px; padding: 0 0 calc(var(--pb-clear) + 60px); }
 /* album card: same anatomy as the home cards — well on hover, art lifts */
 .lib .album-card { gap: 0; padding: 10px; border-radius: var(--rad-card); }
+/* loading placeholder: a cover-sized block with room for the caption below */
+.lib .skeleton-album { aspect-ratio: 1; margin: 10px 10px 50px; border-radius: 8px; }
 .lib .album-card:active { transform: scale(0.98); }
 .lib .album-card img, .lib .album-noart { border-radius: 8px; box-shadow: 0 6px 20px -6px oklch(0 0 0 / 0.55), 0 0 0 1px oklch(1 0 0 / 0.08); }
 @media (hover: hover) and (pointer: fine) {
@@ -1093,7 +1069,7 @@ input:focus-visible,
 }
 .src { position: absolute; inset: 0; padding: calc(var(--topbar-h) + 14px) 32px calc(var(--pb-clear) + 60px); mask-image: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 10px)); }
 .src-head h1 { font-size: clamp(24px, 2.2vw, 30px); font-weight: 750; letter-spacing: -0.021em; }
-.src-panel, .src-card, .src-route { background: var(--well); }
+.src-panel, .src-route { background: var(--well); }
 
 /* ---------- ambient field ---------- */
 /* Fixed behind the shell: a WebGL colour field (visuals/Ambient), a CSS
@@ -1138,7 +1114,7 @@ input:focus-visible,
 /* More contrast: near-solid surfaces with a defined edge, brighter secondary text. */
 @media (prefers-contrast: more) {
   :root { --t2: oklch(0.9 0 0); --t3: oklch(0.82 0 0); --t4: oklch(0.74 0 0); }
-  .sidebar, .playerbar, .queue, .sheet, .menu {
+  .sidebar, .playerbar, .queue, .menu {
     background: oklch(0.16 0.004 285);
     box-shadow: 0 0 0 1px oklch(1 0 0 / 0.35);
   }

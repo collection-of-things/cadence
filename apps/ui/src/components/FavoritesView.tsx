@@ -27,8 +27,8 @@ export function FavoritesView() {
               <span className="chip"><SongIcon size={13} />{favorites.length} {favorites.length === 1 ? 'track' : 'tracks'}</span>
             </div>
             <div className="album-actions">
-              <button className="round-btn album-round" aria-label="Shuffle favourites" disabled={!ready}
-                onClick={() => session.playTracks([...favorites].sort(() => Math.random() - 0.5), 0, origin)}>
+              <button className="round-btn album-round" aria-label="Shuffle favourites" title="Shuffle" disabled={!ready}
+                onClick={() => session.playShuffled(favorites, origin)}>
                 <ShuffleIcon size={18} />
               </button>
               <button className="play-pill album-play-pill" disabled={!ready} onClick={() => session.playTracks(favorites, 0, origin)}>

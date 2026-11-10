@@ -31,13 +31,13 @@
 .add-glyph.is-added { color: var(--acc); }
 
 /* press: rows highlight on pointer-down, before the click lands */
-.q-row:active, .album-track-row:active, .artist-row:active, .src-hit:active, .track-row:active { background: oklch(1 0 0 / 0.1); }
+.q-row:active, .artist-row:active, .src-hit:active, .track-row:active { background: oklch(1 0 0 / 0.1); }
 .side-section-head:active { color: var(--t2); }
 
 /* ---- fades, for everyone ---- */
 
 /* buttons: fills and icon colours ease on hover, the switch tiles dim */
-:is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .shelf-arrow, .side-row, .side-row-icon, .side-section-head, .side-switch button) {
+:is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .side-row, .side-row-icon, .side-section-head, .side-switch button) {
   transition: color 110ms ease, background-color 110ms ease;
 }
 .svc-tile { transition: opacity 200ms ease; }
@@ -73,19 +73,18 @@
 .npf-nav { transition: opacity 200ms ease-out; }
 .toast { transition: opacity 180ms ease-out; }
 .menu { transition: opacity 120ms ease-out; }
-.sheet { transition: opacity 180ms ease-out; }
 .add-glyph.is-added { transition: opacity 140ms ease-out; }
 @starting-style {
-  .platform-fade, .npf-nav, .toast, .menu, .sheet, .add-glyph.is-added { opacity: 0; }
+  .platform-fade, .npf-nav, .toast, .menu, .add-glyph.is-added { opacity: 0; }
 }
 
 /* ---- movement, only for people who are fine with it ---- */
 @media (prefers-reduced-motion: no-preference) {
   /* pressing: scales down on pointer-down */
-  :is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .shelf-arrow, .side-row, .side-switch button) {
+  :is(.ctl-btn, .chrome-btn, .round-btn, .icon-btn, .btn, .play-pill, .side-row, .side-switch button) {
     transition: color 110ms ease, background-color 110ms ease, transform var(--t-press) var(--ease-out);
   }
-  :is(.poster-open, .square-open, .home-album-card, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
+  :is(.poster-open, .square-open, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
 
   /* switches: the indicator glides to the chosen side */
   .side-switch-ind { transition: transform 300ms var(--spring-ui); }
@@ -119,13 +118,11 @@
   .toast { transition: opacity 180ms ease-out, transform 240ms var(--ease-out); }
   .toast.is-leaving { transition-duration: 180ms; }
   .menu { transform-origin: top right; transition: opacity 120ms ease-out, transform 140ms var(--ease-out); }
-  .sheet { transition: opacity 180ms ease-out, transform 180ms var(--ease-out); }
   .add-glyph.is-added { transition: opacity 140ms ease-out, transform 140ms var(--ease-out); }
   @starting-style {
     .npf-nav { transform: translateX(-16px); }
     .toast { transform: translateY(10px); }
     .menu { transform: scale(0.96); }
-    .sheet { transform: translateY(-6px) scale(0.97); }
     .add-glyph.is-added { transform: scale(0.8); }
   }
 }

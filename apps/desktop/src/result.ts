@@ -20,8 +20,3 @@ export function err<E>(error: E): Result<never, E> {
 export function isOk<T, E>(r: Result<T, E>): r is { readonly _tag: "ok"; readonly value: T } {
   return r._tag === "ok";
 }
-
-/** Defect helper for impossible union branches. */
-export function casesHandled(unexpectedCase: never): never {
-  throw new Error(`Unhandled case: ${JSON.stringify(unexpectedCase)}`);
-}

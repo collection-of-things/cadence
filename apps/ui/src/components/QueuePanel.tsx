@@ -2,12 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
 import { session } from '../session';
-import { formatTime } from '../format';
 import { useUi } from '../hooks';
 import { displayOrder } from '../store';
 import { withoutMotion } from '../instant';
+import { useEscapeLayer } from '../layers';
 import { CloseIcon, DownIcon, UpIcon } from '../icons';
-import { providerForRoute, RouteBadge } from './RouteBadge';
+import { artistsLine, formatTime } from '../format';
+import { RouteBadge } from './RouteBadge';
+
+/** Moves a queue row, then keeps focus on the button that moved it (or its row). */
+function moveAndRefocus(button: HTMLElement, from: number, to: number): void {
+  session.moveQueueItem(from, to);
+  requestAnimationFrame(() => (button.isConnected ? button : button.closest<HTMLElement>('.q-row'))?.focus());
+}
 
 function QueueRow({ item, index, current }: { item: QueueItem; index: number; current: boolean }) {
   const shuffle = useUi((s) => s.queue.shuffle);
@@ -51,9 +58,9 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
       {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" loading="lazy" /> : <span className="q-art" />}
       <span className="q-tt">
         <span className="q-title">{t.title}</span>
-        <span className="q-artist">{t.artists.map((a) => a.name).join(', ')}</span>
+        <span className="q-artist">{artistsLine(t.artists)}</span>
       </span>
-      <RouteBadge provider={providerForRoute(t.route)} title={t.route} />
+      <RouteBadge route={t.route} />
       <span className="q-dur">{formatTime(t.durationMs)}</span>
       <span className="q-acts" onClick={(e) => e.stopPropagation()}>
         <button
@@ -61,7 +68,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move up"
           disabled={shuffle || index <= 0}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move up'}
-          onClick={(e) => { const btn = e.currentTarget as HTMLElement; session.moveQueueItem(index, index - 1); requestAnimationFrame(() => (btn.isConnected ? btn : (btn.closest('.q-row') as HTMLElement | null))?.focus()); }}
+          onClick={(e) => moveAndRefocus(e.currentTarget, index, index - 1)}
         >
           <UpIcon size={15} />
         </button>
@@ -70,7 +77,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
           aria-label="Move down"
           disabled={shuffle || index >= count - 1}
           title={shuffle ? 'Reorder unavailable while shuffled' : 'Move down'}
-          onClick={(e) => { const btn = e.currentTarget as HTMLElement; session.moveQueueItem(index, index + 1); requestAnimationFrame(() => (btn.isConnected ? btn : (btn.closest('.q-row') as HTMLElement | null))?.focus()); }}
+          onClick={(e) => moveAndRefocus(e.currentTarget, index, index + 1)}
         >
           <DownIcon size={15} />
         </button>
@@ -99,24 +106,22 @@ export function QueuePanel() {
     overscan: 10,
   });
 
-  // Land on the playing row when the list mounts; Escape closes it.
+  // Land on the playing row when the list mounts, and remember what opened it.
+  const opener = useRef<Element | null>(null);
   useEffect(() => {
-    // Escape hands focus back to whatever opened the queue.
-    const opener = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopImmediatePropagation();
-        withoutMotion(() => session.setQueueOpen(false));
-        const fallback = [...document.querySelectorAll<HTMLElement>('[data-queue-toggle]')].find((el) => el.getClientRects().length > 0);
-        (opener?.isConnected && opener !== document.body ? opener : fallback)?.focus();
-      }
-    };
-    document.addEventListener('keydown', onKey);
+    opener.current = document.activeElement;
     const pos = order.indexOf(queue.currentIndex);
     if (pos > 0) virtualizer.scrollToIndex(pos, { align: 'center' });
-    return () => document.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Runs once on mount: it reads the queue as it was when the panel opened.
   }, []);
+
+  // Escape closes the queue and hands focus back to whatever opened it.
+  useEscapeLayer('queue', true, () => {
+    withoutMotion(() => session.setQueueOpen(false));
+    const from = opener.current;
+    const fallback = [...document.querySelectorAll<HTMLElement>('[data-queue-toggle]')].find((el) => el.getClientRects().length > 0);
+    (from instanceof HTMLElement && from.isConnected && from !== document.body ? from : fallback)?.focus();
+  });
 
   return (
     <aside className="queue open" aria-label="Queue">

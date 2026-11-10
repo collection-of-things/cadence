@@ -221,26 +221,6 @@ function entriesOf(list: AmResource[] | undefined): CatalogEntry[] {
   return out;
 }
 
-/** A station entry -> a playable pseudo-track (stations stream endlessly). */
-export function stationTrackRef(station: {
-  id: string;
-  name: string;
-  subtitle?: string;
-  artwork?: { url: string; width?: number; height?: number };
-}): TrackRef {
-  return {
-    id: `${ROUTE}:station:${station.id}`,
-    route: ROUTE,
-    provider: "apple",
-    title: station.name,
-    artists: [{ name: "Apple Music Radio" }],
-    durationMs: 0,
-    ...(station.artwork ? { artwork: station.artwork } : {}),
-    source: { kind: "provider", providerItemId: station.id, uri: `am:station:${station.id}` },
-    availability: "available",
-  };
-}
-
 // --- TTML -> LRC ---------------------------------------------------------------
 
 
@@ -261,7 +241,6 @@ function lrcStamp(seconds: number): string {
 /** Convert Apple TTML lyrics to LRC. Falls back to plain lines without times. */
 export function ttmlToLrc(ttml: string): string {
   const lines: { at: number | null; text: string }[] = [];
-  const para = /<p[^>]*>/gi;
   const close = "</p>";
   let idx = 0;
   while (idx < ttml.length) {

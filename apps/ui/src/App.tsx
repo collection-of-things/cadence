@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { CatalogArtist, CatalogContainer, LibraryAlbum } from '@cadence/protocol';
+import type { LibraryAlbum } from '@cadence/protocol';
 import { session } from './session';
 import { recordPlayed } from './collection';
 import { AlbumView } from './components/AlbumView';
 import { FavoritesView } from './components/FavoritesView';
 import { HomeView } from './components/HomeView';
-import { LibraryView, type LibraryTab } from './components/LibraryView';
+import { LibraryView } from './components/LibraryView';
+import { LocalArtistView } from './components/LocalArtistView';
 import { NowPlayingFull } from './components/NowPlayingFull';
 import { PlayerBar } from './components/PlayerBar';
 import { SHELL_MOVE_MS, SidePanel, usePanelMounted, type PanelTab } from './components/SidePanel';
+import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
 import { Toasts } from './components/Toasts';
@@ -17,56 +19,20 @@ import { TopBar } from './components/TopBar';
 import {
   ArtistView,
   CatalogDetailView,
-  ProviderBrowseView,
-  ProviderHomeView,
   ProviderLibraryView,
-  ProviderRadioView,
   ProviderSearchView,
+  ProviderShelvesView,
 } from './components/provider/views';
 import type { CatalogNav } from './components/provider/catalog';
 import { positionNow, useMediaSession, useUi } from './hooks';
 import { withoutMotion } from './instant';
+import { pageKey, useNavigation } from './navigation';
 import { usePageTint } from './pageTint';
-import { extractPalette, DEFAULT_PALETTE } from './palette';
+import { useArtworkPalette } from './palette';
+import { accentRgb, prefs, usePrefs } from './prefs';
 import { useSidebarOpen } from './sidebarOpen';
 import { applyTheme, themeFromPalette } from './theme';
 import { Ambient } from './visuals/Ambient';
-
-/** Where the browse stage is. The now-playing overlay is not a location. */
-export type Location =
-  | { page: 'home' }
-  | { page: 'browse' }
-  | { page: 'radio' }
-  | { page: 'search'; query?: string; nonce?: number }
-  | { page: 'library'; tab: LibraryTab }
-  | { page: 'localfiles'; tab: LibraryTab }
-  | { page: 'favorites' }
-  | { page: 'sources' }
-  | { page: 'album'; album: LibraryAlbum }
-  | { page: 'detail'; container: CatalogContainer }
-  | { page: 'artist'; artist: CatalogArtist };
-
-export function sameLocation(a: Location, b: Location): boolean {
-  if (a.page !== b.page) return false;
-  if (a.page === 'search' && b.page === 'search') return a.query === b.query;
-  if (a.page === 'library' && b.page === 'library') return a.tab === b.tab;
-  if (a.page === 'localfiles' && b.page === 'localfiles') return a.tab === b.tab;
-  if (a.page === 'album' && b.page === 'album') return a.album.id === b.album.id;
-  if (a.page === 'detail' && b.page === 'detail') return a.container.id === b.container.id;
-  if (a.page === 'artist' && b.page === 'artist') return a.artist.id === b.artist.id;
-  return true;
-}
-
-/** Identity of a location for page-change animation (re-mounts the page). */
-function pageKey(location: Location): string {
-  if (location.page === 'album') return `album:${location.album.id}`;
-  if (location.page === 'detail') return `detail:${location.container.id}`;
-  if (location.page === 'artist') return `artist:${location.artist.id}`;
-  // One key for every Library/Local Files tab: search can switch tabs while
-  // typing, and a remount would drop the query and focus.
-  if (location.page === 'library' || location.page === 'localfiles') return location.page;
-  return location.page;
-}
 
 /**
  * True from the commit that changes the shell's shape until its slide ends.
@@ -82,14 +48,10 @@ function useShellMoving(shape: string): boolean {
 }
 
 export function App() {
-  const view = useUi((s) => s.view);
-  const viewNonce = useUi((s) => s.viewNonce);
   const platform = useUi((s) => s.platform);
   const expanded = useUi((s) => s.nowPlayingExpanded && s.snapshot.current !== null);
   const track = useUi((s) => s.snapshot.current?.track);
-  const [location, setLocation] = useState<Location>({ page: 'home' });
-  const [backStack, setBackStack] = useState<Location[]>([]);
-  const [forwardStack, setForwardStack] = useState<Location[]>([]);
+  const { location, canGoBack, canGoForward, navigate, goBack, goForward } = useNavigation();
   const palette = useUi((s) => s.palette);
   const pageTint = usePageTint();
   const hasTrack = useUi((s) => s.snapshot.current !== null);
@@ -98,87 +60,33 @@ export function App() {
   // The right panel: Up Next when the queue is open, otherwise lyrics.
   const [railOpen, setRailOpen] = useState(false);
   const railOpenRef = useRef(railOpen);
-  railOpenRef.current = railOpen;
+  useLayoutEffect(() => {
+    railOpenRef.current = railOpen;
+  }, [railOpen]);
   // L and the lyrics button: show lyrics, or close the panel if they already show.
   const toggleLyrics = useCallback(() => {
     const showing = railOpenRef.current && !session.store.getState().queueOpen;
     session.setQueueOpen(false);
     setRailOpen(!showing);
   }, []);
-  const locationRef = useRef(location);
-  locationRef.current = location;
-  const searchNonce = useRef(0);
   useMediaSession();
 
   useEffect(() => {
     if (track) recordPlayed(track);
   }, [track]);
 
-  // The artwork's colours tint the whole shell (and every portal).
+  // The artwork's colours tint the whole shell (and every portal); a fixed
+  // accent from Settings replaces the artwork's own.
+  const accent = usePrefs((p) => p.accent);
   useEffect(() => {
-    applyTheme(themeFromPalette(palette));
-  }, [palette]);
+    applyTheme(themeFromPalette(palette, accentRgb(accent)));
+  }, [palette, accent]);
 
-  const artUrl = track?.artwork?.url;
+  // The playing artwork's palette drives the theme above and the ambient field.
+  const trackPalette = useArtworkPalette(track?.artwork?.url);
   useEffect(() => {
-    let live = true;
-    if (!artUrl) {
-      session.setPalette(DEFAULT_PALETTE);
-      return;
-    }
-    void extractPalette(artUrl).then((p) => {
-      if (live) session.setPalette(p ?? DEFAULT_PALETTE);
-    });
-    return () => {
-      live = false;
-    };
-  }, [artUrl]);
-
-  const navigate = useCallback((next: Location) => {
-    const current = locationRef.current;
-    if (next.page === 'search') {
-      // Every explicit submission lands — even a repeat of the current query —
-      // so the view can reset its field to what was submitted. The nonce is
-      // the submission signal; identical resubmits update in place rather than
-      // growing the back stack.
-      const target: Location = { ...next, nonce: ++searchNonce.current };
-      if (!sameLocation(next, current)) {
-        setBackStack((stack) => [...stack, current]);
-        setForwardStack([]);
-      }
-      setLocation(target);
-      return;
-    }
-    if (sameLocation(next, current)) return;
-    setBackStack((stack) => [...stack, current]);
-    setForwardStack([]);
-    setLocation(next);
-  }, []);
-
-  // External view requests (store.setView from capture scripts, other
-  // components): 'now' opens the overlay, the rest navigate.
-  useEffect(() => {
-    if (viewNonce === 0) return;
-    if (view === 'now') session.setNowPlayingExpanded(true);
-    else if (view === 'library') navigate({ page: 'library', tab: 'albums' });
-    else navigate({ page: view });
-  }, [viewNonce, view, navigate]);
-
-  const goBack = () => {
-    const previous = backStack.at(-1);
-    if (!previous) return;
-    setBackStack((stack) => stack.slice(0, -1));
-    setForwardStack((stack) => [...stack, location]);
-    setLocation(previous);
-  };
-
-  const goForward = () => {
-    const next = forwardStack.at(-1);
-    if (!next) return;
-    setForwardStack((stack) => stack.slice(0, -1));
-    setBackStack((stack) => [...stack, location]);
-    setLocation(next);
-  };
+    session.setPalette(trackPalette);
+  }, [trackPalette]);
 
   useEffect(() => {
     // Buttons never take focus on mousedown, so Space stays play/pause.
@@ -197,7 +105,7 @@ export function App() {
       if (tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
       // Focusable containers own their Enter/Space; other keys still pass.
       if ((e.key === ' ' || e.key === 'Enter') &&
-          el?.closest?.('.q-row, .tr-row, .track-row, .src-hit, [data-lyric], [role="button"], [role="menu"], button, a')) return;
+          el?.closest?.('.q-row, .src-hit, [data-lyric], [role="button"], [role="menu"], button, a')) return;
       // Focused scrollable regions own their scrolling keys only.
       if ((e.key.startsWith('Arrow') || e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') &&
           el?.closest?.('.lyrics-scroll, .queue, .lib, .stage-scroll, .src, .sidebar, .lyrics-rail')) return;
@@ -208,8 +116,8 @@ export function App() {
         if (type !== 'range') return;
         if (e.key.startsWith('Arrow')) return;
       }
-      if (document.querySelector('.sheet')) return; // sheet owns its own focus+keys
       const s = session.store.getState();
+      const skipMs = (e.shiftKey ? 30 : prefs.getState().skipSeconds) * 1000;
       switch (e.key) {
         case ' ':
           if (tag === 'BUTTON') return;
@@ -217,10 +125,10 @@ export function App() {
           session.togglePlay();
           break;
         case 'ArrowRight':
-          session.seek(positionNow() + (e.shiftKey ? 30_000 : 5_000));
+          session.seek(positionNow() + skipMs);
           break;
         case 'ArrowLeft':
-          session.seek(positionNow() - (e.shiftKey ? 30_000 : 5_000));
+          session.seek(positionNow() - skipMs);
           break;
         case 'ArrowUp':
           e.preventDefault();
@@ -249,6 +157,7 @@ export function App() {
   }, []);
 
   const openAlbum = (album: LibraryAlbum) => navigate({ page: 'album', album });
+  const openLocalArtist = (name: string) => navigate({ page: 'localartist', name });
   const openNowPlaying = () => session.setNowPlayingExpanded(true);
   const closeNowPlaying = useCallback(() => session.setNowPlayingExpanded(false), []);
   const catalogNav: CatalogNav = {
@@ -264,8 +173,8 @@ export function App() {
   const lyricsShown = panelOpen && panelTab === 'lyrics';
   const panelMounted = usePanelMounted(panelOpen);
   // Closing the queue flips panelTab; the panel keeps its tab while it slides away.
-  const shownPanelTab = useRef(panelTab);
-  if (panelOpen) shownPanelTab.current = panelTab;
+  const [shownPanelTab, setShownPanelTab] = useState<PanelTab>(panelTab);
+  if (panelOpen && shownPanelTab !== panelTab) setShownPanelTab(panelTab);
   const shellMoving = useShellMoving(`${sidebar.open}:${panelShown}`);
   const showTab = (tab: PanelTab) => {
     setRailOpen(tab === 'lyrics');
@@ -291,11 +200,12 @@ export function App() {
             share the name space, so the docked player leads DOM order. */}
         {!expanded && <PlayerBar placement="docked" lyricsOn={lyricsShown} onToggleLyrics={toggleLyrics} onToggleFullScreen={openNowPlaying} />}
         <TopBar
-          canGoBack={backStack.length > 0}
-          canGoForward={forwardStack.length > 0}
+          canGoBack={canGoBack}
+          canGoForward={canGoForward}
           onBack={goBack}
           onForward={goForward}
           onNavigate={navigate}
+          settingsOpen={location.page === 'settings'}
           sidebarOpen={sidebar.open}
           onToggleSidebar={sidebar.toggle}
         />
@@ -303,20 +213,28 @@ export function App() {
           {/* Keyed by platform: switching service cross-fades the stage. */}
           <div className="platform-fade" key={platform}>
           <div className="page" key={pageKey(location)}>
-          {location.page === 'home' && (isApple ? <ProviderHomeView nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
-          {location.page === 'browse' && <ProviderBrowseView nav={catalogNav} />}
-          {location.page === 'radio' && <ProviderRadioView nav={catalogNav} />}
+          {location.page === 'home' && (isApple ? <ProviderShelvesView kind="home" nav={catalogNav} /> : <HomeView onSelectAlbum={openAlbum} />)}
+          {location.page === 'browse' && <ProviderShelvesView kind="browse" nav={catalogNav} />}
+          {location.page === 'radio' && <ProviderShelvesView kind="radio" nav={catalogNav} />}
           {location.page === 'search' && (isApple ? <ProviderSearchView nav={catalogNav} query={location.query} nonce={location.nonce} /> : <SourcesView />)}
           {location.page === 'library' && (isApple ? (
             <ProviderLibraryView nav={catalogNav} />
           ) : (
-            <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'library', tab })} />
+            <LibraryView
+              tab={location.tab}
+              query={location.query}
+              nonce={location.nonce}
+              onSelectAlbum={openAlbum}
+              onSelectArtist={openLocalArtist}
+              onTab={(tab) => navigate({ page: 'library', tab })}
+            />
           ))}
           {location.page === 'localfiles' && (
-            <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onTab={(tab) => navigate({ page: 'localfiles', tab })} />
+            <LibraryView tab={location.tab} onSelectAlbum={openAlbum} onSelectArtist={openLocalArtist} onTab={(tab) => navigate({ page: 'localfiles', tab })} />
           )}
           {location.page === 'favorites' && <FavoritesView />}
           {location.page === 'album' && <AlbumView key={location.album.id} album={location.album} />}
+          {location.page === 'localartist' && <LocalArtistView name={location.name} onSelectAlbum={openAlbum} />}
           {location.page === 'detail' && (
             <CatalogDetailView container={location.container} nav={catalogNav} />
           )}
@@ -324,11 +242,14 @@ export function App() {
             <ArtistView artist={location.artist} nav={catalogNav} />
           )}
           {location.page === 'sources' && <SourcesView />}
+          {location.page === 'settings' && (
+            <SettingsView section={location.section} onSection={(section) => navigate({ page: 'settings', section })} />
+          )}
           </div>
           </div>
         </main>
       </div>
-      {panelMounted && <SidePanel open={panelOpen} tab={shownPanelTab.current} onTab={showTab} onClose={closePanel} />}
+      {panelMounted && <SidePanel open={panelOpen} tab={shownPanelTab} onTab={showTab} onClose={closePanel} />}
       {expanded && createPortal(<NowPlayingFull onClose={closeNowPlaying} location={location} onNavigate={navigate} panelShown={panelShown} />, document.body)}
       {createPortal(<Toasts />, document.body)}
     </div>

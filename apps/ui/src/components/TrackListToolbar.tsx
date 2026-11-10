@@ -13,14 +13,17 @@ interface ToolbarProps {
   onSort(next: Sort): void;
 }
 
-/** Filter and sort state for a track list; pass `controls` to TrackListToolbar. */
-export function useTrackListControls(tracks: readonly TrackRef[]): { shown: TrackRef[]; controls: ToolbarProps } {
+/**
+ * Filter and sort state for a track list; pass `controls` to TrackListToolbar.
+ * `tracks` may be null while the list loads.
+ */
+export function useTrackListControls(tracks: readonly TrackRef[] | null): { shown: TrackRef[]; controls: ToolbarProps } {
   const [filter, onFilter] = useState<string | null>(null);
   const [sort, onSort] = useState<Sort>('track');
 
   const shown = useMemo(() => {
     const q = filter?.trim().toLowerCase();
-    const list = q ? tracks.filter((t) => t.title.toLowerCase().includes(q)) : [...tracks];
+    const list = q ? (tracks ?? []).filter((t) => t.title.toLowerCase().includes(q)) : [...(tracks ?? [])];
     if (sort === 'title') list.sort((a, b) => a.title.localeCompare(b.title));
     if (sort === 'duration') list.sort((a, b) => a.durationMs - b.durationMs);
     return list;

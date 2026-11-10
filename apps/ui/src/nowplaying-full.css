@@ -44,10 +44,9 @@
 }
 .npf.is-paused .npf-art img, .npf.is-paused .npf-lyrics { filter: brightness(0.8) saturate(0.85); }
 
-/* the sidebar button sits where it does in the top bar: past the 14px bar
-   padding, the 84px history capsule and the 6px gap. It moves out with the
-   drawer, as it does with the stage, and stays above the drawer on the way. */
-.npf-corner { position: absolute; z-index: 4; top: 5px; left: 104px; display: flex; }
+/* Match the top bar controls and move with the sidebar drawer. */
+.npf-corner { position: absolute; z-index: 4; top: 5px; left: 14px; display: flex; gap: 6px; }
+:root[data-platform='mac'] .npf:not(.has-nav) .npf-corner { left: 84px; }
 
 /* the player sits exactly where the docked one was, lifted off the bottom edge */
 .npf { --rail: 0px; }

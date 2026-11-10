@@ -36,11 +36,14 @@ export async function run(ctx) {
   ev.check("library text filter", filtered.length === 2 && filtered.every((t) => t.album === "Field Notes"),
     `${filtered.length} hit(s)`);
 
-  // artist row plays that artist's first track
+  // artist row opens the artist page; its Play starts that artist's first track
   await navTo(ctx, "Artists", ".lib .artist-list");
   await page.locator('.artist-row:has-text("Vector Choir")').click();
+  await page.waitForSelector(".artist-page .track-row", { timeout: 8_000 });
+  await shot(ctx, "artist-page");
+  await page.locator(".artist-page .album-play-pill").click();
   const snap = await api.waitStatus(page, "playing");
-  ev.check("artist row plays", snap.current?.track?.artists?.[0]?.name === "Vector Choir",
+  ev.check("artist page plays", snap.current?.track?.artists?.[0]?.name === "Vector Choir",
     `${snap.current?.track?.title}`);
 
   // album view facts (genre/year/track count chips from tags)

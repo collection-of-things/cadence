@@ -8,7 +8,7 @@
  * leave it undefined and the UI reports "not available" honestly.
  */
 
-import type { ArtistRef, ArtworkRef, ProviderId, RouteId, TrackRef } from "./index.js";
+import type { ArtworkRef, ProviderId, RouteId, TrackRef } from "./index.js";
 
 /** The active streaming platform. "local" = local files only. */
 export type PlatformId = ProviderId;

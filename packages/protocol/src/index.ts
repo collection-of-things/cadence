@@ -105,6 +105,8 @@ export interface TrackRef {
   replayGainDb?: number;
   /** Raw lyrics text — LRC (synced) or plain. UI parses. */
   lyrics?: string;
+  /** Local tracks: the listener's sync nudge, added to every lyric line's time. */
+  lyricsOffsetMs?: number;
   /** Honest per-track availability (region locks, key refusals). */
   availability: "available" | "unavailable" | "unknown";
   availabilityDetail?: string;
@@ -309,6 +311,14 @@ export interface LibraryAlbum {
   year?: number;
   artwork?: ArtworkRef;
   trackCount: number;
+  /** Genres from the album's track tags, when any track has them. */
+  genre?: string[];
+}
+
+/** How much music the local library holds. */
+export interface LibraryCounts {
+  albums: number;
+  tracks: number;
 }
 
 export interface LibraryQuery {

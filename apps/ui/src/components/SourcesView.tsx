@@ -5,22 +5,10 @@ import { artistsLine, formatTime } from '../format';
 import { useUi } from '../hooks';
 import { NoteIcon, SearchIcon } from '../icons';
 import { AddGlyph, useJustAdded } from './AddGlyph';
-import { providerForRoute, RouteBadge, routeLabel } from './RouteBadge';
+import { cleanIpcError } from '../ipcError';
+import { ROUTE_STATE_META, routeLabel } from '../routes';
+import { RouteBadge } from './RouteBadge';
 import './controls.css';
-
-const STATE_META: Record<RouteCapabilities['state'], { label: string; tone: 'ok' | 'warn' | 'dim' }> = {
-  ready: { label: 'Ready', tone: 'ok' },
-  unauthenticated: { label: 'Sign-in required', tone: 'warn' },
-  unavailable: { label: 'Unavailable', tone: 'dim' },
-  degraded: { label: 'Degraded', tone: 'warn' },
-  error: { label: 'Error', tone: 'warn' },
-};
-
-/** IPC handler rejections arrive wrapped; keep the adapter's own message. */
-function cleanIpcError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e);
-  return msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-}
 
 function triChip(key: string, tri: 'yes' | 'no' | 'unknown', label: string) {
   if (tri === 'yes') return { key, label, tone: 'ok' as const };
@@ -35,7 +23,7 @@ const ENGINE_LABELS: Record<RouteCapabilities['playback']['engine'], string> = {
 };
 
 function RouteCard({ cap }: { cap: RouteCapabilities }) {
-  const meta = STATE_META[cap.state];
+  const meta = ROUTE_STATE_META[cap.state];
   const chips = [
     {
       key: 'eng',
@@ -213,7 +201,7 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
                 <span className="src-hit-title">{t.title}</span>
                 <span className="src-hit-artist">{artistsLine(t.artists)}</span>
               </span>
-              <RouteBadge provider={providerForRoute(t.route)} title={t.route} />
+              <RouteBadge route={t.route} />
               <span className="src-hit-time">{formatTime(t.durationMs)}</span>
               <PlayNextButton track={t} />
             </div>

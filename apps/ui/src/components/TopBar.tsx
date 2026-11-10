@@ -1,9 +1,7 @@
 import { useEffect, useRef } from 'react';
-import type { Location } from '../App';
-import { session } from '../session';
+import type { Location } from '../navigation';
 import { useUi } from '../hooks';
-import { ChevronIcon, SearchIcon, SidebarIcon } from '../icons';
-import { SettingsSheet } from './SettingsSheet';
+import { ChevronIcon, GearIcon, SearchIcon, SidebarIcon } from '../icons';
 import './shell.css';
 
 interface TopBarProps {
@@ -12,6 +10,8 @@ interface TopBarProps {
   onBack(): void;
   onForward(): void;
   onNavigate(next: Location): void;
+  /** True while the Settings page is showing; the gear then leads back out. */
+  settingsOpen: boolean;
   sidebarOpen: boolean;
   onToggleSidebar(): void;
 }
@@ -19,11 +19,11 @@ interface TopBarProps {
 const isMac = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac');
 
 /**
- * Top chrome over the stage, drawn as filled capsules: history (joined) and
- * the sidebar toggle on the left, the search field centred, settings on the
+ * Top chrome over the stage, drawn as filled capsules: sidebar toggle and
+ * joined history on the left, the search field centred, settings on the
  * right. The bar doubles as the window's drag handle.
  */
-export function TopBar({ canGoBack, canGoForward, onBack, onForward, onNavigate, sidebarOpen, onToggleSidebar }: TopBarProps) {
+export function TopBar({ canGoBack, canGoForward, onBack, onForward, onNavigate, settingsOpen, sidebarOpen, onToggleSidebar }: TopBarProps) {
   const platform = useUi((s) => s.platform);
   const isApple = platform === 'apple';
   const inputRef = useRef<HTMLInputElement>(null);
@@ -43,25 +43,16 @@ export function TopBar({ canGoBack, canGoForward, onBack, onForward, onNavigate,
 
   const openSearch = (query: string) => {
     if (isApple) {
-      // The query rides the location — the search view mounts already submitted.
+      // The query rides the location, so the search view mounts already submitted.
       onNavigate({ page: 'search', ...(query ? { query } : {}) });
       return;
     }
-    session.setLibraryQuery(query);
-    onNavigate({ page: 'library', tab: 'songs' });
+    onNavigate({ page: 'library', tab: 'songs', ...(query ? { query } : {}) });
   };
 
   return (
     <header className="topbar">
       <div className="topbar-group">
-        <div className="topbar-history" role="group" aria-label="History">
-          <button className="chrome-btn" aria-label="Go back" title="Back" disabled={!canGoBack} onClick={onBack}>
-            <ChevronIcon dir="left" size={18} />
-          </button>
-          <button className="chrome-btn" aria-label="Go forward" title="Forward" disabled={!canGoForward} onClick={onForward}>
-            <ChevronIcon dir="right" size={18} />
-          </button>
-        </div>
         <button
           className="chrome-btn"
           aria-label="Sidebar"
@@ -71,6 +62,14 @@ export function TopBar({ canGoBack, canGoForward, onBack, onForward, onNavigate,
         >
           <SidebarIcon size={18} />
         </button>
+        <div className="topbar-history" role="group" aria-label="History">
+          <button className="chrome-btn" aria-label="Go back" title="Back" disabled={!canGoBack} onClick={onBack}>
+            <ChevronIcon dir="left" size={18} />
+          </button>
+          <button className="chrome-btn" aria-label="Go forward" title="Forward" disabled={!canGoForward} onClick={onForward}>
+            <ChevronIcon dir="right" size={18} />
+          </button>
+        </div>
       </div>
 
       <label className="topbar-search">
@@ -101,7 +100,19 @@ export function TopBar({ canGoBack, canGoForward, onBack, onForward, onNavigate,
       </label>
 
       <div className="topbar-group">
-        <SettingsSheet />
+        <button
+          className={`chrome-btn ${settingsOpen ? 'is-on' : ''}`}
+          aria-label="Settings"
+          aria-pressed={settingsOpen}
+          title={settingsOpen ? 'Close settings' : 'Settings'}
+          onClick={() => {
+            if (!settingsOpen) onNavigate({ page: 'settings', section: 'accounts' });
+            else if (canGoBack) onBack();
+            else onNavigate({ page: 'home' });
+          }}
+        >
+          <GearIcon size={19} />
+        </button>
       </div>
     </header>
   );

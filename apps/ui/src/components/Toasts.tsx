@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { useUi } from '../hooks';
+import { prefersReducedMotion, useUi } from '../hooks';
 import { session } from '../session';
 import { CloseIcon } from '../icons';
-import { providerForRoute, RouteBadge } from './RouteBadge';
+import { RouteBadge } from './RouteBadge';
 import './controls.css';
 
 /** How long a dismissed toast takes to leave; matches `.toast.is-leaving`. */
@@ -18,7 +18,7 @@ export function Toasts() {
   if (!toasts.length) return null;
 
   const dismiss = (id: number) => {
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (prefersReducedMotion()) {
       session.dismissToast(id);
       return;
     }
@@ -37,10 +37,10 @@ export function Toasts() {
     <div className="toasts" aria-live="polite">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${leaving.has(t.id) ? 'is-leaving' : ''}`} role="status">
-          <RouteBadge provider={providerForRoute(t.route)} title={t.route} />
+          <RouteBadge route={t.route} />
           <span className="toast-msg">
             {t.message}
-            {t.retriable && <em> — try again</em>}
+            {t.retriable && <em> Try again.</em>}
           </span>
           <button className="icon-btn" aria-label="Dismiss" disabled={leaving.has(t.id)} onClick={() => dismiss(t.id)}>
             <CloseIcon size={14} />
