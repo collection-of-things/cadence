@@ -309,13 +309,15 @@ impl OutputCore {
         }
     }
 
-    /// Fill `out` with s32 output samples (fidelity-bypass streams).
+    /// Fill S32 output, retaining processing headroom until final gain and clipping.
     pub fn pull_s32(&mut self, out: &mut [i32]) {
         if self.paused || self.rebuilding {
             out.fill(0);
             return;
         }
         let ch = self.negotiated.channels.max(1) as u64;
+        let volume = self.volume as f64;
+        let mut tap = [0f32; 2048];
         let mut filled = 0;
         while filled < out.len() {
             let Some(track) = self.active.as_ref() else {
@@ -323,13 +325,33 @@ impl OutputCore {
                 break;
             };
             let n = match &track.pipe {
-                PipeReader::S32(c) => c.read_aligned(&mut out[filled..], ch as usize),
+                PipeReader::S32(c) => {
+                    let got = c.read_aligned(&mut out[filled..], ch as usize);
+                    for chunk in out[filled..filled + got].chunks_mut(tap.len()) {
+                        for (i, sample) in chunk.iter().enumerate() {
+                            tap[i] = *sample as f32 / 2147483648.0f32;
+                        }
+                        let _ = self.fft_tap.write(&tap[..chunk.len()]);
+                        if (self.volume - 1.0).abs() > f32::EPSILON {
+                            for sample in chunk {
+                                *sample = (*sample as f64 * volume)
+                                    .round()
+                                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+                            }
+                        }
+                    }
+                    got
+                }
                 PipeReader::F32(c) => {
                     let mut tmp = [0f32; 2048];
                     let want = (out.len() - filled).min(tmp.len());
                     let got = c.read_aligned(&mut tmp[..want], ch as usize);
+                    let _ = self.fft_tap.write(&tmp[..got]);
                     for i in 0..got {
-                        out[filled + i] = (tmp[i] as f64 * 2147483648.0)
+                        // DSP and resampling may exceed unity. Attenuate
+                        // before the only integer conversion, so representable
+                        // output peaks are not clipped prematurely.
+                        out[filled + i] = (tmp[i] as f64 * volume * 2147483648.0)
                             .round()
                             .clamp(i32::MIN as f64, i32::MAX as f64)
                             as i32;
@@ -359,25 +381,13 @@ impl OutputCore {
                 self.stalled = false;
             }
         }
-        // tap FFT (pre-volume, as in pull_f32) + dump with f32-converted
-        // samples — bounded writes, drop on full.
-        let mut tap = [0f32; 2048];
-        let mut i = 0;
-        while i < out.len() {
-            let n = (out.len() - i).min(tap.len());
-            for j in 0..n {
-                tap[j] = out[i + j] as f32 / 2147483648.0f32;
-            }
+        // Keep the FFT's source-level sample clock through an underrun/end.
+        tap.fill(0.0);
+        let mut remaining = out.len() - filled;
+        while remaining > 0 {
+            let n = remaining.min(tap.len());
             let _ = self.fft_tap.write(&tap[..n]);
-            i += n;
-        }
-        let vol = self.volume;
-        if (vol - 1.0).abs() > f32::EPSILON {
-            for s in out.iter_mut() {
-                *s = (*s as f64 * vol as f64)
-                    .round()
-                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-            }
+            remaining -= n;
         }
         if let Some(d) = &self.dump {
             let mut i = 0;
@@ -680,11 +690,8 @@ type ProducerHandle = std::thread::JoinHandle<()>;
 
 /// Negotiated stream params + source meta for a track, without spawning.
 struct TrackPlan {
-    #[allow(dead_code)]
     src_rate: u32,
-    #[allow(dead_code)]
     src_channels: u32,
-    #[allow(dead_code)]
     src_depth: BitDepth,
     duration_ms: u64,
     neg: Negotiated,
@@ -956,12 +963,8 @@ impl Engine {
             // Default path: run the stream at the source's native
             // rate/channels when the device can carry them — no in-graph
             // resample, no double resample at the OS mixer. DSP still
-            // applies (this is not fidelity bypass). "Depth-preserving"
-            // is scoped to the f32 graph: it carries <=24-bit integer and
-            // float sources exactly; a 32-bit-INTEGER source can only be
-            // rendered bit-exact by the fidelity bypass s32 pipe, so its
-            // S32-accepting devices get the native rate but lose the low
-            // byte through f32 like every other format.
+            // applies (this is not strict fidelity bypass). Idle integer
+            // processing can use the S32 producer without losing source bits.
             if let Some(kind) = caps.accepts(src_rate, src_channels, src_depth) {
                 if src_depth.preserved_by(kind) {
                     let neg = Negotiated {
@@ -1278,13 +1281,16 @@ impl Engine {
         let neg2 = neg.clone();
         let qid = queue_id.to_string();
 
-        // The s32 producer is fidelity-only: no resampler, no EQ, no
-        // ReplayGain. Selecting it by negotiated kind alone would bypass all
-        // DSP on every I32-default device — wrong rate, wrong pitch, lying
-        // capability reports. Non-bypass S32 output runs the f32 graph and
-        // converts at pull_s32.
-        let use_bypass_s32 = bypass && neg.kind == PcmKind::S32;
-        let (reader, join) = match (use_bypass_s32, neg.kind) {
+        // Preserve integer source bits when no processing is needed, even
+        // outside strict fidelity mode. A format label alone is insufficient:
+        // an active resampler, EQ or ReplayGain still requires the DSP graph.
+        let integer_passthrough = matches!(plan.src_depth, BitDepth::Int(_))
+            && plan.src_rate == neg.rate
+            && plan.src_channels == neg.channels
+            && rplan == ResamplePlan::Passthrough
+            && Dsp::new(&eq, rg_db, neg.rate, neg.channels as usize).is_passthrough();
+        let use_s32 = neg.kind == PcmKind::S32 && (bypass || integer_passthrough);
+        let (reader, join) = match (use_s32, neg.kind) {
             (false, _) => {
                 let (prod, cons) = ringbuf::channel::<f32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
@@ -3668,7 +3674,7 @@ fn run_producer_f32(
     Ok(())
 }
 
-/// -> read s32 -> ring. Only used for fidelity-bypass streams; no DSP.
+/// Decode to S32 and feed the ring when the processing plan requires no DSP.
 /// Supports files (ffmpeg s32le) and Int(32) pcm-stream feeds (bytes are
 /// already s32le — passed through bit-exact).
 fn run_producer_s32(
@@ -3866,6 +3872,65 @@ fn pcm_bytes_len(n_samples: usize, depth: BitDepth) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_integer_playback_preserves_low_bits_and_honors_replay_gain() {
+        struct ManualSink;
+        impl Sink for ManualSink {
+            fn stop(&mut self) {}
+        }
+        for replay_gain in [false, true] {
+            let caps = Arc::new(crate::sink::NullCaps {
+                rate: 44_100,
+                channels: 2,
+                fast: false,
+            });
+            let neg = Negotiated {
+                rate: 44_100,
+                channels: 2,
+                kind: PcmKind::S32,
+                device_name: caps.name(),
+                positions: crate::sink::resolve_positions(None, 2),
+            };
+            let (core, _tap, fft) = Engine::make_core(neg, None);
+            let engine = Engine::new(
+                EngineConfig::default(), Arc::new(|_| {}), Box::new(ManualSink),
+                caps, fft, Arc::clone(&core),
+            );
+            engine.set_replay_gain(replay_gain).unwrap();
+            engine.load(LoadParams {
+                queue_id: "integer-precision".into(),
+                generation_id: 1,
+                source: SourceSpec::PcmStream {
+                    sample_rate_hz: 44_100, channels: 2, bit_depth: BitDepth::Int(32),
+                },
+                start_paused: true,
+                position_ms: 0,
+                replay_gain_db: Some(20.0 * 0.5f64.log10()),
+            }).unwrap();
+            let values = [1_600_000_001i32, 1_600_000_003, -1_600_000_001, -1_600_000_003];
+            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            engine.feed("integer-precision", &bytes, true, false).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !core.lock().unwrap().active.as_ref().unwrap().ready.load(Ordering::Acquire) {
+                assert!(std::time::Instant::now() < deadline, "producer did not become ready");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let mut out = [0i32; 4];
+            {
+                let mut c = core.lock().unwrap();
+                c.paused = false;
+                c.pull_s32(&mut out);
+            }
+            assert!(!engine.state.lock().unwrap().fidelity_bypass);
+            engine.shutdown();
+            if replay_gain {
+                assert_eq!(out, [800_000_000, 800_000_000, -800_000_000, -800_000_000]);
+            } else {
+                assert_eq!(out, values);
+            }
+        }
+    }
 
     fn make_feed() -> Arc<Feed> {
         Arc::new(Feed {
@@ -4070,6 +4135,41 @@ mod tests {
             c.pull_s32(&mut out);
             assert_eq!(out, [i32::MIN, -1073741824, 0, 536870912, i32::MAX]);
         }
+    }
+
+    #[test]
+    fn pull_s32_attenuates_processed_peaks_before_clipping() {
+        let neg = Negotiated {
+            rate: 48_000,
+            channels: 2,
+            kind: PcmKind::S32,
+            device_name: "test".into(),
+            positions: None,
+        };
+        let (core, _tap, fft) = Engine::make_core(neg.clone(), None);
+        let values = [1.25f32, -1.25, 0.25, -0.25];
+        let (prod, cons) = ringbuf::channel::<f32>(64);
+        assert!(prod.write_all(&values));
+        prod.finish();
+        let mut c = core.lock().unwrap();
+        c.active = Some(TrackReader {
+            instance: 1,
+            queue_id: "processed-headroom".into(),
+            duration_ms: 1_000,
+            seek_offset_ms: 0,
+            pipe: PipeReader::F32(cons),
+            bypass: false,
+            neg,
+            ready: Arc::new(AtomicBool::new(true)),
+        });
+        c.paused = false;
+        c.volume = 0.5;
+        let mut out = [0i32; 4];
+        c.pull_s32(&mut out);
+        assert_eq!(out, [1_342_177_280, -1_342_177_280, 268_435_456, -268_435_456]);
+        let mut pre_volume = [0f32; 4];
+        assert_eq!(fft.read(&mut pre_volume), values.len());
+        assert_eq!(pre_volume, values);
     }
 
     /// Once the reader drains, a waiting push completes.

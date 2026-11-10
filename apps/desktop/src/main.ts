@@ -36,6 +36,13 @@ import { wireCloseToTray } from "./quit-guard.js";
  */
 
 // --- environment (must run before app is ready) -------------------------------
+// Chromium's PulseAudio streams do not use our native PipeWire sink.
+// Request the same high-quality conversion for provider playback while
+// preserving existing client properties. This is local to this app process.
+if (process.platform === "linux") {
+  process.env.PULSE_PROP = [process.env.PULSE_PROP?.trim(), "resample.quality=14"]
+    .filter(Boolean).join(" ");
+}
 // CADENCE_USER_DATA: pin the profile dir (e2e reuses a signed-in profile).
 if (process.env.CADENCE_USER_DATA) {
   app.setPath("userData", process.env.CADENCE_USER_DATA);

@@ -33,6 +33,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
   const MK = await waitForMK();
   if (!MK) { emit('error', { message: 'MusicKit JS not present on this page' }); return false; }
+  const requestedBitrate = Number(MK.PlaybackBitrate && MK.PlaybackBitrate.HIGH) || 256;
 
   // Wait for the site itself to configure an instance (it may do so lazily).
   let mk = null;
@@ -57,13 +58,19 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     } catch (e) {}
     if (!devToken) { emit('needDeveloperToken', {}); return false; }
     try {
-      mk = await MK.configure({ developerToken: devToken, app: { name: 'Cadence', build: '0.1.0' } });
+      mk = await MK.configure({ developerToken: devToken, bitrate: requestedBitrate, app: { name: 'Cadence', build: '0.1.0' } });
     } catch (e) {
       emit('error', { message: 'MusicKit configure failed: ' + (e && e.message || e) });
       return false;
     }
   }
   if (!mk) { emit('error', { message: 'MusicKit instance unavailable' }); return false; }
+
+  function requestHighQuality() {
+    try { mk.bitrate = requestedBitrate; }
+    catch (e) { emit('error', { message: 'Apple Music high-quality playback could not be requested.' }); }
+  }
+  requestHighQuality();
 
   // Fixed 2 dB of output headroom prevents the observed AAC/resampler
   // overshoots from hitting Chromium's full-scale clamp. A constant gain
@@ -129,6 +136,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     // music.apple.com can leave its shared SDK in PREVIEW_ONLY even for a
     // signed-in subscriber. This public setter selects protected full audio.
     mk.previewOnly = false;
+    requestHighQuality();
   }
 
   // --- queue bookkeeping -------------------------------------------------
@@ -257,6 +265,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       positionMs: posMs,
       durationMs: dur,
       isAuthorized: !!mk.isAuthorized,
+      // Selection diagnostics only; these do not measure delivered media.
+      requestedBitrateKbps: requestedBitrate,
+      sdkBitrateKbps: Number(mk.bitrate) || null,
       nowPlayingId: item ? String(item.id) : null,
       nowPlayingKind: playParamsKind(item),
       queuePos: qi.position,

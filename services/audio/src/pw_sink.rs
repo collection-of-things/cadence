@@ -514,6 +514,10 @@ impl PipeWireCaps {
                 // rate while we deliver `rate` buffers — the adapter then
                 // rate-matches (the same resampling we came here to kill).
                 *pw::keys::NODE_RATE => format!("1/{}", neg.rate),
+                // Preserve the upper passband if PipeWire must convert to
+                // a different graph rate. This does not force resampling or
+                // change the device rate; matching-rate streams stay native.
+                "resample.quality" => "14",
                 // No NODE_ALWAYS_PROCESS — the node suspends when idle,
                 // like mpv's: a held-active driver would pin the graph
                 // rate and block device suspend for nothing.

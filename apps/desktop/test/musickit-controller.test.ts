@@ -15,12 +15,14 @@ interface Controller {
 
 // Execute the shipped injection string in a page-shaped VM. The fake SDK
 // deliberately starts in the same preview/US mode observed on Apple's site.
-async function harness(options: { authorized?: boolean; subscription?: boolean } = {}) {
+async function harness(options: { authorized?: boolean; subscription?: boolean; configureFallback?: boolean } = {}) {
   const calls: Call[] = [];
   const events: { name: string; data: Record<string, unknown> }[] = [];
   const listeners = new Map<string, () => void>();
+  const configurations: { bitrate?: number }[] = [];
   const mk = {
     volume: 1,
+    bitrate: 64,
     isAuthorized: options.authorized ?? true,
     previewOnly: true,
     musicUserToken: "test-account-token",
@@ -49,25 +51,61 @@ async function harness(options: { authorized?: boolean; subscription?: boolean }
     pause: () => { calls.push({ pause: true }); mk.playbackState = 3; },
   };
   const window: {
-    MusicKit: { getInstance(): typeof mk; Events: Record<string, string>; PlaybackStates: Record<string, number> };
+    MusicKit: {
+      getInstance(): typeof mk | null;
+      configure(config: { bitrate?: number }): typeof mk;
+      PlaybackBitrate: { HIGH: number; STANDARD: number };
+      Events: Record<string, string>;
+      PlaybackStates: Record<string, number>;
+    };
     __cadenceBridge: { emit(name: string, data: Record<string, unknown>): void };
     __cadenceCtl?: Controller;
   } = {
     MusicKit: {
-      getInstance: () => mk,
+      getInstance: () => options.configureFallback ? null : mk,
+      configure: config => { configurations.push(config); return mk; },
+      PlaybackBitrate: { HIGH: 256, STANDARD: 64 },
       Events: { authorizationStatusDidChange: "authorizationStatusDidChange" },
       PlaybackStates: { none: 0, loading: 1, playing: 2, paused: 3, stopped: 4, ended: 5, seeking: 6, waiting: 8, stalled: 9, completed: 10 },
     },
     __cadenceBridge: { emit: (name, data) => events.push({ name, data }) },
   };
-  await runInNewContext(MUSICKIT_CONTROLLER_JS, { window, setInterval: () => 1, setTimeout });
+  await runInNewContext(MUSICKIT_CONTROLLER_JS, {
+    window,
+    document: {
+      scripts: [{ id: "serialized-server-data", type: "application/json", textContent: '{"token":"eyJtest-only-token"}' }],
+      documentElement: { innerHTML: "" },
+    },
+    setInterval: () => 1,
+    setTimeout: options.configureFallback ? (fn: () => void) => { fn(); return 1; } : setTimeout,
+  });
   if (!window.__cadenceCtl) throw new Error("Controller did not install");
-  return { ctl: window.__cadenceCtl, mk, calls, events, listeners };
+  return { ctl: window.__cadenceCtl, mk, calls, events, listeners, configurations };
 }
 
 const song = { type: "song", id: "s1" } as const;
 
 describe("real injected MusicKit controller", () => {
+  it("requests high bitrate before loading and resuming songs", async () => {
+    const { ctl, mk } = await harness();
+    expect(mk.bitrate).toBe(256);
+    mk.bitrate = 64;
+    let queuedBitrate = 0;
+    const load = mk.setQueue;
+    mk.setQueue = async () => { queuedBitrate = mk.bitrate; await load(); };
+    await ctl.play(song, 0);
+    expect(queuedBitrate).toBe(256);
+    mk.bitrate = 64;
+    await ctl.resume();
+    expect(mk.bitrate).toBe(256);
+  });
+
+  it("includes high bitrate when configuring the fallback SDK instance", async () => {
+    const { configurations } = await harness({ configureFallback: true });
+    expect(configurations).toHaveLength(1);
+    expect(configurations[0]?.bitrate).toBe(256);
+  });
+
   it("keeps a constant output margin and linear volume without dynamic gain", async () => {
     const { ctl, mk } = await harness();
     ctl.setVolume(1);
