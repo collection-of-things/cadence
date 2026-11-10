@@ -72,11 +72,12 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
   requestHighQuality();
 
-  // Fixed 2 dB of output headroom prevents the observed AAC/resampler
-  // overshoots from hitting Chromium's full-scale clamp. A constant gain
-  // preserves attack/decay and stereo balance; no limiter or compressor.
+  // Fixed 2 dB of output headroom avoided Chromium's full-scale clamp in
+  // the measured AAC/resampler passage; it is not a bound for every track.
+  // Constant gain preserves dynamics, but comparisons need level matching.
   const outputHeadroom = Math.pow(10, -2 / 20);
-  let outputVolume = Math.max(0, Math.min(1, Number(mk.volume) || 0)) * outputHeadroom;
+  const initialVolume = Number(mk.volume);
+  let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
   function applyOutputVolume() { mk.volume = outputVolume; }
 
   const STATES = (MK && MK.PlaybackStates) || {
@@ -193,6 +194,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
         }
       }
       if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
+      applyOutputVolume();
       await mk.play();
       applyOutputVolume();
       // Seek after loading the stream, including zero. Seeking before play
@@ -321,7 +323,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       return true;
     },
     pause() { mk.pause(); post(true); return true; },
-    async resume() { await requireFullPlayback(); await mk.play(); applyOutputVolume(); post(true); return true; },
+    async resume() { await requireFullPlayback(); applyOutputVolume(); await mk.play(); applyOutputVolume(); post(true); return true; },
     seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },

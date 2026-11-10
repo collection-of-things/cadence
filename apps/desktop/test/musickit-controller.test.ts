@@ -15,13 +15,13 @@ interface Controller {
 
 // Execute the shipped injection string in a page-shaped VM. The fake SDK
 // deliberately starts in the same preview/US mode observed on Apple's site.
-async function harness(options: { authorized?: boolean; subscription?: boolean; configureFallback?: boolean } = {}) {
+async function harness(options: { authorized?: boolean; subscription?: boolean; configureFallback?: boolean; initialVolume?: number } = {}) {
   const calls: Call[] = [];
   const events: { name: string; data: Record<string, unknown> }[] = [];
   const listeners = new Map<string, () => void>();
   const configurations: { bitrate?: number }[] = [];
   const mk = {
-    volume: 1,
+    volume: options.initialVolume ?? 1,
     bitrate: 64,
     isAuthorized: options.authorized ?? true,
     previewOnly: true,
@@ -129,6 +129,32 @@ describe("real injected MusicKit controller", () => {
     expect(mk.volume).toBe(wanted);
     await ctl.resume();
     expect(mk.volume).toBe(wanted);
+  });
+
+  it("applies the requested level before playback starts after a queue reset", async () => {
+    for (const volume of [0, .5, 1]) {
+      const { ctl, mk } = await harness();
+      ctl.setVolume(volume);
+      const wanted = mk.volume;
+      const levelsAtStart: number[] = [];
+      const load = mk.setQueue;
+      mk.setQueue = async () => { await load(); mk.volume = 1; };
+      const play = mk.play;
+      mk.play = async () => { levelsAtStart.push(mk.volume); await play(); };
+      await ctl.play(song, 0);
+      mk.volume = 1;
+      await ctl.resume();
+      expect(levelsAtStart).toEqual([wanted, wanted]);
+    }
+  });
+
+  it("uses a safe default for an invalid SDK volume while preserving mute", async () => {
+    const invalid = await harness({ initialVolume: Number.NaN });
+    await invalid.ctl.play(song, 0);
+    expect(invalid.mk.volume).toBeCloseTo(0.7943282347, 9);
+    const muted = await harness({ initialVolume: 0 });
+    await muted.ctl.play(song, 0);
+    expect(muted.mk.volume).toBe(0);
   });
 
   it("pauses the old stream before waiting for subscription checks or the new queue", async () => {

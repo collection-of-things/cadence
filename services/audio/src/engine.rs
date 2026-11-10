@@ -3747,6 +3747,9 @@ fn run_producer_s32(
             return Err(anyhow!("pcm-stream source without feed channel"));
         }
     }
+    // Clean empty EOF is ready in the same control sense as the float
+    // producer. Errors and aborted writes return above without marking it.
+    ready.store(true, Ordering::Release);
     prod.finish();
     Ok(())
 }
@@ -3874,6 +3877,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_s32_producer_is_ready_only_after_clean_eof() {
+        let neg = Negotiated {
+            rate: 44_100, channels: 2, kind: PcmKind::S32,
+            device_name: "test".into(), positions: None,
+        };
+        for valid in [true, false] {
+            let (prod, cons) = ringbuf::channel::<i32>(64);
+            let ready = Arc::new(AtomicBool::new(false));
+            let feed = make_feed();
+            feed.closed.store(true, Ordering::Release);
+            let result = run_producer_s32(
+                &FfmpegDecoder,
+                SourceSpec::PcmStream {
+                    sample_rate_hz: 44_100, channels: 2, bit_depth: BitDepth::Int(32),
+                },
+                0, &neg, valid.then_some(feed), prod, Arc::clone(&ready), None,
+            );
+            assert_eq!(result.is_ok(), valid);
+            assert_eq!(ready.load(Ordering::Acquire), valid);
+            if valid {
+                assert!(cons.is_drained(), "empty EOF must close the ring");
+                let (core, _, _) = Engine::make_core(neg.clone(), None);
+                let mut c = core.lock().unwrap();
+                let (active_prod, active_cons) = ringbuf::channel::<i32>(64);
+                active_prod.write_all(&[123, -456]);
+                active_prod.finish();
+                c.active = Some(TrackReader {
+                    instance: 1, queue_id: "active".into(), duration_ms: 1,
+                    seek_offset_ms: 0, pipe: PipeReader::S32(active_cons),
+                    bypass: false, neg: neg.clone(), ready: Arc::new(AtomicBool::new(true)),
+                });
+                c.next = Some(TrackReader {
+                    instance: 2, queue_id: "empty".into(), duration_ms: 0,
+                    seek_offset_ms: 0, pipe: PipeReader::S32(cons),
+                    bypass: false, neg: neg.clone(), ready,
+                });
+                c.paused = false;
+                let mut out = [0i32; 8];
+                c.pull_s32(&mut out);
+                assert_eq!(out, [123, -456, 0, 0, 0, 0, 0, 0]);
+                assert!(c.active.is_none());
+                assert!(matches!(c.events.front(), Some(CoreEvent::Boundary { started_queue_id, .. }) if started_queue_id == "empty"));
+                assert!(matches!(c.events.back(), Some(CoreEvent::Ended { queue_id, .. }) if queue_id == "empty"));
+            }
+        }
+    }
+
+    #[test]
     fn default_integer_playback_preserves_low_bits_and_honors_replay_gain() {
         struct ManualSink;
         impl Sink for ManualSink {
@@ -3929,6 +3980,112 @@ mod tests {
             } else {
                 assert_eq!(out, values);
             }
+        }
+    }
+
+    #[test]
+    fn integer_source_with_active_eq_still_processes_the_signal() {
+        struct ManualSink;
+        impl Sink for ManualSink { fn stop(&mut self) {} }
+        let caps = Arc::new(crate::sink::NullCaps { rate: 44_100, channels: 2, fast: false });
+        let neg = Negotiated {
+            rate: 44_100, channels: 2, kind: PcmKind::S32,
+            device_name: caps.name(), positions: crate::sink::resolve_positions(None, 2),
+        };
+        let (core, _, fft) = Engine::make_core(neg, None);
+        let engine = Engine::new(
+            EngineConfig::default(), Arc::new(|_| {}), Box::new(ManualSink),
+            caps, fft, Arc::clone(&core),
+        );
+        engine.set_eq(&[(1_000.0, 12.0)]).unwrap();
+        engine.load(LoadParams {
+            queue_id: "eq".into(), generation_id: 1,
+            source: SourceSpec::PcmStream {
+                sample_rate_hz: 44_100, channels: 2, bit_depth: BitDepth::Int(32),
+            },
+            start_paused: true, position_ms: 0, replay_gain_db: None,
+        }).unwrap();
+        let values: Vec<i32> = (0..4_410).flat_map(|i| {
+            let sample = (214_748_364.0 * (2.0 * std::f64::consts::PI * 1_000.0 * i as f64 / 44_100.0).sin()).round() as i32;
+            [sample, 0]
+        }).collect();
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        engine.feed("eq", &bytes, true, false).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let c = core.lock().unwrap();
+            let track = c.active.as_ref().unwrap();
+            let available = match &track.pipe {
+                PipeReader::F32(c) => c.available(),
+                PipeReader::S32(c) => c.available(),
+            };
+            if available >= values.len() { break; }
+            drop(c);
+            assert!(std::time::Instant::now() < deadline, "EQ producer did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut out = vec![0i32; values.len()];
+        {
+            let mut c = core.lock().unwrap();
+            c.paused = false;
+            c.pull_s32(&mut out);
+        }
+        engine.shutdown();
+        let energy = |data: &[i32]| data[2_000..].iter().step_by(2).map(|&v| (v as f64).powi(2)).sum::<f64>();
+        let gain_db = 10.0 * (energy(&out) / energy(&values)).log10();
+        assert!((gain_db - 12.0).abs() < 0.05, "active EQ was bypassed or changed: {gain_db} dB");
+        assert!(out.iter().skip(1).step_by(2).all(|&v| v == 0));
+    }
+
+    #[test]
+    fn s32_sink_crosses_integer_and_processed_boundaries_without_gaps() {
+        for integer_first in [true, false] {
+            let neg = Negotiated {
+                rate: 44_100, channels: 2, kind: PcmKind::S32,
+                device_name: "test".into(), positions: None,
+            };
+            let (core, _, fft) = Engine::make_core(neg.clone(), None);
+            let (ip, ic) = ringbuf::channel::<i32>(64);
+            let integers = [1_600_000_001, -1_600_000_003, 37, -39, 800_000_001, -800_000_003];
+            assert!(ip.write_all(&integers));
+            ip.finish();
+            let (fp, fc) = ringbuf::channel::<f32>(64);
+            let processed = [1.25f32, -1.25, 0.25, -0.25, 0.5, -0.5];
+            assert!(fp.write_all(&processed));
+            fp.finish();
+            let make_reader = |instance, pipe| TrackReader {
+                instance, queue_id: instance.to_string(), duration_ms: 1,
+                seek_offset_ms: 0, pipe, bypass: false, neg: neg.clone(),
+                ready: Arc::new(AtomicBool::new(true)),
+            };
+            let int_reader = make_reader(1, PipeReader::S32(ic));
+            let float_reader = make_reader(2, PipeReader::F32(fc));
+            let mut c = core.lock().unwrap();
+            (c.active, c.next) = if integer_first {
+                (Some(int_reader), Some(float_reader))
+            } else { (Some(float_reader), Some(int_reader)) };
+            c.paused = false;
+            c.volume = 0.5;
+            let mut out = [0i32; 16];
+            c.pull_s32(&mut out[..8]);
+            c.pull_s32(&mut out[8..]);
+            let int_expected: Vec<i32> = integers.iter().map(|&v| (v as f64 * 0.5).round() as i32).collect();
+            let float_expected: Vec<i32> = processed.iter().map(|&v| (v as f64 * 1_073_741_824.0).round() as i32).collect();
+            let expected: Vec<i32> = if integer_first {
+                int_expected.iter().chain(&float_expected).copied().collect()
+            } else { float_expected.iter().chain(&int_expected).copied().collect() };
+            assert_eq!(&out[..12], expected);
+            assert_eq!(&out[12..], &[0; 4]);
+            let int_tap: Vec<f32> = integers.iter().map(|&v| v as f32 / 2_147_483_648.0).collect();
+            let expected_tap: Vec<f32> = if integer_first {
+                int_tap.iter().chain(&processed).copied().collect()
+            } else { processed.iter().chain(&int_tap).copied().collect() };
+            let mut tap = [0f32; 16];
+            assert_eq!(fft.read(&mut tap), tap.len());
+            assert_eq!(&tap[..12], expected_tap);
+            assert_eq!(&tap[12..], &[0.0; 4]);
+            assert!(matches!(c.events.front(), Some(CoreEvent::Boundary { .. })));
+            assert!(matches!(c.events.back(), Some(CoreEvent::Ended { .. })));
         }
     }
 
