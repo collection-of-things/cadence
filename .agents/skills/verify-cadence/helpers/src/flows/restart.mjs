@@ -18,7 +18,7 @@ import { rmSync } from "node:fs";
 import { sleep, readJson } from "../lib/env.mjs";
 import { descendantPids } from "../lib/isolation.mjs";
 import * as api from "../lib/api.mjs";
-import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, dumpState, assertAudioRouted } from "../lib/flow.mjs";
+import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, dumpState, assertAudioRouted, transportButton } from "../lib/flow.mjs";
 import { evaluateRestore, trackIdentity } from "../lib/restart-oracle.mjs";
 import { quitManaged, relaunchManaged } from "../lib/session.mjs";
 
@@ -76,7 +76,7 @@ export async function run(ctx) {
   let resumed = null;
   let resumedLater = null;
   let transportWorked = false;
-  await page2.getByRole("button", { name: "Play" }).first().click().catch(() => {});
+  await transportButton(page2, "Play").click().catch(() => {});
   try {
     resumed = await api.waitStatus(page2, "playing", 6000);
     transportWorked = true;
@@ -91,9 +91,9 @@ export async function run(ctx) {
     }
   }
   if (resumed !== null) {
-    // documented transport NOTE for the known app defect — does not gate
+    // transport Play is reported as a NOTE — does not gate
     ev.check("transport Play resumes after restore", transportWorked,
-      transportWorked ? "UI button works" : "UI Play inert; bridge fallback resumed (known UI defect)",
+      transportWorked ? "UI button works" : "transport Play did not resume; bridge fallback resumed",
       { required: false });
     await sleep(1200);
     resumedLater = await api.snapshot(page2);

@@ -84,6 +84,12 @@
   mask-image: linear-gradient(transparent, #000 12%, #000 86%, transparent);
 }
 .lyrics-rail .lyrics-scroll::before { height: 30%; }
+/* The viewport's edge mask would fade an outline on it, so the unmasked
+   column around it draws the keyboard ring. */
+:root[data-input='keyboard'] :is(.side-panel-body, .npf-lyrics):has(> .lyrics-scroll:focus-visible) {
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent);
+}
 .lyrics-rail .lyrics-scroll p { padding: 12px 0; font-family: var(--font-lyrics); font-size: 20px; font-weight: 650; line-height: 1.42; letter-spacing: -0.005em; color: oklch(1 0 0 / 0.52); }
 .lyrics-rail .lyrics-scroll p.active { color: #fff; }
 @media (hover: hover) and (pointer: fine) {
@@ -115,8 +121,8 @@
 .npf-lyrics .lyrics-scroll p.d3 { filter: blur(3.2px); opacity: 0.8; }
 /* the sung line: brighter, a touch larger, tinted by the cover */
 .npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 22%, #fff); filter: none; opacity: 1; transform: scale(1.05); }
-/* reading ahead: pointing at the lyrics brings every line into focus */
-.npf-lyrics .lyrics-scroll:hover p, .npf-lyrics .lyrics-scroll:focus-visible p { filter: none; }
+/* reading ahead: pointing at the lyrics, or tabbing to them, brings every line into focus */
+.npf-lyrics .lyrics-scroll:hover p, :root[data-input='keyboard'] .npf-lyrics .lyrics-scroll:focus-visible p { filter: none; }
 @media (hover: hover) and (pointer: fine) {
   .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.62); }
 }

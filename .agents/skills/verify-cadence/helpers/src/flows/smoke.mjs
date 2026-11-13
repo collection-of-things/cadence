@@ -11,7 +11,7 @@
 // the run MUST FAIL "capture not silent".
 import { sleep } from "../lib/env.mjs";
 import * as api from "../lib/api.mjs";
-import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, assertAudioRouted, dumpState, analyzeCapture, fixtureForTitle } from "../lib/flow.mjs";
+import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, assertAudioRouted, dumpState, analyzeCapture, fixtureForTitle, transportButton } from "../lib/flow.mjs";
 
 export const name = "smoke";
 
@@ -59,7 +59,7 @@ export async function run(ctx) {
   await shot(ctx, "04-playing");
   await dumpState(ctx, "playing");
 
-  await page.getByRole("button", { name: "Pause" }).first().click();
+  await transportButton(page, "Pause").click();
   await api.waitStatus(page, "paused");
   ev.check("pause works", true);
   await shot(ctx, "05-paused");

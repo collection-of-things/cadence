@@ -151,6 +151,26 @@ describe('history', () => {
     const back = historyReducer(visit({ page: 'browse' }, { page: 'radio' }), { kind: 'back' });
     expect(historyReducer(back, { kind: 'navigate', to: { page: 'sources' } }).forward).toEqual([]);
   });
+
+  it('switching Settings section replaces the entry, so one Back leaves Settings', () => {
+    const settings = visit(
+      { page: 'browse' },
+      { page: 'settings', section: 'accounts' },
+      { page: 'settings', section: 'audio' },
+      { page: 'settings', section: 'appearance' },
+    );
+    expect(settings.location).toEqual({ page: 'settings', section: 'appearance' });
+    expect(settings.back).toEqual([{ page: 'home' }, { page: 'browse' }]);
+    const out = historyReducer(settings, { kind: 'back' });
+    expect(out.location).toEqual({ page: 'browse' });
+    // Forward returns to the section last shown.
+    expect(historyReducer(out, { kind: 'forward' }).location).toEqual({ page: 'settings', section: 'appearance' });
+  });
+
+  it('Close settings goes Back, which after section switches is the page before Settings', () => {
+    const gear = topBarSource.match(/if \(!settingsOpen\)[^;]*;\s*else if \(canGoBack\) onBack\(\);/);
+    expect(gear).not.toBeNull();
+  });
 });
 
 describe('local files under an active provider', () => {

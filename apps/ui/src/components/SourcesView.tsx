@@ -188,7 +188,7 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
               className="src-hit"
               tabIndex={0}
               onClick={() => session.playTracks(results, i, { kind: 'provider' })}
-              onKeyDown={(e) => e.key === 'Enter' && session.playTracks(results, i, { kind: 'provider' })}
+              onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && session.playTracks(results, i, { kind: 'provider' })}
             >
               {t.artwork ? (
                 <img className="src-hit-art" src={t.artwork.url} alt="" loading="lazy" />
