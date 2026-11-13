@@ -1,0 +1,3 @@
+Built-in image generation; transparent-background asset derived from concept-02.png.
+
+undefined

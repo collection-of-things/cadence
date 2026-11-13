@@ -1,114 +1,92 @@
-/* ============ Immersive now playing ============ */
+/* ============ Now Playing ============
+   Full-bleed artwork on the left melting into the shared ambient field,
+   lyrics floating on the right, the player dock below. */
 
 .npf {
-  --npf-ink: color-mix(in srgb, var(--npf-c0) 14%, #fff);
+  container: stage / inline-size;
   position: fixed;
   inset: 0;
   z-index: 1000;
   overflow: hidden;
   outline: none;
-  color: #fff;
-  background: #0b0b0c;
-  isolation: isolate;
+  color: var(--t1);
   user-select: none;
+  /* the right column's place; the cover's fade ends where the column starts */
+  --npf-col-right: 4vw;
+  --npf-col-w: min(44vw, 720px);
+  --npf-art-fade: min(98%, calc(100vw - var(--npf-col-right) - var(--npf-col-w)));
 }
+/* the top strip drags the window */
+.npf::before { content: ''; position: absolute; z-index: 1; inset: 0 0 auto 0; height: 56px; -webkit-app-region: drag; }
+.npf button, .npf input { -webkit-app-region: no-drag; }
 
-/* colour field: shader / CSS wash + a heavily blurred copy of the art */
-.npf-field { position: absolute; inset: 0; z-index: -2; background: radial-gradient(ellipse 80% 90% at 75% 30%, var(--npf-c0), transparent 75%), radial-gradient(ellipse 70% 70% at 90% 95%, var(--npf-c1), transparent 70%), #0b0b0c; }
-.npf-field .np-bg { position: absolute; inset: 0; opacity: 0.85; }
-.npf-blur { position: absolute; inset: -12%; width: 124%; height: 124%; object-fit: cover; filter: blur(90px) saturate(1.5) brightness(0.8); opacity: 0.75; }
-.npf-tint { position: absolute; inset: 0; background: linear-gradient(to right, rgba(0, 0, 0, 0.28), transparent 45%, rgba(0, 0, 0, 0.18)), linear-gradient(to top, rgba(0, 0, 0, 0.45), transparent 35%); }
-
-/* the artwork itself: full-height on the left, melting into the field */
+/* ---- artwork: full height on the left, fading into the field ---- */
 .npf-art {
   position: absolute;
-  z-index: -1;
-  top: 0;
-  bottom: 0;
-  left: 0;
+  inset: 0 auto 0 0;
   width: min(62vw, 100vh);
   display: grid;
   place-items: center;
-  color: rgba(255, 255, 255, 0.3);
-  mask-image: linear-gradient(to right, #000 58%, transparent 98%), linear-gradient(to bottom, #000 80%, transparent);
+  color: oklch(1 0 0 / 0.3);
+  mask-image: linear-gradient(to right, #000 calc(var(--npf-art-fade) * 0.59), transparent var(--npf-art-fade)), linear-gradient(to bottom, #000 80%, transparent);
   mask-composite: intersect;
 }
-.npf-art img { width: 100%; height: 100%; object-fit: cover; }
-.npf:not(.has-card) .npf-art { left: 50%; transform: translateX(-50%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%); }
+.npf-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* lyrics off: the cover moves to the centre and fades out on every side */
+.npf:not(.has-lyrics) .npf-art {
+  left: 50%;
+  transform: translateX(-50%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%);
+}
+.npf.is-paused .npf-art img, .npf.is-paused .npf-lyrics { filter: brightness(0.8) saturate(0.85); }
 
-.npf-corner { position: absolute; top: 34px; left: 40px; background: rgba(0, 0, 0, 0.28); }
+/* Match the top bar controls and move with the sidebar drawer. */
+.npf-corner { position: absolute; z-index: 4; top: 5px; left: 14px; display: flex; gap: 6px; }
+:root[data-platform='mac'] .npf:not(.has-nav) .npf-corner { left: 84px; }
 
-.npf-card {
+/* the player sits exactly where the docked one was, lifted off the bottom edge */
+.npf { --rail: 0px; }
+.npf.has-rail { --rail: var(--rail-w); }
+@media (max-width: 1000px) {
+  .npf.has-rail { --rail: 0px; }
+}
+.npf.has-nav .playerbar.is-floating { left: calc(var(--sb) + 16px); }
+
+/* ---- lyrics: no card, just type on the field ---- */
+.npf-lyrics {
   position: absolute;
   top: 66px;
-  right: 28px;
-  bottom: 140px;
-  width: min(45vw, 720px);
-  border-radius: 28px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.045);
-  backdrop-filter: blur(36px) saturate(1.2);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 30px 80px rgba(0, 0, 0, 0.25);
-  animation: card-in 380ms var(--ease) both;
+  right: var(--npf-col-right);
+  bottom: 136px;
+  width: var(--npf-col-w);
 }
-@keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } }
-
-/* floating dock */
-.npf-dock {
-  position: absolute;
-  left: 50%;
-  bottom: 36px;
-  transform: translateX(-50%);
-  width: min(960px, calc(100vw - 48px));
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 14px 0 20px;
-  border-radius: var(--r-pill);
-  background: rgba(16, 16, 18, 0.5);
-  backdrop-filter: blur(30px) saturate(1.3);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
-}
-.npf-dock .transport { gap: 0; }
-.npf-dock .transport .ctl-btn { width: 34px; height: 34px; }
-.npf-dock .transport .ctl-play { width: 36px; height: 36px; }
-.npf-dock .time-readout { color: rgba(255, 255, 255, 0.6); margin: 0 6px; }
-.npf-dock > .ctl-btn.is-on { color: #fff; background: rgba(255, 255, 255, 0.14); }
-
-.npf-track {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  height: 46px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 12px;
-  margin-right: 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.07);
-}
-.npf-track-text { flex: 1; min-width: 0; display: grid; line-height: 1.25; }
-.npf-track-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.npf-track-sub { font-size: 12px; color: rgba(255, 255, 255, 0.6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.npf-track .route-badge { align-self: flex-start; margin-top: 6px; font-size: 9px; padding: 1.5px 5px; opacity: 0.75; }
-.npf-track .seek { position: absolute; left: 4px; right: 4px; bottom: -4px; }
-.npf-track .seek-track::before { background: rgba(255, 255, 255, 0.1); }
-
-/* queue replaces the lyrics card; it floats above the dock */
-.queue.over-now { bottom: 108px; height: auto; max-height: calc(100vh - 108px - 70px); }
-
 @media (max-width: 1000px) {
-  .npf-card { width: 52vw; right: 20px; }
-  .npf-dock .time-readout { display: none; }
+  .npf { --npf-col-right: 20px; --npf-col-w: 52vw; }
 }
 @media (max-width: 760px) {
-  .npf-art { width: 100vw; mask-image: linear-gradient(to bottom, #000 40%, transparent 75%); }
-  .npf-card { top: 40vh; left: 16px; right: 16px; width: auto; bottom: 110px; }
-  .npf-dock .vol, .npf-track .route-badge { display: none; }
-  .npf-dock { padding: 0 8px; }
+  /* stacked: the cover has faded out by the top of the column at 40vh */
+  .npf-art { width: 100vw; mask-image: linear-gradient(to bottom, #000 21vh, transparent 40vh); }
+  .npf-lyrics { top: 40vh; left: 16px; right: 16px; width: auto; bottom: 128px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .npf-card { animation: none; }
-}
+
+/* Up Next in the right column: same place as the lyrics, no card */
+.npf-queue { display: flex; flex-direction: column; }
+.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; }
+
+/* sidebar over Now Playing: a drawer that slides in from the left edge and
+   sits in exactly the same place as the shell's sidebar. The cover stays put;
+   the glass is denser here so the nav stays neutral over bright artwork. */
+.npf-nav { position: absolute; z-index: 3; inset: 0 auto 0 0; width: var(--sb); display: flex; }
+.npf-nav .sidebar { flex: 1; background: var(--sheen), oklch(0.22 0.005 70 / 0.86); backdrop-filter: blur(48px); -webkit-backdrop-filter: blur(48px); }
+.npf.has-nav .npf-corner { transform: translateX(var(--sb)); }
+
+/* the right column sits on the moving colour field: lift its text off it.
+   Up Next's small type also needs a tight shadow to hold its edges. */
+.npf-lyrics { text-shadow: 0 1px 14px oklch(0 0 0 / 0.45); }
+.npf-queue { text-shadow: 0 1px 2px oklch(0 0 0 / 0.45), 0 1px 14px oklch(0 0 0 / 0.45); }
+.npf-queue .q-owner, .npf-queue .q-empty { color: var(--t2); }
+.npf-queue .q-artist, .npf-queue .q-dur { color: oklch(1 0 0 / 0.72); }

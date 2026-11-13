@@ -8,7 +8,7 @@
  * leave it undefined and the UI reports "not available" honestly.
  */
 
-import type { ArtistRef, ArtworkRef, ProviderId, RouteId, TrackRef } from "./index.js";
+import type { ArtworkRef, ProviderId, RouteId, TrackRef } from "./index.js";
 
 /** The active streaming platform. "local" = local files only. */
 export type PlatformId = ProviderId;
@@ -45,6 +45,8 @@ export type CatalogRequest =
   | { kind: "libraryDetail"; collection: "albums" | "playlists"; id: string }
   /** Lyrics for a catalog song, as LRC text when synced lines exist. */
   | { kind: "lyrics"; songId: string }
+  /** The album and artist entries a catalog song belongs to, for "Go to …". */
+  | { kind: "songLinks"; songId: string }
   /** Add items to the user's library. */
   | {
       kind: "addToLibrary";

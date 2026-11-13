@@ -4,14 +4,18 @@ import {
   dialog,
   Menu,
   nativeImage,
+  nativeTheme,
   net,
   powerMonitor,
   protocol,
   Tray,
 } from "electron";
 import { existsSync, realpathSync } from "node:fs";
+import { hostname } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Bonjour } from "bonjour-service";
+import { toString as renderQrCode } from "qrcode";
 import type { PlatformId } from "@cadence/protocol";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
@@ -28,6 +32,8 @@ import { LibraryService, chokidarWatcherFactory } from "./library/library-servic
 import { registerIpcHandlers } from "./ipc.js";
 import { registerMediaKeys } from "./media-keys.js";
 import { wireCloseToTray } from "./quit-guard.js";
+import { RemoteDevices } from "./remote/remote-devices.js";
+import { RemoteService } from "./remote/remote-service.js";
 
 /**
  * Composition root: parse environment, construct adapters + services, wire
@@ -81,7 +87,8 @@ let uiRootPath: string | null = null;
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "cadence-art",
-    privileges: { supportFetchAPI: true, stream: true, bypassCSP: false },
+    // corsEnabled + the header below let the UI read cover pixels for its colours.
+    privileges: { supportFetchAPI: true, stream: true, bypassCSP: false, corsEnabled: true },
   },
   {
     // The UI bundle loads over this scheme: <script type="module"> is
@@ -94,7 +101,14 @@ protocol.registerSchemesAsPrivileged([
 
 process.env.CADENCE_APP_VERSION = app.getVersion();
 
+/** Windows 11 22H2 and later can draw acrylic glass behind the window. */
+function supportsAcrylic(): boolean {
+  return process.platform === "win32" && Number(process.getSystemVersion().split(".")[2]) >= 22621;
+}
+
 function createWindow(): BrowserWindow {
+  // Acrylic follows the app theme; without this a light-mode PC gets pale glass.
+  nativeTheme.themeSource = "dark";
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -102,14 +116,15 @@ function createWindow(): BrowserWindow {
     minHeight: 480,
     title: "Cadence",
     icon: join(iconDir, "icon.png"),
-    backgroundColor: "#0b0b0c",
+    // The side panels show this through their translucent surface.
+    ...(supportsAcrylic() ? { backgroundMaterial: "acrylic" as const } : { backgroundColor: "#1b1a19" }),
     // Frameless chrome: the renderer's top bar is the title bar. Windows and
     // Linux draw native window controls over its right edge (the UI reads
     // env(titlebar-area-*) to keep clear); macOS keeps inset traffic lights.
     titleBarStyle: "hidden",
     ...(process.platform === "darwin"
       ? { trafficLightPosition: { x: 18, y: 20 } }
-      : { titleBarOverlay: { color: "#00000000", symbolColor: "#ffffff", height: 56 } }),
+      : { titleBarOverlay: { color: "#00000000", symbolColor: "#e9e9ee", height: 48 } }),
     webPreferences: {
       preload: join(distDir, "preload.cjs"),
       contextIsolation: true,
@@ -190,7 +205,11 @@ async function main(): Promise<void> {
     if (u.host !== "artwork") return new Response(null, { status: 404 });
     const candidate = resolve(decodeURIComponent(u.pathname.slice(1)));
     if (!candidate.startsWith(thumbRoot + sep)) return new Response(null, { status: 403 });
-    return net.fetch(pathToFileURL(candidate).toString());
+    return net.fetch(pathToFileURL(candidate).toString()).then((res) => {
+      const headers = new Headers(res.headers);
+      headers.set("Access-Control-Allow-Origin", "*");
+      return new Response(res.body, { status: res.status, headers });
+    });
   });
   const store = new SettingsStore(settingsPath(userData));
 
@@ -279,12 +298,51 @@ async function main(): Promise<void> {
     scanner,
     store,
     pickFolders: makeElectronFolderPicker((opts) => dialog.showOpenDialog(opts)),
+    pickLyricsFile: async () => {
+      const res = await dialog.showOpenDialog({
+        title: "Choose a lyrics file",
+        properties: ["openFile"],
+        filters: [{ name: "Lyrics", extensions: ["lrc", "txt"] }],
+      });
+      return res.canceled ? null : (res.filePaths[0] ?? null);
+    },
     createWatcher: chokidarWatcherFactory,
   });
   if (library.roots().length > 0) {
     library.startWatcher();
     void library.scan();
   }
+
+  // Phone sync: a LAN server paired phones use to follow playback and stream
+  // local files. Off until the user turns it on in Settings.
+  const remote = new RemoteService({
+    devices: new RemoteDevices({ store }),
+    coordinator,
+    mediaFile: (trackId) => {
+      const track = library.track(trackId);
+      return track?.source.kind === "file" ? track.source.path : null;
+    },
+    artworkFile: (trackId) => {
+      const url = library.track(trackId)?.artwork?.url;
+      const prefix = "cadence-art://artwork/";
+      if (url === undefined || !url.startsWith(prefix)) return null;
+      const candidate = resolve(decodeURIComponent(url.slice(prefix.length)));
+      return candidate.startsWith(thumbRoot + sep) ? candidate : null;
+    },
+    hostName: hostname(),
+    appVersion: app.getVersion(),
+    renderQr: (text) => renderQrCode(text, { type: "svg", margin: 1, errorCorrectionLevel: "M" }),
+    // mDNS: phones can find this computer as _cadence._tcp without typing an address.
+    advertise: ({ port, hostId, name }) => {
+      const bonjour = new Bonjour();
+      bonjour.publish({ name: `Cadence on ${name}`, type: "cadence", port, txt: { id: hostId, v: "1" } });
+      return () => {
+        bonjour.unpublishAll(() => bonjour.destroy());
+      };
+    },
+    log: (line) => console.error(`[cadence-remote] ${line}`),
+  });
+  void remote.startIfEnabled();
 
   const unbindEvents = registerIpcHandlers({
     mainWindow: () =>
@@ -295,6 +353,7 @@ async function main(): Promise<void> {
     library,
     registry,
     audio: audioClient,
+    remote,
     routeSignIn: async (route) => {
       const adapter = registry.get(route);
       if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
@@ -332,7 +391,15 @@ async function main(): Promise<void> {
       },
     },
   });
-  const unregisterKeys = registerMediaKeys(coordinator);
+  // Media keys follow playback: while a phone owns it, they drive the phone.
+  const unregisterKeys = registerMediaKeys({
+    getSnapshot: () => coordinator.getSnapshot(),
+    isPlaying: () => remote.status().activeOutput?.playing ?? coordinator.getSnapshot().status === "playing",
+    handleCommand: async (cmd) => {
+      if (remote.routeCommand(cmd)) return;
+      await coordinator.handleCommand(cmd);
+    },
+  });
 
   // Close-to-tray: the window hides, playback continues — per the v3 design
   // provider playback must survive the main window closing. Explicit Quit
@@ -382,6 +449,7 @@ async function main(): Promise<void> {
     unbindEvents();
     tray?.destroy();
     tray = null;
+    void remote.dispose();
     coordinator.dispose();
     void library.dispose();
     for (const adapter of registry.list()) {

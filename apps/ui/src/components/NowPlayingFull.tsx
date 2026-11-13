@@ -1,76 +1,70 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { TrackRef } from '@cadence/protocol';
-import { artistsLine } from '../format';
+import { useEffect, useRef, useState } from 'react';
 import { useUi } from '../hooks';
-import { api, session } from '../session';
-import { CollapseIcon, LyricsIcon, NoteIcon, QueueIcon, SidebarIcon } from '../icons';
-import { PixiBackground } from '../visuals/PixiBackground';
+import { prefs } from '../prefs';
+import { session } from '../session';
+import { withoutMotion } from '../instant';
+import { useEscapeLayer } from '../layers';
+import type { Location } from '../navigation';
+import { ChevronIcon, NoteIcon, SidebarIcon } from '../icons';
 import { Lyrics } from './Lyrics';
-import { providerForRoute, RouteBadge } from './RouteBadge';
-import { SeekBar, TimeReadout } from './SeekBar';
-import { Transport, VolumeControl } from './Transport';
+import { PlayerBar, useSwapClass } from './PlayerBar';
+import { QueuePanel } from './QueuePanel';
+import { Sidebar } from './Sidebar';
 import './lyrics.css';
 import '../nowplaying-full.css';
 
-const rgb = (c: readonly number[] | undefined, fallback: string) => (c ? `rgb(${c[0]} ${c[1]} ${c[2]})` : fallback);
-
-/** Provider tracks carry no lyrics on the TrackRef — fetch on demand. */
-function useTrackLyrics(track: TrackRef | undefined): string | undefined {
-  const [lyrics, setLyrics] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    setLyrics(undefined);
-    if (!track || track.lyrics || !api.catalog) return;
-    if (track.source.kind !== 'provider' || !track.source.providerItemId) return;
-    // Library items carry their catalog twin for lookups keyed by catalog id.
-    const id = track.source.catalogId ?? track.source.providerItemId;
-    api.catalog
-      .query(track.route, { kind: 'lyrics', songId: id })
-      .then((page) => {
-        if (live && page.lyrics) setLyrics(page.lyrics);
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [track]);
-  return track?.lyrics ?? lyrics;
+/**
+ * Now Playing: the artwork fills the left and melts into the ambient
+ * colour field, synced lyrics float on the right with no card around them,
+ * and the player dock sits below. Turning lyrics off centres the artwork.
+ * Modal — the browse app is inert while it is open.
+ */
+interface NowPlayingFullProps {
+  onClose(): void;
+  /** The shell's location and navigation, for the sidebar shown over Now Playing. */
+  location: Location;
+  onNavigate(next: Location): void;
+  /** Whether the shell's side panel is open, which sets where the docked player sat. */
+  panelShown: boolean;
 }
 
-/**
- * Immersive now playing: artwork bleeding into an artwork-coloured field,
- * a glass synced-lyrics card, and one floating control dock. Modal — the
- * browse app is inert while it is open.
- */
-export function NowPlayingFull({ onClose }: { onClose: () => void }) {
+export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: NowPlayingFullProps) {
+  // Read once: the player keeps the docked bar's position while the queue toggles in here.
+  const [panelAtOpen] = useState(panelShown);
   const track = useUi((s) => s.snapshot.current?.track);
-  const trackLyrics = useTrackLyrics(track);
-  const palette = useUi((s) => s.palette);
+  const paused = useUi((s) => s.snapshot.status !== 'playing');
+  const [lyricsOn, setLyricsOn] = useState(() => prefs.getState().lyricsInNowPlaying);
+  // The corner button slides the sidebar in over Now Playing; picking a page
+  // there leaves Now Playing for it.
+  const [navOpen, setNavOpen] = useState(false);
   const queueOpen = useUi((s) => s.queueOpen);
-  const [lyricsOn, setLyricsOn] = useState(true);
+  // The right column: Up Next while the queue is open, else lyrics (or nothing).
+  const column = queueOpen ? 'queue' : lyricsOn ? 'lyrics' : null;
+  const toggleLyrics = () => {
+    if (queueOpen) {
+      session.setQueueOpen(false);
+      setLyricsOn(true);
+    } else setLyricsOn((on) => !on);
+  };
   const dialogRef = useRef<HTMLElement>(null);
+  // Track changes animate; opening Now Playing has its own entrance.
+  const swap = useSwapClass(track?.id);
   const touch = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
-    // Inert the browse app so Tab can't leak behind the portal; the queue
-    // and toasts are body children and stay live.
+    // Inert the browse app so Tab stays in the dialog, including its queue.
+    // Toast buttons live outside the dialog and stay reachable.
     const appEl = document.querySelector<HTMLElement>('.app');
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        // An open queue owns Escape (it closes and restores focus itself).
-        if (session.store.getState().queueOpen) return;
-        onClose();
-        return;
-      }
       if (event.key !== 'Tab') return;
       const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
       const controls: HTMLElement[] = [];
       dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
         .forEach((el) => visible(el) && controls.push(el));
-      document.querySelectorAll<HTMLElement>('.queue.open button:not(:disabled), .queue.open [tabindex]:not([tabindex="-1"]), .toasts button:not(:disabled)')
+      document.querySelectorAll<HTMLElement>('.toasts button:not(:disabled)')
         .forEach((el) => visible(el) && controls.push(el));
       if (!controls.length) return;
       const idx = controls.indexOf(document.activeElement as HTMLElement);
@@ -88,25 +82,20 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
     };
   }, [onClose]);
 
+  // An open queue ranks above Now Playing, so Escape closes that first.
+  useEscapeLayer('nowPlaying', true, () => withoutMotion(onClose));
+
   if (!track) return null;
-  const vars = {
-    '--npf-c0': rgb(palette[0], 'rgb(120 40 50)'),
-    '--npf-c1': rgb(palette[1], 'rgb(60 30 40)'),
-    '--npf-c2': rgb(palette[2], 'rgb(30 30 40)'),
-  } as CSSProperties;
   const art = track.artwork?.url;
-  const showCard = lyricsOn && !queueOpen;
-  const sub = [track.album, artistsLine(track.artists)].filter(Boolean).join(' – ');
 
   return (
     <section
       ref={dialogRef}
       tabIndex={-1}
-      className={`npf ${showCard ? 'has-card' : ''}`}
+      className={`npf ${column ? 'has-lyrics' : ''} ${navOpen ? 'has-nav' : ''} ${paused ? 'is-paused' : ''} ${panelAtOpen ? 'has-rail' : ''}`}
       role="dialog"
       aria-modal="true"
       aria-label={`Now playing: ${track.title}`}
-      style={vars}
       onTouchStart={(e) => {
         const t = e.touches[0];
         if (e.touches.length === 1 && t) touch.current = { x: t.clientX, y: t.clientY };
@@ -120,70 +109,52 @@ export function NowPlayingFull({ onClose }: { onClose: () => void }) {
         if (dy > 80 && dy > Math.abs(end.clientX - start.x) * 1.5 && !(e.target as HTMLElement).closest('.lyrics-scroll, .lyrics-plain')) onClose();
       }}
     >
-      <div className="npf-field" aria-hidden="true">
-        <PixiBackground palette={palette} />
-        {art && <img className="npf-blur" src={art} alt="" />}
-        <div className="npf-tint" />
-      </div>
+      {/* The dock leads DOM order so its transport is the first play-named
+          control in the dialog; it is positioned, so layout is unaffected. */}
+      <PlayerBar placement="floating" lyricsOn={column === 'lyrics'} onToggleLyrics={toggleLyrics} onToggleFullScreen={onClose} onOpenPhoneSettings={() => { onClose(); onNavigate({ page: 'settings', section: 'phone' }); }} />
+
       <div className="npf-art" aria-hidden={!art}>
-        {art ? <img key={track.id} src={art} alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={96} />}
+        {art ? <img key={track.id} className={swap} src={art} alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={96} />}
       </div>
 
-      <div className="npf-corner chrome-pill">
-        <button className="chrome-btn" aria-label="Back to library" title="Back to library" onClick={onClose}>
-          <SidebarIcon size={19} />
-        </button>
+      <div className="npf-corner">
         <button
-          className={`chrome-btn ${showCard ? 'is-on' : ''}`}
-          aria-label="Lyrics"
-          aria-pressed={showCard}
-          title="Lyrics"
-          onClick={() => {
-            if (queueOpen) session.setQueueOpen(false);
-            setLyricsOn(!showCard);
-          }}
+          className={`chrome-btn ${navOpen ? 'is-on' : ''}`}
+          aria-label="Sidebar"
+          aria-pressed={navOpen}
+          title={navOpen ? 'Hide sidebar' : 'Show sidebar'}
+          onClick={() => setNavOpen((open) => !open)}
         >
-          <LyricsIcon size={19} />
+          <SidebarIcon size={18} />
+        </button>
+        <button className="chrome-btn" aria-label="Back" title="Back" onClick={onClose}>
+          <ChevronIcon dir="left" size={18} />
         </button>
       </div>
 
-      {showCard && (
-        <div className="npf-card">
-          <Lyrics key={track.id} raw={trackLyrics} />
+      {navOpen && (
+        <div className="npf-nav">
+          <Sidebar
+            location={location}
+            onNavigate={(next) => {
+              onNavigate(next);
+              onClose();
+            }}
+          />
         </div>
       )}
 
-      <div className="npf-dock" role="group" aria-label="Playback controls">
-        <Transport />
-        <TimeReadout />
-        <div className="npf-track">
-          <div className="npf-track-text">
-            <span className="npf-track-title" title={track.title}>{track.title}</span>
-            <span className="npf-track-sub" title={sub}>{sub}</span>
-          </div>
-          <RouteBadge provider={providerForRoute(track.route)} title={`Route: ${track.route}`} />
-          <SeekBar variant="line" />
+      {column === 'lyrics' && (
+        <div className="npf-lyrics">
+          <Lyrics key={track.id} track={track} />
         </div>
-        <VolumeControl slider={false} />
-        <button className={`ctl-btn ${queueOpen ? 'is-on' : ''}`} aria-label="Queue" aria-pressed={queueOpen} title="Queue" data-queue-toggle onClick={() => session.setQueueOpen(!queueOpen)}>
-          <QueueIcon size={19} />
-        </button>
-        <button
-          className={`ctl-btn ${showCard ? 'is-on' : ''}`}
-          aria-label="Show lyrics"
-          aria-pressed={showCard}
-          title="Lyrics"
-          onClick={() => {
-            if (queueOpen) session.setQueueOpen(false);
-            setLyricsOn(!showCard);
-          }}
-        >
-          <LyricsIcon size={19} />
-        </button>
-        <button className="ctl-btn" aria-label="Exit full screen" title="Exit full screen (Esc)" onClick={onClose}>
-          <CollapseIcon size={18} />
-        </button>
-      </div>
+      )}
+      {column === 'queue' && (
+        <div className="npf-lyrics npf-queue">
+          <h2 className="npf-col-title">Up Next</h2>
+          <QueuePanel />
+        </div>
+      )}
     </section>
   );
 }

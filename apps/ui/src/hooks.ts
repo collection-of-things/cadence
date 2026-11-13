@@ -10,8 +10,13 @@ export function useUi<T>(selector: (s: UiState) => T): T {
 
 const QUERY = '(prefers-reduced-motion: reduce)';
 
+/** Whether the OS asks for reduced motion right now. For event handlers; components use useReducedMotion. */
+export function prefersReducedMotion(): boolean {
+  return typeof matchMedia !== 'undefined' && matchMedia(QUERY).matches;
+}
+
 export function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => (typeof matchMedia !== 'undefined' ? matchMedia(QUERY).matches : false));
+  const [reduced, setReduced] = useState(prefersReducedMotion);
   useEffect(() => {
     const mq = matchMedia(QUERY);
     const on = () => setReduced(mq.matches);

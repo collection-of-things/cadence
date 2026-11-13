@@ -9,7 +9,7 @@
  * webContents.executeJavaScript into the page world.
  */
 
-import { BrowserWindow, session, webContents, type WebContents } from "electron";
+import { BrowserWindow, session, type WebContents } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,7 +67,6 @@ export class ProviderSession {
   private win: BrowserWindow | null = null;
   private listeners = new Set<(e: { name: string; data: unknown }) => void>();
   private readyPromise: Promise<void> | null = null;
-  private userAgentTouched = false;
 
   constructor(private opts: ProviderSessionOptions) {
     this.partition = opts.partition;

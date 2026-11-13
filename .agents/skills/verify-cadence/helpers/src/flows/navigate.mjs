@@ -78,13 +78,13 @@ export async function run(ctx) {
   await shot(ctx, "now-playing");
   await page.keyboard.press("Escape");
 
-  // settings sheet
+  // settings page: the gear opens it and leads back out
   await page.getByRole("button", { name: "Settings" }).click();
-  const settingsOk = await page.waitForSelector(".sheet[role=dialog]", { timeout: 8_000 })
+  const settingsOk = await page.waitForSelector(".set-page", { timeout: 8_000 })
     .then(() => true).catch(() => false);
-  ev.check("settings sheet opens", settingsOk);
+  ev.check("settings page opens", settingsOk);
   await shot(ctx, "settings");
-  await page.getByLabel("Close settings").click();
+  await page.getByRole("button", { name: "Settings" }).click();
 
   // sources page shows honest route states
   await navTo(ctx, "Sources", ".src");

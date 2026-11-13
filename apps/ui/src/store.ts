@@ -8,6 +8,7 @@ import type {
   PlatformId,
   QueueItem,
   QueueState,
+  RemoteStatus,
   RouteCapabilities,
   RouteId,
   ScanProgress,
@@ -15,7 +16,8 @@ import type {
 } from '@cadence/protocol';
 import type { Rgb } from './palette';
 import { DEFAULT_PALETTE } from './palette';
-import { providerForRoute } from './components/RouteBadge';
+import { cleanIpcError } from './ipcError';
+import { providerForRoute } from './routes';
 
 export interface Toast {
   id: number;
@@ -58,10 +60,24 @@ export interface StoreApiSurface {
     listDevices(): Promise<AudioDevice[]>;
     setDevice(name: string | null): Promise<unknown>;
   };
+  remote?: {
+    status(): Promise<RemoteStatus>;
+    onStatus(cb: (s: RemoteStatus) => void): () => void;
+    handoff(deviceId: string): Promise<RemoteStatus>;
+    reclaim(): Promise<RemoteStatus>;
+  };
 }
 
 export interface UiState {
+  /**
+   * What the player shows. Normally the computer's own snapshot; while a
+   * phone owns playback it is the phone's track, position and play state.
+   */
   snapshot: PlaybackSnapshot;
+  /** The computer's own coordinator snapshot, whoever owns playback. */
+  localSnapshot: PlaybackSnapshot;
+  /** Phone sync status; null until the bridge reports it (or it has none). */
+  remote: RemoteStatus | null;
   queue: QueueState;
   capabilities: RouteCapabilities[];
   /** Newest lease generation observed; older events are ignored. */
@@ -70,9 +86,6 @@ export interface UiState {
   scan: ScanProgress;
   /** The active streaming platform ("local" = none). Drives the whole shell. */
   platform: PlatformId;
-  view: 'now' | 'library' | 'sources' | 'home';
-  viewNonce: number;
-  libraryQuery: string;
   nowPlayingExpanded: boolean;
   queueOpen: boolean;
   palette: Rgb[];
@@ -109,6 +122,26 @@ export const EMPTY_SNAPSHOT: PlaybackSnapshot = {
   muted: false,
 };
 
+/**
+ * The snapshot the player shows: the computer's own, or, while a phone owns
+ * playback, that phone's item, position and play state on top of it.
+ */
+export function shownSnapshot(local: PlaybackSnapshot, remote: RemoteStatus | null, queue: QueueState): PlaybackSnapshot {
+  const out = remote?.activeOutput;
+  if (!out) return local;
+  const item = queue.items.find((i) => i.queueId === out.queueId) ?? local.current;
+  return {
+    ...local,
+    status: out.playing ? 'playing' : 'paused',
+    current: item,
+    positionMs: out.positionMs,
+    positionAtMs: out.reportedAtMs,
+    durationMs: out.durationMs || item?.track.durationMs || 0,
+    volume: out.volume,
+    muted: false,
+  };
+}
+
 /** Index of the item that plays next, honoring shuffle order and repeat. */
 export function nextQueueIndex(q: QueueState): number {
   const i = q.currentIndex;
@@ -129,6 +162,16 @@ export function nextQueueIndex(q: QueueState): number {
 export function displayOrder(q: QueueState): number[] {
   if (q.shuffle && q.shuffleOrder && q.shuffleOrder.length === q.items.length) return q.shuffleOrder;
   return q.items.map((_, i) => i);
+}
+
+/** A copy of the list in random order (Fisher-Yates). */
+export function shuffled<T>(items: readonly T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
 }
 
 let toastSeq = 0;
@@ -155,9 +198,13 @@ export interface UiSession {
   toggleMute(): void;
   cycleRepeat(): void;
   toggleShuffle(): void;
+  /** Replace the queue with these tracks and start at `startIndex`. */
   playTracks(tracks: TrackRef[], startIndex: number, origin?: QueueItem['origin']): void;
+  /** Replace the queue with these tracks in random order and start. */
+  playShuffled(tracks: TrackRef[], origin?: QueueItem['origin']): void;
   insertNext(track: TrackRef): void;
-  append(track: TrackRef): void;
+  /** Add one or more tracks to the end of the queue, in one command. */
+  append(tracks: TrackRef | TrackRef[]): void;
   removeQueueItems(queueIds: string[]): void;
   moveQueueItem(fromIndex: number, toIndex: number): void;
   playQueueId(queueId: string): void;
@@ -169,11 +216,14 @@ export interface UiSession {
   setEq(bands: EqBand[]): void;
   listDevices(): Promise<AudioDevice[]>;
   setDevice(name: string | null): void;
-  setView(view: UiState['view']): void;
-  setLibraryQuery(query: string): void;
   setNowPlayingExpanded(expanded: boolean): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
+  /** Ask a paired phone to take over playback. */
+  playOnDevice(deviceId: string): void;
+  /** Bring playback back from the phone to this computer. */
+  playHere(): void;
+  showToast(route: RouteId, message: string, retriable: boolean): void;
   dismissToast(id: number): void;
 }
 
@@ -185,6 +235,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
 
   const store = createStore<UiState>()(() => ({
     snapshot: EMPTY_SNAPSHOT,
+    localSnapshot: EMPTY_SNAPSHOT,
+    remote: null,
     queue: EMPTY_QUEUE,
     capabilities: [],
     generationId: -1,
@@ -192,9 +244,6 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     scan: { phase: 'idle', scanned: 0 },
     platform: 'local',
     eqBands: [],
-    view: 'now',
-    viewNonce: 0,
-    libraryQuery: '',
     nowPlayingExpanded: false,
     queueOpen: false,
     palette: DEFAULT_PALETTE,
@@ -216,14 +265,23 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     runtime.clock.durationMs = snap.durationMs;
   }
 
+  /** Store the computer's snapshot and show it, or the phone's, whichever owns playback. */
+  function showLocal(local: PlaybackSnapshot, extra: Partial<UiState> = {}) {
+    const remote = extra.remote !== undefined ? extra.remote : get().remote;
+    const shown = shownSnapshot(local, remote, extra.queue ?? get().queue);
+    set({ ...extra, localSnapshot: local, snapshot: shown });
+    syncClock(shown);
+  }
+
+  const phoneOwnsPlayback = () => get().remote?.activeOutput != null;
+
   function advanceDisplay() {
+    if (phoneOwnsPlayback()) return;
     const { queue, snapshot } = get();
     const ni = nextQueueIndex(queue);
     const item = ni >= 0 ? queue.items[ni] : undefined;
     if (!item || ni === -1) {
-      const stopped = { ...snapshot, status: 'stopped' as const, positionMs: 0, positionAtMs: Date.now() };
-      set({ snapshot: stopped });
-      syncClock(stopped);
+      showLocal({ ...snapshot, status: 'stopped', positionMs: 0, positionAtMs: Date.now() });
       return;
     }
     const advanced: PlaybackSnapshot = {
@@ -234,8 +292,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       positionAtMs: Date.now(),
       durationMs: item.track.durationMs,
     };
-    set({ snapshot: advanced });
-    syncClock(advanced);
+    showLocal(advanced);
   }
 
   function dispatch(e: CoordinatorEvent) {
@@ -246,19 +303,17 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         // route must not reclaim playback after a handoff.
         if (e.snapshot.lease && e.snapshot.lease.generationId < s.generationId) break;
         const gen = e.snapshot.lease?.generationId ?? s.generationId;
-        set({
-          snapshot: e.snapshot,
+        showLocal(e.snapshot, {
           generationId: Math.max(gen, s.generationId),
           // Expanded now-playing only exists while a track is loaded. Clearing
           // it here keeps a dropped queue from resurrecting the overlay when
           // the next track starts.
-          ...(e.snapshot.current === null ? { nowPlayingExpanded: false } : {}),
+          ...(e.snapshot.current === null && !phoneOwnsPlayback() ? { nowPlayingExpanded: false } : {}),
         });
-        syncClock(e.snapshot);
         break;
       }
       case 'queue':
-        set({ queue: e.queue });
+        showLocal(s.localSnapshot, { queue: e.queue });
         break;
       case 'capabilities': {
         const rest = s.capabilities.filter((c) => c.route !== e.route);
@@ -267,7 +322,12 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       }
       case 'position': {
         if (e.generationId < s.generationId) break;
-        set({ snapshot: { ...s.snapshot, positionMs: e.positionMs, positionAtMs: e.atMs } });
+        const local = { ...s.localSnapshot, positionMs: e.positionMs, positionAtMs: e.atMs };
+        if (phoneOwnsPlayback()) {
+          set({ localSnapshot: local });
+          break;
+        }
+        set({ localSnapshot: local, snapshot: { ...s.snapshot, positionMs: e.positionMs, positionAtMs: e.atMs } });
         runtime.clock.positionMs = e.positionMs;
         runtime.clock.atMs = e.atMs;
         break;
@@ -290,14 +350,14 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         pushToast(e.route, e.message, e.retriable);
         break;
       case 'output':
-        set({ snapshot: { ...s.snapshot, output: e.output } });
+        showLocal({ ...s.localSnapshot, output: e.output });
         break;
     }
   }
 
   const cmd = (c: PlaybackCommand) => {
     api.sendCommand(c).catch((err: unknown) => {
-      pushToast(get().snapshot.lease?.route ?? 'local', err instanceof Error ? err.message : 'Command failed', true);
+      pushToast(get().snapshot.lease?.route ?? 'local', cleanIpcError(err, 'Command failed'), true);
     });
   };
 
@@ -315,8 +375,15 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const gen = snapshot.lease?.generationId ?? -1;
       const latest = new Map(capabilities.map(cap => [cap.route, cap]));
       for (const cap of get().capabilities) latest.set(cap.route, cap);
-      set({ snapshot, queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
-      syncClock(snapshot);
+      showLocal(snapshot, { queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
+      if (api.remote) {
+        const remoteApi = api.remote;
+        unsubs.push(remoteApi.onStatus((remote) => showLocal(get().localSnapshot, { remote })));
+        void remoteApi
+          .status()
+          .then((remote) => showLocal(get().localSnapshot, { remote }))
+          .catch(() => undefined);
+      }
       const platform = await api.platform?.active().catch(() => 'local' as const);
       if (platform) set({ platform });
     },
@@ -337,17 +404,26 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const clamped = Math.max(0, Math.min(positionMs, dur || positionMs));
       runtime.clock.positionMs = clamped;
       runtime.clock.atMs = Date.now();
-      set({ snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: runtime.clock.atMs } });
+      const at = runtime.clock.atMs;
+      set({
+        snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: at },
+        ...(phoneOwnsPlayback() ? {} : { localSnapshot: { ...get().localSnapshot, positionMs: clamped, positionAtMs: at } }),
+      });
       cmd({ kind: 'seek', positionMs: clamped });
     },
     setVolume(v) {
       const volume = Math.max(0, Math.min(1, v));
-      set({ snapshot: { ...get().snapshot, volume, muted: false } });
+      set({
+        snapshot: { ...get().snapshot, volume, muted: false },
+        ...(phoneOwnsPlayback() ? {} : { localSnapshot: { ...get().localSnapshot, volume, muted: false } }),
+      });
       cmd({ kind: 'setVolume', volume });
     },
     toggleMute() {
+      // The phone has no mute over the link; its volume slider covers that.
+      if (phoneOwnsPlayback()) return;
       const muted = !get().snapshot.muted;
-      set({ snapshot: { ...get().snapshot, muted } });
+      set({ snapshot: { ...get().snapshot, muted }, localSnapshot: { ...get().localSnapshot, muted } });
       cmd({ kind: 'setMuted', muted });
     },
     cycleRepeat() {
@@ -361,27 +437,25 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const items = tracks.map((t) => queueItemFor(t, origin));
       cmd({ kind: 'setQueue', items, startIndex, autoplay: true });
     },
+    playShuffled: (tracks, origin) => session.playTracks(shuffled(tracks), 0, origin),
     insertNext: (track) => cmd({ kind: 'insertNext', items: [queueItemFor(track, { kind: 'manual' })] }),
-    append: (track) => cmd({ kind: 'append', items: [queueItemFor(track, { kind: 'manual' })] }),
+    append(tracks) {
+      const items = [tracks].flat().map((t) => queueItemFor(t, { kind: 'manual' }));
+      if (items.length) cmd({ kind: 'append', items });
+    },
     removeQueueItems: (queueIds) => cmd({ kind: 'remove', queueIds }),
     moveQueueItem: (fromIndex, toIndex) => cmd({ kind: 'move', fromIndex, toIndex }),
     playQueueId: (queueId) => cmd({ kind: 'play', queueId }),
     signInRoute(route) {
       if (!api.routes) return;
-      void api.routes.signIn(route).catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : 'Sign-in failed';
-        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
-      });
+      void api.routes.signIn(route).catch((e: unknown) => pushToast(route, cleanIpcError(e, 'Sign-in failed'), true));
     },
     signOutRoute(route) {
       if (!api.routes) return;
       void api.routes.signOut(route).then(() => {
         // Signing out of the active platform drops the shell back to local.
         if (get().platform === providerForRoute(route)) set({ platform: 'local' });
-      }).catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : 'Sign-out failed';
-        pushToast(route, m.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
-      });
+      }).catch((e: unknown) => pushToast(route, cleanIpcError(e, 'Sign-out failed'), true));
     },
     setPlatform(platform) {
       set({ platform });
@@ -408,12 +482,24 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const route = get().snapshot.lease?.route ?? 'local';
       void api.audio.setDevice(name).catch(() => pushToast(route, 'Could not switch output device', true));
     },
-    setView: (view) => set({ view, viewNonce: get().viewNonce + 1 }),
-    setLibraryQuery: (libraryQuery) => set({ libraryQuery }),
     setNowPlayingExpanded: (expanded) =>
       set({ nowPlayingExpanded: expanded && get().snapshot.current !== null }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
     setPalette: (palette) => set({ palette }),
+    playOnDevice(deviceId) {
+      if (!api.remote) return;
+      void api.remote
+        .handoff(deviceId)
+        .catch((e: unknown) => pushToast('local', cleanIpcError(e, 'Could not move playback to the phone'), true));
+    },
+    playHere() {
+      if (!api.remote) return;
+      void api.remote
+        .reclaim()
+        .then((remote) => showLocal(get().localSnapshot, { remote }))
+        .catch((e: unknown) => pushToast('local', cleanIpcError(e, 'Could not bring playback back'), true));
+    },
+    showToast: pushToast,
     dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
   };
   return session;

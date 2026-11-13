@@ -12,7 +12,6 @@
  */
 
 import type {
-  AdapterEvent,
   PlaybackLease,
   QueueItem,
   RouteCapabilities,

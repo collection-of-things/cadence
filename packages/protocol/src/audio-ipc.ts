@@ -95,11 +95,5 @@ export type AudioRpcEvent =
   | { method: "event.prefetchReady"; params: { generationId: number; queueId: string } }
   | { method: "event.error"; params: { generationId: number; queueId?: string; message: string; retriable: boolean } };
 
-export type AnyAudioMessage =
-  | ({ jsonrpc: "2.0"; id: number } & AudioRpcRequest)
-  | { jsonrpc: "2.0"; id: number; result: unknown }
-  | { jsonrpc: "2.0"; id: number; error: { code: number; message: string } }
-  | ({ jsonrpc: "2.0" } & AudioRpcEvent);
-
 /** Band count the service emits in event.fft (log-spaced 20Hz..20kHz). */
 export const FFT_BANDS = 48;

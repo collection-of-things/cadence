@@ -1,37 +1,29 @@
 /**
- * Provider catalog UI — the shared machinery that renders Apple Music's world
- * (and later YouTube Music / Spotify) through the one CatalogPage surface.
- *
- * Uses the shell's scroll frame and provider-scoped catalog styling.
+ * Provider catalog UI: the shared pieces that render Apple Music's world
+ * (and later YouTube Music / Spotify) from the one CatalogPage shape. They
+ * are built from the same shelf, card and track row as the local pages.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type {
+  ArtworkRef,
   CatalogArtist,
   CatalogContainer,
   CatalogEntry,
   CatalogPage,
   CatalogRequest,
-  CatalogStation,
+  QueueItem,
   RouteId,
-  PlatformId,
   TrackRef,
 } from '@cadence/protocol';
 import { stationToTrack } from '@cadence/protocol';
 import { api, session } from '../../session';
-import { artistsLine, formatTime } from '../../format';
 import { useUi } from '../../hooks';
-import { NoteIcon, PlayIcon, PlusIcon } from '../../icons';
-import { cleanIpcError } from './errors';
+import { cleanIpcError } from '../../ipcError';
+import { routeState } from '../../routes';
+import { EmptyState, Shelf, ShelfTitle, SkeletonRows, SkeletonShelf, SquareCard } from '../Shelf';
+import { TrackRow } from '../TrackRow';
 import './provider.css';
-
-/** Platform -> its playback route. */
-export function routeForPlatform(platform: PlatformId): RouteId | null {
-  if (platform === 'apple') return 'apple-musickit';
-  if (platform === 'youtube') return 'youtube-music';
-  if (platform === 'spotify') return 'spotify-web';
-  return null;
-}
 
 export interface CatalogNav {
   openAlbum(container: CatalogContainer): void;
@@ -39,7 +31,19 @@ export interface CatalogNav {
   openArtist(artist: CatalogArtist): void;
 }
 
-/** Fetch a CatalogPage for a request; refetches when the request changes. */
+type SongEntry = Extract<CatalogEntry, { kind: 'song' }>;
+type CardEntry = Exclude<CatalogEntry, SongEntry>;
+
+/** The tracks among a list of catalog entries, in order. */
+export function songsOf(entries: readonly CatalogEntry[]): TrackRef[] {
+  return entries.flatMap((e) => (e.kind === 'song' ? [e.track] : []));
+}
+
+/**
+ * Fetch a CatalogPage for a request. Fetches again when the request or the
+ * route's sign-in state changes, when `reload` is called, or when `deps`
+ * change (for a retry of an identical request).
+ */
 export function useCatalogPage(
   route: RouteId | null,
   request: CatalogRequest | null,
@@ -49,7 +53,7 @@ export function useCatalogPage(
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [nonce, setNonce] = useState(0);
-  const authorization = useUi((s) => s.capabilities.find((cap) => cap.route === route)?.state);
+  const authorization = useUi((s) => routeState(s, route));
   const reqKey = request === null ? 'null' : JSON.stringify(request);
   useEffect(() => {
     let live = true;
@@ -75,7 +79,7 @@ export function useCatalogPage(
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // `request` is compared by its serialised form (reqKey), not identity.
   }, [route, reqKey, nonce, authorization, ...deps]);
   return {
     page,
@@ -85,277 +89,158 @@ export function useCatalogPage(
   };
 }
 
-// --- entry renderers ---------------------------------------------------------
-
-function Arrow({ direction }: { direction: 'back' | 'forward' }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d={direction === 'back' ? 'm14.8 5.5-6.5 6.5 6.5 6.5' : 'm9.2 5.5 6.5 6.5-6.5 6.5'}
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+/** What a non-song entry shows on its card, and what picking it does. */
+function cardOf(entry: CardEntry, nav: CatalogNav): { key: string; title: string; sub?: string | undefined; art: ArtworkRef | undefined; label: string; onOpen(): void } {
+  switch (entry.kind) {
+    case 'album': {
+      const { album } = entry;
+      return { key: `album:${album.id}`, title: album.title, sub: album.subtitle, art: album.artwork, label: `Open ${album.title}`, onOpen: () => nav.openAlbum(album) };
+    }
+    case 'playlist': {
+      const { playlist } = entry;
+      return { key: `playlist:${playlist.id}`, title: playlist.title, sub: playlist.subtitle, art: playlist.artwork, label: `Open ${playlist.title}`, onOpen: () => nav.openPlaylist(playlist) };
+    }
+    case 'artist': {
+      const { artist } = entry;
+      return { key: `artist:${artist.id}`, title: artist.name, art: artist.artwork, label: `Open ${artist.name}`, onOpen: () => nav.openArtist(artist) };
+    }
+    case 'station': {
+      const { station } = entry;
+      return {
+        key: `station:${station.id}`,
+        title: station.name,
+        sub: station.subtitle,
+        art: station.artwork,
+        label: `Listen to ${station.name}`,
+        onOpen: () => session.playTracks([stationToTrack(station)], 0, { kind: 'provider' }),
+      };
+    }
+    default: {
+      const _exhaustive: never = entry;
+      return _exhaustive;
+    }
+  }
 }
 
-function Card({ art, title, sub, onOpen, onPlay, index }: {
-  art?: { url: string } | null;
-  title: string;
-  sub?: string;
-  onOpen?(): void;
-  onPlay?(): void;
-  index: number;
-}) {
-  return (
-    <button className="catalog-album-card" onClick={onOpen ?? onPlay} aria-label={title}>
-      <span className="catalog-cover">
-        {art ? <img src={art.url} alt="" loading={index > 3 ? 'lazy' : 'eager'} /> : (
-          <span className="catalog-cover-empty"><NoteIcon size={36} /></span>
-        )}
-        <span className="catalog-cover-shade" />
-        <span className="catalog-card-open" aria-hidden="true"><Arrow direction="forward" /></span>
-      </span>
-      <span className="catalog-card-caption">
-        <span className="catalog-card-title">{title}</span>
-        {sub && <span className="catalog-card-artist">{sub}</span>}
-      </span>
-    </button>
-  );
-}
-
-function SongRow({ track, index, tracks, origin }: {
-  track: TrackRef;
-  index: number;
+/** A list of catalog songs. Playing one queues the whole list from that song. */
+export function SongList({ tracks, origin, nav, variant = 'song', albumArtist }: {
   tracks: TrackRef[];
-  origin?: { kind: 'album' | 'playlist' | 'manual' | 'provider'; id?: string; name?: string };
+  origin: QueueItem['origin'];
+  nav: CatalogNav;
+  /** 'album' drops the covers, for a page that already shows the one cover. */
+  variant?: 'song' | 'album';
+  albumArtist?: string | undefined;
 }) {
-  const isCurrent = useUi((s) => s.snapshot.current?.track.id === track.id);
-  const playing = useUi((s) => s.snapshot.status === 'playing');
-  const play = () => session.playTracks(tracks, index, origin ?? { kind: 'provider' });
   return (
-    <div
-      className={`catalog-detail-track-row ${isCurrent ? 'now' : ''}`}
-      tabIndex={0}
-      onClick={play}
-      onKeyDown={(e) => {
-        if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          play();
-        }
-      }}
-    >
-      <span className="catalog-detail-track-index">
-        {isCurrent && playing
-          ? <span className="q-eq on" aria-hidden="true"><i /><i /><i /></span>
-          : String(index + 1).padStart(2, '0')}
-      </span>
-      <span className="catalog-cover catalog-song-art">
-        {track.artwork ? <img src={track.artwork.url} alt="" loading="lazy" /> : (
-          <span className="catalog-cover-empty"><NoteIcon size={16} /></span>
-        )}
-      </span>
-      <span className="catalog-detail-track-copy">
-        <span className="catalog-detail-track-title">{track.title}</span>
-        <span className="catalog-detail-track-artist">{artistsLine(track.artists)}</span>
-      </span>
-      <span className="catalog-detail-track-duration">{formatTime(track.durationMs)}</span>
-      <button
-        className="catalog-detail-track-add"
-        aria-label={`Play ${track.title} next`}
-        title="Play next"
-        onClick={(e) => {
-          e.stopPropagation();
-          session.insertNext(track);
-        }}
-      >
-        <PlusIcon size={16} />
-      </button>
+    <div className="track-list">
+      {tracks.map((track, i) => (
+        <TrackRow
+          key={track.id}
+          track={track}
+          index={i}
+          variant={variant}
+          albumArtist={albumArtist}
+          nav={nav}
+          onPlay={() => session.playTracks(tracks, i, origin)}
+        />
+      ))}
     </div>
   );
 }
 
-/** One catalog section — a card rail for containers, a track list for songs. */
-export function CatalogSectionView({ id, title, subtitle, entries, nav }: {
-  id: string;
+/** One catalog section: a track list for its songs, a card shelf for the rest. */
+export function CatalogSectionView({ title, subtitle, entries, nav }: {
   title: string;
-  subtitle?: string;
+  subtitle?: string | undefined;
   entries: CatalogEntry[];
   nav: CatalogNav;
 }) {
-  const railRef = useRef<HTMLDivElement>(null);
-  const [edges, setEdges] = useState<{ left: boolean; right: boolean }>({ left: true, right: true });
-  const updateEdges = useCallback(() => {
-    const el = railRef.current;
-    if (!el) return;
-    const max = el.scrollWidth - el.clientWidth;
-    setEdges({ left: el.scrollLeft <= 2 || max <= 4, right: el.scrollLeft >= max - 2 || max <= 4 });
-  }, []);
-  useEffect(() => {
-    updateEdges();
-    window.addEventListener('resize', updateEdges);
-    return () => window.removeEventListener('resize', updateEdges);
-  }, [updateEdges, entries]);
-  const scroll = (direction: -1 | 1) => {
-    const el = railRef.current;
-    if (!el) return;
-    const card = el.querySelector('.catalog-album-card') as HTMLElement | null;
-    el.scrollBy({ left: direction * ((card?.offsetWidth ?? 260) + 14) * 2, behavior: 'smooth' });
-  };
-
-  const songs = entries.filter((e): e is Extract<CatalogEntry, { kind: 'song' }> => e.kind === 'song');
-  const others = entries.filter((e) => e.kind !== 'song');
   if (!entries.length) return null;
+  const songs = songsOf(entries);
+  const cards = entries.filter((e): e is CardEntry => e.kind !== 'song');
 
-  const openEntry = (e: CatalogEntry) => {
-    if (e.kind === 'album') nav.openAlbum(e.album);
-    else if (e.kind === 'playlist') nav.openPlaylist(e.playlist);
-    else if (e.kind === 'artist') nav.openArtist(e.artist);
-  };
-  const playEntry = (e: CatalogEntry) => {
-    if (e.kind === 'station') session.playTracks([stationToTrack(e.station)], 0, { kind: 'provider' });
-  };
-
-  return (
-    <section className="catalog-shelf" aria-label={title} data-section-id={id}>
-      <div className="catalog-shelf-head">
-        <div>
-          <h2>{title}</h2>
-          {subtitle && <p>{subtitle}</p>}
-        </div>
-        {others.length > 0 && (
-          <div className="catalog-shelf-controls">
-            <button className="catalog-shelf-arrow" aria-label={`Scroll ${title} left`} disabled={edges.left} onClick={() => scroll(-1)}>
-              <Arrow direction="back" />
-            </button>
-            <button className="catalog-shelf-arrow" aria-label={`Scroll ${title} right`} disabled={edges.right} onClick={() => scroll(1)}>
-              <Arrow direction="forward" />
-            </button>
-          </div>
-        )}
-      </div>
-      {songs.length > 0 && (
-        <div className="catalog-track-list">
-          {songs.map((e, i) => (
-            <SongRow
-              key={e.track.id}
-              track={e.track}
-              index={i}
-              tracks={songs.map((s) => s.track)}
-              origin={{ kind: 'provider', name: title }}
-            />
-          ))}
-        </div>
-      )}
-      {others.length > 0 && (
-        <div className="catalog-rail" ref={railRef} onScroll={updateEdges}>
-          {others.map((e, i) => {
-            if (e.kind === 'album' || e.kind === 'playlist') {
-              const c = e.kind === 'album' ? e.album : e.playlist;
-              return (
-                <Card
-                  key={`${c.kind}:${c.id}`}
-                  index={i}
-                  title={c.title}
-                  {...(c.subtitle ? { sub: c.subtitle } : {})}
-                  {...(c.artwork ? { art: c.artwork } : {})}
-                  onOpen={() => openEntry(e)}
-                />
-              );
-            }
-            if (e.kind === 'artist') {
-              return (
-                <Card
-                  key={`artist:${e.artist.id}`}
-                  index={i}
-                  title={e.artist.name}
-                  {...(e.artist.artwork ? { art: e.artist.artwork } : {})}
-                  onOpen={() => openEntry(e)}
-                />
-              );
-            }
-            if (e.kind === 'station') {
-              const s: CatalogStation = e.station;
-              return (
-                <Card
-                  key={`station:${s.id}`}
-                  index={i}
-                  title={s.name}
-                  {...(s.subtitle ? { sub: s.subtitle } : {})}
-                  {...(s.artwork ? { art: s.artwork } : {})}
-                  onPlay={() => playEntry(e)}
-                />
-              );
-            }
-            return null;
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** A full catalog page — title + subtitle + sections. */
-export function CatalogPageView({ page, nav }: { page: CatalogPage; nav: CatalogNav }) {
   return (
     <>
-      {page.sections.map((s) => (
-        <CatalogSectionView key={s.id} id={s.id} title={s.title} {...(s.subtitle ? { subtitle: s.subtitle } : {})} entries={s.entries} nav={nav} />
-      ))}
-      {page.sections.length === 0 && (
-        <div className="catalog-empty" role="status">
-          <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-          <div><h2>Nothing here yet</h2><p>This page came back empty.</p></div>
-        </div>
+      {songs.length > 0 && (
+        <section className="shelf" aria-label={title}>
+          <div className="shelf-head"><ShelfTitle title={title} subtitle={subtitle} /></div>
+          <SongList tracks={songs} origin={{ kind: 'provider', name: title }} nav={nav} />
+        </section>
+      )}
+      {cards.length > 0 && (
+        <Shelf label={title} head={<ShelfTitle title={title} subtitle={subtitle} />}>
+          {cards.map((entry, i) => {
+            const { key, ...card } = cardOf(entry, nav);
+            return <SquareCard key={key} {...card} eager={i <= 3} />;
+          })}
+        </Shelf>
       )}
     </>
   );
 }
 
-/** Loading / error / ready wrapper shared by all provider pages. */
-export function ProviderPageFrame({ title, loading, error, needsSignIn, route, children }: {
+/** "Sign in" for a route; shown wherever a page needs an account. */
+export function SignInButton({ route }: { route: RouteId }) {
+  return (
+    <button className="btn" onClick={() => session.signInRoute(route)}>
+      Sign in
+    </button>
+  );
+}
+
+/** Every section of a catalog page, or a message when it came back empty. */
+export function CatalogPageView({ page, nav }: { page: CatalogPage; nav: CatalogNav }) {
+  if (page.sections.length === 0) return <EmptyState title="Nothing here yet" body="This page came back empty." />;
+  return (
+    <>
+      {page.sections.map((s) => (
+        <CatalogSectionView key={s.id} title={s.title} subtitle={s.subtitle} entries={s.entries} nav={nav} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * The frame every provider page shares: a title, then whatever sits under it.
+ * With `loading` or `error` it shows a skeleton or the failure instead of
+ * the children; pages that manage those themselves leave them out.
+ */
+export function ProviderPageFrame({ title, loading = false, error = null, route, children }: {
   title: string;
-  loading: boolean;
-  error: string | null;
-  needsSignIn?: boolean;
-  route: RouteId | null;
-  children: React.ReactNode;
+  loading?: boolean;
+  error?: string | null;
+  /** Offers Sign in when the error is about the account. */
+  route?: RouteId | null;
+  children: ReactNode;
 }) {
   return (
-    <div className="catalog-view">
-      <div className="stage-scroll catalog-scroll">
-        <header className="page-head catalog-intro"><h1>{title}</h1></header>
-        {loading && <div className="catalog-loading" role="status">Loading…</div>}
-        {!loading && error && (
-          <div className="catalog-empty" role="alert">
-            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-            <div>
-              <h2>Could not load {title}</h2>
-              <p>{error}</p>
-              {(needsSignIn || /sign\s?in|authoriz|unauth/i.test(error)) && route && (
-                <button className="btn src-signin" onClick={() => session.signInRoute(route)}>
-                  Sign in
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-        {!loading && !error && children}
-      </div>
+    <div className="stage-scroll home">
+      <header className="page-head"><h1>{title}</h1></header>
+      {loading && <CatalogSkeleton label={`Loading ${title}`} />}
+      {!loading && error && (
+        <EmptyState title={`Could not load ${title}`} body={error} alert>
+          {route && /sign\s?in|authoriz|unauth/i.test(error) && <SignInButton route={route} />}
+        </EmptyState>
+      )}
+      {!loading && !error && children}
     </div>
   );
 }
 
-/** Play affordance for a whole section of songs. */
-export function PlayAllButton({ tracks, origin }: {
-  tracks: TrackRef[];
-  origin?: { kind: 'album' | 'playlist' | 'manual' | 'provider'; id?: string; name?: string };
-}) {
+/**
+ * Static placeholder while a catalog page loads: card shelves by default,
+ * song rows with `rows`. The label is for assistive tech only.
+ */
+export function CatalogSkeleton({ label, rows = false }: { label: string; rows?: boolean }) {
   return (
-    <button className="catalog-detail-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
-      <PlayIcon size={19} /> <span>Play</span>
-    </button>
+    <div role="status">
+      <span className="sr-only">{label}</span>
+      {rows ? <SkeletonRows /> : (
+        <>
+          <SkeletonShelf />
+          <SkeletonShelf />
+        </>
+      )}
+    </div>
   );
 }
