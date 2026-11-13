@@ -18,6 +18,7 @@ import type {
   TrackRef,
 } from "./index.js";
 import type { CatalogPage, CatalogRequest, PlatformId } from "./catalog.js";
+import type { RemoteStatus } from "./remote.js";
 
 export interface CadenceApi {
   // --- playback -------------------------------------------------------------
@@ -93,6 +94,23 @@ export interface CadenceApi {
      * the UI surfaces the message honestly.
      */
     provider(route: RouteId, text: string): Promise<TrackRef[]>;
+  };
+
+  // --- phone sync -----------------------------------------------------------------
+  remote: {
+    status(): Promise<RemoteStatus>;
+    /** Start or stop the LAN server phones connect to. Persisted. */
+    setEnabled(enabled: boolean): Promise<RemoteStatus>;
+    /** Open a five-minute pairing window with a code and QR. */
+    startPairing(): Promise<RemoteStatus>;
+    cancelPairing(): Promise<RemoteStatus>;
+    /** Forget a paired phone; its token stops working at once. */
+    revoke(deviceId: string): Promise<RemoteStatus>;
+    /** Ask an online phone to take over playback where the computer is. */
+    handoff(deviceId: string): Promise<RemoteStatus>;
+    /** Move playback from the phone back to this computer at the phone's position. */
+    reclaim(): Promise<RemoteStatus>;
+    onStatus(cb: (s: RemoteStatus) => void): () => void;
   };
 
   // --- app ---------------------------------------------------------------------

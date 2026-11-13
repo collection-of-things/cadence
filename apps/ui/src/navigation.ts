@@ -2,7 +2,7 @@ import { useCallback, useReducer } from 'react';
 import type { CatalogArtist, CatalogContainer, LibraryAlbum } from '@cadence/protocol';
 
 export type LibraryTab = 'albums' | 'artists' | 'songs';
-export type SettingsSection = 'accounts' | 'library' | 'audio' | 'player' | 'appearance' | 'about';
+export type SettingsSection = 'accounts' | 'library' | 'audio' | 'player' | 'appearance' | 'phone' | 'about';
 
 /**
  * Where the browse stage is. The now-playing overlay is not a location.

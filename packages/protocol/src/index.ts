@@ -340,3 +340,4 @@ export interface ScanProgress {
 export * from "./audio-ipc.js";
 export * from "./cadence-api.js";
 export * from "./catalog.js";
+export * from "./remote.js";

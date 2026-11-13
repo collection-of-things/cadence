@@ -111,7 +111,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
     >
       {/* The dock leads DOM order so its transport is the first play-named
           control in the dialog; it is positioned, so layout is unaffected. */}
-      <PlayerBar placement="floating" lyricsOn={column === 'lyrics'} onToggleLyrics={toggleLyrics} onToggleFullScreen={onClose} />
+      <PlayerBar placement="floating" lyricsOn={column === 'lyrics'} onToggleLyrics={toggleLyrics} onToggleFullScreen={onClose} onOpenPhoneSettings={() => { onClose(); onNavigate({ page: 'settings', section: 'phone' }); }} />
 
       <div className="npf-art" aria-hidden={!art}>
         {art ? <img key={track.id} className={swap} src={art} alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={96} />}

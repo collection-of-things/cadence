@@ -11,8 +11,11 @@ import {
   Tray,
 } from "electron";
 import { existsSync, realpathSync } from "node:fs";
+import { hostname } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Bonjour } from "bonjour-service";
+import { toString as renderQrCode } from "qrcode";
 import type { PlatformId } from "@cadence/protocol";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
@@ -29,6 +32,8 @@ import { LibraryService, chokidarWatcherFactory } from "./library/library-servic
 import { registerIpcHandlers } from "./ipc.js";
 import { registerMediaKeys } from "./media-keys.js";
 import { wireCloseToTray } from "./quit-guard.js";
+import { RemoteDevices } from "./remote/remote-devices.js";
+import { RemoteService } from "./remote/remote-service.js";
 
 /**
  * Composition root: parse environment, construct adapters + services, wire
@@ -301,6 +306,37 @@ async function main(): Promise<void> {
     void library.scan();
   }
 
+  // Phone sync: a LAN server paired phones use to follow playback and stream
+  // local files. Off until the user turns it on in Settings.
+  const remote = new RemoteService({
+    devices: new RemoteDevices({ store }),
+    coordinator,
+    mediaFile: (trackId) => {
+      const track = library.track(trackId);
+      return track?.source.kind === "file" ? track.source.path : null;
+    },
+    artworkFile: (trackId) => {
+      const url = library.track(trackId)?.artwork?.url;
+      const prefix = "cadence-art://artwork/";
+      if (url === undefined || !url.startsWith(prefix)) return null;
+      const candidate = resolve(decodeURIComponent(url.slice(prefix.length)));
+      return candidate.startsWith(thumbRoot + sep) ? candidate : null;
+    },
+    hostName: hostname(),
+    appVersion: app.getVersion(),
+    renderQr: (text) => renderQrCode(text, { type: "svg", margin: 1, errorCorrectionLevel: "M" }),
+    // mDNS: phones can find this computer as _cadence._tcp without typing an address.
+    advertise: ({ port, hostId, name }) => {
+      const bonjour = new Bonjour();
+      bonjour.publish({ name: `Cadence on ${name}`, type: "cadence", port, txt: { id: hostId, v: "1" } });
+      return () => {
+        bonjour.unpublishAll(() => bonjour.destroy());
+      };
+    },
+    log: (line) => console.error(`[cadence-remote] ${line}`),
+  });
+  void remote.startIfEnabled();
+
   const unbindEvents = registerIpcHandlers({
     mainWindow: () =>
       BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes("cadence-app")) ??
@@ -310,6 +346,7 @@ async function main(): Promise<void> {
     library,
     registry,
     audio: audioClient,
+    remote,
     routeSignIn: async (route) => {
       const adapter = registry.get(route);
       if (!adapter?.signIn) throw new Error(`route "${route}" has no sign-in flow`);
@@ -347,7 +384,15 @@ async function main(): Promise<void> {
       },
     },
   });
-  const unregisterKeys = registerMediaKeys(coordinator);
+  // Media keys follow playback: while a phone owns it, they drive the phone.
+  const unregisterKeys = registerMediaKeys({
+    getSnapshot: () => coordinator.getSnapshot(),
+    isPlaying: () => remote.status().activeOutput?.playing ?? coordinator.getSnapshot().status === "playing",
+    handleCommand: async (cmd) => {
+      if (remote.routeCommand(cmd)) return;
+      await coordinator.handleCommand(cmd);
+    },
+  });
 
   // Close-to-tray: the window hides, playback continues — per the v3 design
   // provider playback must survive the main window closing. Explicit Quit
@@ -397,6 +442,7 @@ async function main(): Promise<void> {
     unbindEvents();
     tray?.destroy();
     tray = null;
+    void remote.dispose();
     coordinator.dispose();
     void library.dispose();
     for (const adapter of registry.list()) {

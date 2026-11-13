@@ -32,4 +32,12 @@ export const IpcChannels = {
   audioSetEq: "cadence:audio:set-eq",
   audioListDevices: "cadence:audio:list-devices",
   audioSetDevice: "cadence:audio:set-device",
+  remoteStatus: "cadence:remote:status",
+  remoteSetEnabled: "cadence:remote:set-enabled",
+  remoteStartPairing: "cadence:remote:start-pairing",
+  remoteCancelPairing: "cadence:remote:cancel-pairing",
+  remoteRevoke: "cadence:remote:revoke",
+  remoteHandoff: "cadence:remote:handoff",
+  remoteReclaim: "cadence:remote:reclaim",
+  remoteStatusEvent: "cadence:remote:status-event",
 } as const;

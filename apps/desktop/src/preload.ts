@@ -6,6 +6,7 @@ import type {
   LibraryQuery,
   PlatformId,
   PlaybackCommand,
+  RemoteStatus,
   RouteId,
   ScanProgress,
 } from "@cadence/protocol";
@@ -77,6 +78,17 @@ const api: CadenceApi = {
 
   search: {
     provider: (route: RouteId, text: string) => invoke(C.searchProvider, { route, text }),
+  },
+
+  remote: {
+    status: () => invoke(C.remoteStatus),
+    setEnabled: (enabled: boolean) => invoke(C.remoteSetEnabled, enabled),
+    startPairing: () => invoke(C.remoteStartPairing),
+    cancelPairing: () => invoke(C.remoteCancelPairing),
+    revoke: (deviceId: string) => invoke(C.remoteRevoke, deviceId),
+    handoff: (deviceId: string) => invoke(C.remoteHandoff, deviceId),
+    reclaim: () => invoke(C.remoteReclaim),
+    onStatus: (cb: (s: RemoteStatus) => void) => subscribe(C.remoteStatusEvent, cb),
   },
 
   app: {

@@ -29,8 +29,17 @@ jobs:
           packages: ffmpeg libasound2-dev libpipewire-0.3-dev libspa-0.2-dev pkg-config
       - name: install
         run: pnpm install --frozen-lockfile
+      # apps/mobile installs with npm. The desktop phone-handoff test loads
+      # its sources, whose tsconfig extends expo's.
+      - name: install mobile
+        run: npm ci --prefix apps/mobile
       - name: typecheck
         run: pnpm -r typecheck
+      - name: mobile typecheck + tests
+        working-directory: apps/mobile
+        run: |
+          npm run typecheck
+          npm test
       - name: build
         run: pnpm -r build
       - name: unit tests

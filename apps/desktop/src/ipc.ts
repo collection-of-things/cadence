@@ -3,6 +3,7 @@ import type { CoordinatorEvent, PlatformId, RouteId } from "@cadence/protocol";
 import type { Coordinator } from "./coordinator/coordinator.js";
 import type { AdapterRegistry } from "./adapters/registry.js";
 import type { LibraryService } from "./library/library-service.js";
+import type { RemoteService } from "./remote/remote-service.js";
 import { IpcChannels as C } from "./ipc-channels.js";
 import { isOk } from "./result.js";
 import {
@@ -41,6 +42,8 @@ export interface IpcDeps {
     active(): Promise<PlatformId>;
     setActive(platform: PlatformId): Promise<void>;
   };
+  /** Phone sync LAN server. */
+  readonly remote?: RemoteService;
 }
 
 function assertOk<T>(r: { _tag: string; value?: T; error?: unknown }): T {
@@ -58,7 +61,10 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   const { coordinator, library, registry } = deps;
 
   ipcMain.handle(C.command, async (_e, payload: unknown) => {
-    await coordinator.handleCommand(assertOk(parsePlaybackCommand(payload)));
+    const cmd = assertOk(parsePlaybackCommand(payload));
+    // While a phone owns playback, the player bar drives the phone.
+    if (deps.remote?.routeCommand(cmd) === true) return;
+    await coordinator.handleCommand(cmd);
   });
   ipcMain.handle(C.snapshot, () => coordinator.getSnapshot());
   ipcMain.handle(C.queue, () => coordinator.getQueue());
@@ -168,6 +174,29 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     });
   }
 
+  const remote = deps.remote;
+  let unsubRemote = (): void => undefined;
+  if (remote !== undefined) {
+    ipcMain.handle(C.remoteStatus, () => remote.status());
+    ipcMain.handle(C.remoteSetEnabled, (_e, payload: unknown) => {
+      if (typeof payload !== "boolean") throw new InvalidIpcPayload("setEnabled expects a boolean");
+      return remote.setEnabled(payload);
+    });
+    ipcMain.handle(C.remoteStartPairing, () => remote.startPairing());
+    ipcMain.handle(C.remoteCancelPairing, () => remote.cancelPairing());
+    ipcMain.handle(C.remoteRevoke, (_e, payload: unknown) => {
+      if (typeof payload !== "string" || payload.length === 0)
+        throw new InvalidIpcPayload("revoke expects a device id");
+      return remote.revoke(payload);
+    });
+    ipcMain.handle(C.remoteHandoff, (_e, payload: unknown) => {
+      if (typeof payload !== "string" || payload.length === 0)
+        throw new InvalidIpcPayload("handoff expects a device id");
+      return remote.handoff(payload);
+    });
+    ipcMain.handle(C.remoteReclaim, () => remote.reclaim());
+  }
+
   ipcMain.handle(C.windowMinimize, (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
   });
@@ -194,8 +223,12 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
   const unsubScan = library.onScanProgress((p) => {
     broadcast(C.scanProgress, p);
   });
+  if (remote !== undefined) {
+    unsubRemote = remote.onStatus((s) => broadcast(C.remoteStatusEvent, s));
+  }
   return () => {
     unsubCoordinator();
     unsubScan();
+    unsubRemote();
   };
 }

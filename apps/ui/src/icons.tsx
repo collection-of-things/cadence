@@ -80,6 +80,27 @@ export const QueueIcon = (p: P) => (
     <path d="M16.8 11.4v5.7a.45.45 0 0 0 .7.38l4.3-2.85a.45.45 0 0 0 0-.76l-4.3-2.85a.45.45 0 0 0-.7.4Z" fill="currentColor" />
   </Svg>
 );
+/** Speaker beside a phone: where playback goes. */
+export const DevicesIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="10.5" height="16" rx="2.2" {...strokeProps()} />
+    <circle cx="8.25" cy="13.6" r="2.6" {...strokeProps()} />
+    <circle cx="8.25" cy="7.6" r="0.6" fill="currentColor" />
+    <rect x="16" y="7.5" width="5" height="12.5" rx="1.6" {...strokeProps()} />
+  </Svg>
+);
+export const ComputerIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4.5" width="18" height="12" rx="2" {...strokeProps()} />
+    <path d="M8.5 20h7M12 16.5V20" {...strokeProps()} />
+  </Svg>
+);
+export const PhoneIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="6.5" y="2.8" width="11" height="18.4" rx="2.4" {...strokeProps()} />
+    <path d="M10.5 17.8h3" {...strokeProps()} />
+  </Svg>
+);
 export const CloseIcon = (p: P) => (
   <Svg {...p}>
     <path d="m6 6 12 12M18 6 6 18" {...strokeProps()} />
