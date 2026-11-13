@@ -15,9 +15,8 @@ with bridge resume as the documented fallback.
 Relevant defects on main: the app's `win.on('close')` traps programmatic
 `app.quit()` forever — the harness destroys windows first and records
 `quit mode=graceful|killed`; a killed quit fails the restore contract.
-Separately: after restore, the transport
-Play click is inert — only the bridge `resume` starts playback; the flow
-records it as a NOTE.
+After restore the flow resumes with the transport Play button and falls
+back to the bridge `resume`; a fallback is recorded as a NOTE.
 
 Negative control: `cadence-verify run restart --break no-restore` deletes
 only this run's persisted settings before relaunch and must FAIL.

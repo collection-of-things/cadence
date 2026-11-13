@@ -203,10 +203,10 @@ in the run dirs.
   `paused Vantage@13959` → `playing Beacon@1365`; on Beacon (queue[0])
   it restarts the same track at ~0. (audio flow reports this as a NOTE,
   does not gate.)
-- **resume-after-restore via the transport is inert.** After relaunch,
-  clicking the Play button does nothing; `window.cadence.sendCommand`
-  `resume` works and plays the restored item. (restart flow reports
-  this as a NOTE, does not gate.)
+- Transport clicks go through `transportButton` (flow.mjs). An earlier
+  "Play after restore is inert" report was the harness clicking the
+  first button whose name contained "Play" — the sidebar's Playlists
+  header — not the transport.
 - **previous after a transition race.** Meridian→Previous can land on
   Vantage when the coordinator's auto-advance fires between checks
   (position accounting around transitions is unreliable).

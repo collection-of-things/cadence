@@ -3,7 +3,7 @@
 // next/previous, and queue edits (add next, remove, queue-row jump).
 import { sleep, waitFor } from "../lib/env.mjs";
 import * as api from "../lib/api.mjs";
-import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, dumpState } from "../lib/flow.mjs";
+import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, dumpState, transportButton } from "../lib/flow.mjs";
 
 export const name = "playback";
 
@@ -31,7 +31,7 @@ export async function run(ctx) {
   // a seek jump leaves stale ended events in the pipeline that race
   // auto-advance and make direction checks nondeterministic (the app's
   // known transition-position defect, not harness flakiness).
-  await page.getByRole("button", { name: "Next track" }).first().click();
+  await transportButton(page, "Next track").click();
   const sNext = await waitFor(
     async () => {
       const s = await api.snapshot(page);
@@ -41,7 +41,7 @@ export async function run(ctx) {
   );
   ev.check("next track", sNext.current?.track?.title === "Meridian",
     `now=${sNext.current?.track?.title}`);
-  await page.getByRole("button", { name: "Previous track" }).first().click();
+  await transportButton(page, "Previous track").click();
   const sPrev = await waitFor(
     async () => {
       const s = await api.snapshot(page);
@@ -55,10 +55,10 @@ export async function run(ctx) {
   // pause + resume via transport button — position events only flow once
   // the engine has the track loaded; pausing mid-transition is a no-op
   await api.waitPosition(page, 400);
-  await page.getByRole("button", { name: "Pause" }).first().click();
+  await transportButton(page, "Pause").click();
   const paused = await api.waitStatus(page, "paused");
   ev.check("pause", true, `pos=${paused.positionMs}`);
-  await page.getByRole("button", { name: "Play" }).first().click();
+  await transportButton(page, "Play").click();
   await api.waitStatus(page, "playing");
   ev.check("resume", true);
 

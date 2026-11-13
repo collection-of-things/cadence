@@ -70,7 +70,10 @@ function isSubmission(to: Location): to is Extract<Location, { page: 'search' | 
   return to.page === 'search' || (to.page === 'library' && to.query !== undefined);
 }
 
-/** Back/forward history. Navigating to the page already shown changes nothing. */
+/**
+ * Back/forward history. Navigating to the page already shown changes nothing;
+ * switching Settings section updates the current entry.
+ */
 export function historyReducer(history: History, action: HistoryAction): History {
   const { location, back, forward } = history;
   switch (action.kind) {
@@ -86,6 +89,9 @@ export function historyReducer(history: History, action: HistoryAction): History
           : { ...history, location: target, submissions };
       }
       if (!moved) return history;
+      // Settings sections replace each other in place, so Back and Close
+      // settings leave Settings in one step.
+      if (action.to.page === 'settings' && location.page === 'settings') return { ...history, location: action.to };
       return { ...history, location: action.to, back: [...back, location], forward: [] };
     }
     case 'back': {

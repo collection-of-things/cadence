@@ -15,7 +15,7 @@
 // before capture — the run MUST FAIL "capture not silent".
 import { sleep, run as shellRun } from "../lib/env.mjs";
 import * as api from "../lib/api.mjs";
-import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, assertAudioRouted, fixtureForTitle, analyzeCapture } from "../lib/flow.mjs";
+import { seedLibrary, shot, navTo, openAlbumByName, clickTrack, assertAudioRouted, fixtureForTitle, analyzeCapture, transportButton } from "../lib/flow.mjs";
 
 export const name = "audio";
 
@@ -62,7 +62,7 @@ export async function run(ctx) {
 
     // pause hole: the tap must go quiet while paused
     const prePause = await api.snapshot(page);
-    await page.getByRole("button", { name: "Pause" }).first().click();
+    await transportButton(page, "Pause").click();
     await api.waitStatus(page, "paused");
     tPause = t();
     ev.step("pause", `paused at capture t=${tPause.toFixed(2)}s`);
@@ -71,7 +71,7 @@ export async function run(ctx) {
     // resume probe — documents actual behavior without gating the run.
     // On main, resume restarts the queue (track change + position reset);
     // the check records whatever the app really does.
-    await page.getByRole("button", { name: "Play" }).first().click();
+    await transportButton(page, "Play").click();
     await api.waitStatus(page, "playing");
     await sleep(1200);
     const postResume = await api.snapshot(page);
@@ -84,7 +84,7 @@ export async function run(ctx) {
       { required: false },
     );
 
-    await page.getByRole("button", { name: "Pause" }).first().click();
+    await transportButton(page, "Pause").click();
     await api.waitStatus(page, "paused");
   } finally {
     await cap.stop();

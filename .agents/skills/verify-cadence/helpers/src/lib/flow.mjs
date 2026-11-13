@@ -113,6 +113,13 @@ export function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** A transport button in the player bar, matched by its exact name.
+ *  Role names match by substring otherwise, and page-wide "Play" first
+ *  resolves to the sidebar's Playlists header. */
+export function transportButton(page, name) {
+  return page.locator(".playerbar").first().getByRole("button", { name, exact: true });
+}
+
 /** Click a track row by title — album and list variants are both
  *  role=button rows named "Play <title> by <artists>" (TrackRow.tsx). */
 export async function clickTrack(ctx, title) {
