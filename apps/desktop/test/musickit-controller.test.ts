@@ -107,11 +107,11 @@ describe("real injected MusicKit controller", () => {
     expect(configurations[0]?.bitrate).toBe(256);
   });
 
-  it("keeps a constant output margin and linear volume without dynamic gain", async () => {
+  it("keeps unity gain at full volume and linear volume without dynamic gain", async () => {
     const { ctl, mk } = await harness();
     ctl.setVolume(1);
     const full = mk.volume;
-    expect(full).toBeCloseTo(0.7943282347, 9);
+    expect(full).toBe(1);
     ctl.setVolume(.5);
     expect(mk.volume).toBe(full * .5);
     ctl.setVolume(0);
@@ -152,7 +152,7 @@ describe("real injected MusicKit controller", () => {
   it("uses a safe default for an invalid SDK volume while preserving mute", async () => {
     const invalid = await harness({ initialVolume: Number.NaN });
     await invalid.ctl.play(song, 0);
-    expect(invalid.mk.volume).toBeCloseTo(0.7943282347, 9);
+    expect(invalid.mk.volume).toBe(1);
     const muted = await harness({ initialVolume: 0 });
     await muted.ctl.play(song, 0);
     expect(muted.mk.volume).toBe(0);
@@ -160,7 +160,7 @@ describe("real injected MusicKit controller", () => {
 
   it("applies volume at install and restores it on state changes and status ticks", async () => {
     const initial = await harness({ initialVolume: .5 });
-    expect(initial.mk.volume).toBeCloseTo(.3971641174, 9);
+    expect(initial.mk.volume).toBe(.5);
     for (const volume of [0, .5, 1]) {
       const { ctl, mk, listeners, tick } = await harness();
       ctl.setVolume(volume);

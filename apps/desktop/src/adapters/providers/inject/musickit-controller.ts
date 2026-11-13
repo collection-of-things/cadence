@@ -72,12 +72,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
   requestHighQuality();
 
-  // Fixed 2 dB of output headroom avoided Chromium's full-scale clamp in
-  // the measured AAC/resampler passage; it is not a bound for every track.
-  // Constant gain preserves dynamics, but comparisons need level matching.
-  const outputHeadroom = Math.pow(10, -2 / 20);
+  // Full volume is unity gain. A fixed margin here makes Apple Music
+  // quieter than other players at the same setting.
   const initialVolume = Number(mk.volume);
-  let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
+  let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1));
   function applyOutputVolume() { if (mk.volume !== outputVolume) mk.volume = outputVolume; }
   applyOutputVolume();
 
@@ -328,7 +326,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },
-    setVolume(x) { outputVolume = Math.max(0, Math.min(1, x)) * outputHeadroom; applyOutputVolume(); return true; },
+    setVolume(x) { outputVolume = Math.max(0, Math.min(1, x)); applyOutputVolume(); return true; },
     // --- queue mirror ---
     async playLater(spec) {
       // Dedupe: a successor refresh for the same id is a no-op.
