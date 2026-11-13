@@ -37,7 +37,7 @@ function buttonNames(html: string): string[] {
 
 describe('transport accessible names', () => {
   it('player bar: the transport is the first play-named button', () => {
-    const html = renderToStaticMarkup(<PlayerBar placement="docked" lyricsOn={false} onToggleLyrics={() => undefined} onToggleFullScreen={() => undefined} />);
+    const html = renderToStaticMarkup(<PlayerBar placement="docked" lyricsOn={false} onToggleLyrics={() => undefined} onToggleFullScreen={() => undefined} onOpenPhoneSettings={() => undefined} />);
     const names = buttonNames(html);
     expect(names.length).toBeGreaterThan(0);
     const playNamed = names.filter((n) => /play/i.test(n));

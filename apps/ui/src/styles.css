@@ -795,6 +795,10 @@ button:disabled {
 .set-sub .src-state { margin-right: 8px; }
 .set-value { flex: none; font-size: 13px; color: var(--t2); font-variant-numeric: tabular-nums; }
 .set-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--t2); }
+.set-pair { display: flex; align-items: center; gap: 20px; }
+.set-pair-qr { flex: none; width: 168px; height: 168px; padding: 8px; border-radius: var(--r-md, 10px); background: #fff; image-rendering: pixelated; }
+.set-pair-txt { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.set-pair-code { font-size: 34px; font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .set-skeleton { height: 18px; width: 60%; border-radius: 6px; background: var(--well-hi); }
 
 /* one choice out of a few: a filled pill marks the chosen one */

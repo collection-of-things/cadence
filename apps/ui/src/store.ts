@@ -8,6 +8,7 @@ import type {
   PlatformId,
   QueueItem,
   QueueState,
+  RemoteStatus,
   RouteCapabilities,
   RouteId,
   ScanProgress,
@@ -59,10 +60,24 @@ export interface StoreApiSurface {
     listDevices(): Promise<AudioDevice[]>;
     setDevice(name: string | null): Promise<unknown>;
   };
+  remote?: {
+    status(): Promise<RemoteStatus>;
+    onStatus(cb: (s: RemoteStatus) => void): () => void;
+    handoff(deviceId: string): Promise<RemoteStatus>;
+    reclaim(): Promise<RemoteStatus>;
+  };
 }
 
 export interface UiState {
+  /**
+   * What the player shows. Normally the computer's own snapshot; while a
+   * phone owns playback it is the phone's track, position and play state.
+   */
   snapshot: PlaybackSnapshot;
+  /** The computer's own coordinator snapshot, whoever owns playback. */
+  localSnapshot: PlaybackSnapshot;
+  /** Phone sync status; null until the bridge reports it (or it has none). */
+  remote: RemoteStatus | null;
   queue: QueueState;
   capabilities: RouteCapabilities[];
   /** Newest lease generation observed; older events are ignored. */
@@ -106,6 +121,26 @@ export const EMPTY_SNAPSHOT: PlaybackSnapshot = {
   volume: 0.8,
   muted: false,
 };
+
+/**
+ * The snapshot the player shows: the computer's own, or, while a phone owns
+ * playback, that phone's item, position and play state on top of it.
+ */
+export function shownSnapshot(local: PlaybackSnapshot, remote: RemoteStatus | null, queue: QueueState): PlaybackSnapshot {
+  const out = remote?.activeOutput;
+  if (!out) return local;
+  const item = queue.items.find((i) => i.queueId === out.queueId) ?? local.current;
+  return {
+    ...local,
+    status: out.playing ? 'playing' : 'paused',
+    current: item,
+    positionMs: out.positionMs,
+    positionAtMs: out.reportedAtMs,
+    durationMs: out.durationMs || item?.track.durationMs || 0,
+    volume: out.volume,
+    muted: false,
+  };
+}
 
 /** Index of the item that plays next, honoring shuffle order and repeat. */
 export function nextQueueIndex(q: QueueState): number {
@@ -184,6 +219,10 @@ export interface UiSession {
   setNowPlayingExpanded(expanded: boolean): void;
   setQueueOpen(open: boolean): void;
   setPalette(p: Rgb[]): void;
+  /** Ask a paired phone to take over playback. */
+  playOnDevice(deviceId: string): void;
+  /** Bring playback back from the phone to this computer. */
+  playHere(): void;
   showToast(route: RouteId, message: string, retriable: boolean): void;
   dismissToast(id: number): void;
 }
@@ -196,6 +235,8 @@ export function createUiStore(api: StoreApiSurface): UiSession {
 
   const store = createStore<UiState>()(() => ({
     snapshot: EMPTY_SNAPSHOT,
+    localSnapshot: EMPTY_SNAPSHOT,
+    remote: null,
     queue: EMPTY_QUEUE,
     capabilities: [],
     generationId: -1,
@@ -224,14 +265,23 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     runtime.clock.durationMs = snap.durationMs;
   }
 
+  /** Store the computer's snapshot and show it, or the phone's, whichever owns playback. */
+  function showLocal(local: PlaybackSnapshot, extra: Partial<UiState> = {}) {
+    const remote = extra.remote !== undefined ? extra.remote : get().remote;
+    const shown = shownSnapshot(local, remote, extra.queue ?? get().queue);
+    set({ ...extra, localSnapshot: local, snapshot: shown });
+    syncClock(shown);
+  }
+
+  const phoneOwnsPlayback = () => get().remote?.activeOutput != null;
+
   function advanceDisplay() {
+    if (phoneOwnsPlayback()) return;
     const { queue, snapshot } = get();
     const ni = nextQueueIndex(queue);
     const item = ni >= 0 ? queue.items[ni] : undefined;
     if (!item || ni === -1) {
-      const stopped = { ...snapshot, status: 'stopped' as const, positionMs: 0, positionAtMs: Date.now() };
-      set({ snapshot: stopped });
-      syncClock(stopped);
+      showLocal({ ...snapshot, status: 'stopped', positionMs: 0, positionAtMs: Date.now() });
       return;
     }
     const advanced: PlaybackSnapshot = {
@@ -242,8 +292,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       positionAtMs: Date.now(),
       durationMs: item.track.durationMs,
     };
-    set({ snapshot: advanced });
-    syncClock(advanced);
+    showLocal(advanced);
   }
 
   function dispatch(e: CoordinatorEvent) {
@@ -254,19 +303,17 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         // route must not reclaim playback after a handoff.
         if (e.snapshot.lease && e.snapshot.lease.generationId < s.generationId) break;
         const gen = e.snapshot.lease?.generationId ?? s.generationId;
-        set({
-          snapshot: e.snapshot,
+        showLocal(e.snapshot, {
           generationId: Math.max(gen, s.generationId),
           // Expanded now-playing only exists while a track is loaded. Clearing
           // it here keeps a dropped queue from resurrecting the overlay when
           // the next track starts.
-          ...(e.snapshot.current === null ? { nowPlayingExpanded: false } : {}),
+          ...(e.snapshot.current === null && !phoneOwnsPlayback() ? { nowPlayingExpanded: false } : {}),
         });
-        syncClock(e.snapshot);
         break;
       }
       case 'queue':
-        set({ queue: e.queue });
+        showLocal(s.localSnapshot, { queue: e.queue });
         break;
       case 'capabilities': {
         const rest = s.capabilities.filter((c) => c.route !== e.route);
@@ -275,7 +322,12 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       }
       case 'position': {
         if (e.generationId < s.generationId) break;
-        set({ snapshot: { ...s.snapshot, positionMs: e.positionMs, positionAtMs: e.atMs } });
+        const local = { ...s.localSnapshot, positionMs: e.positionMs, positionAtMs: e.atMs };
+        if (phoneOwnsPlayback()) {
+          set({ localSnapshot: local });
+          break;
+        }
+        set({ localSnapshot: local, snapshot: { ...s.snapshot, positionMs: e.positionMs, positionAtMs: e.atMs } });
         runtime.clock.positionMs = e.positionMs;
         runtime.clock.atMs = e.atMs;
         break;
@@ -298,7 +350,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         pushToast(e.route, e.message, e.retriable);
         break;
       case 'output':
-        set({ snapshot: { ...s.snapshot, output: e.output } });
+        showLocal({ ...s.localSnapshot, output: e.output });
         break;
     }
   }
@@ -323,8 +375,15 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const gen = snapshot.lease?.generationId ?? -1;
       const latest = new Map(capabilities.map(cap => [cap.route, cap]));
       for (const cap of get().capabilities) latest.set(cap.route, cap);
-      set({ snapshot, queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
-      syncClock(snapshot);
+      showLocal(snapshot, { queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
+      if (api.remote) {
+        const remoteApi = api.remote;
+        unsubs.push(remoteApi.onStatus((remote) => showLocal(get().localSnapshot, { remote })));
+        void remoteApi
+          .status()
+          .then((remote) => showLocal(get().localSnapshot, { remote }))
+          .catch(() => undefined);
+      }
       const platform = await api.platform?.active().catch(() => 'local' as const);
       if (platform) set({ platform });
     },
@@ -345,17 +404,26 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const clamped = Math.max(0, Math.min(positionMs, dur || positionMs));
       runtime.clock.positionMs = clamped;
       runtime.clock.atMs = Date.now();
-      set({ snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: runtime.clock.atMs } });
+      const at = runtime.clock.atMs;
+      set({
+        snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: at },
+        ...(phoneOwnsPlayback() ? {} : { localSnapshot: { ...get().localSnapshot, positionMs: clamped, positionAtMs: at } }),
+      });
       cmd({ kind: 'seek', positionMs: clamped });
     },
     setVolume(v) {
       const volume = Math.max(0, Math.min(1, v));
-      set({ snapshot: { ...get().snapshot, volume, muted: false } });
+      set({
+        snapshot: { ...get().snapshot, volume, muted: false },
+        ...(phoneOwnsPlayback() ? {} : { localSnapshot: { ...get().localSnapshot, volume, muted: false } }),
+      });
       cmd({ kind: 'setVolume', volume });
     },
     toggleMute() {
+      // The phone has no mute over the link; its volume slider covers that.
+      if (phoneOwnsPlayback()) return;
       const muted = !get().snapshot.muted;
-      set({ snapshot: { ...get().snapshot, muted } });
+      set({ snapshot: { ...get().snapshot, muted }, localSnapshot: { ...get().localSnapshot, muted } });
       cmd({ kind: 'setMuted', muted });
     },
     cycleRepeat() {
@@ -418,6 +486,19 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       set({ nowPlayingExpanded: expanded && get().snapshot.current !== null }),
     setQueueOpen: (queueOpen) => set({ queueOpen }),
     setPalette: (palette) => set({ palette }),
+    playOnDevice(deviceId) {
+      if (!api.remote) return;
+      void api.remote
+        .handoff(deviceId)
+        .catch((e: unknown) => pushToast('local', cleanIpcError(e, 'Could not move playback to the phone'), true));
+    },
+    playHere() {
+      if (!api.remote) return;
+      void api.remote
+        .reclaim()
+        .then((remote) => showLocal(get().localSnapshot, { remote }))
+        .catch((e: unknown) => pushToast('local', cleanIpcError(e, 'Could not bring playback back'), true));
+    },
     showToast: pushToast,
     dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
   };

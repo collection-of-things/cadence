@@ -198,7 +198,7 @@ export function App() {
         {/* The transport must be the first play-named control in the document:
             page-level buttons ("Play album", "Play <track> next") legitimately
             share the name space, so the docked player leads DOM order. */}
-        {!expanded && <PlayerBar placement="docked" lyricsOn={lyricsShown} onToggleLyrics={toggleLyrics} onToggleFullScreen={openNowPlaying} />}
+        {!expanded && <PlayerBar placement="docked" lyricsOn={lyricsShown} onToggleLyrics={toggleLyrics} onToggleFullScreen={openNowPlaying} onOpenPhoneSettings={() => navigate({ page: 'settings', section: 'phone' })} />}
         <TopBar
           canGoBack={canGoBack}
           canGoForward={canGoForward}

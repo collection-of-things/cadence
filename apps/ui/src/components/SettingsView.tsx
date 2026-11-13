@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { LibraryCounts, RouteId } from '@cadence/protocol';
+import type { LibraryCounts, RemotePairedDevice, RemoteStatus, RouteId } from '@cadence/protocol';
 import { useUi } from '../hooks';
 import { cleanIpcError } from '../ipcError';
 import type { SettingsSection } from '../navigation';
@@ -403,6 +403,165 @@ function AppearanceSection() {
   );
 }
 
+function lastSeen(d: RemotePairedDevice, now: number): string {
+  if (d.online) return 'Connected now';
+  if (d.lastSeenAtMs === null) return 'Not connected yet';
+  const mins = Math.round((now - d.lastSeenAtMs) / 60_000);
+  if (mins < 1) return 'Last seen just now';
+  if (mins < 60) return `Last seen ${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `Last seen ${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return `Last seen ${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+
+function serverLine(s: RemoteStatus): string {
+  switch (s.server.kind) {
+    case 'off':
+      return 'Phones on the same Wi-Fi can follow playback and stream your local files.';
+    case 'starting':
+      return 'Starting…';
+    case 'on':
+      return s.server.addresses.length > 0
+        ? `Listening at ${s.server.addresses[0]}:${s.server.port}`
+        : `Listening on port ${s.server.port}, but this computer has no network address right now.`;
+    case 'error':
+      return `Could not start: ${s.server.message}`;
+    default: {
+      const _exhaustive: never = s.server;
+      return _exhaustive;
+    }
+  }
+}
+
+/** A countdown that re-renders each second while the pairing code is live. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+/** Phone sync: the LAN server, pairing, and the phones that can connect. */
+function PhoneSection() {
+  const [status, setStatus] = useState<RemoteStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.remote.status().then((s) => live && setStatus(s)).catch(() => undefined);
+    const off = api.remote.onStatus((s) => setStatus(s));
+    return () => {
+      live = false;
+      off();
+    };
+  }, []);
+  const pairing = status?.pairing ?? null;
+  const hasTrack = useUi((s) => s.localSnapshot.current !== null || s.remote?.activeOutput != null);
+  const now = useNow(pairing !== null);
+
+  const run = (task: () => Promise<RemoteStatus>, failure: string) => {
+    setBusy(true);
+    task()
+      .then(setStatus)
+      .catch((e: unknown) => session.showToast('local', cleanIpcError(e, failure), false))
+      .finally(() => setBusy(false));
+  };
+
+  if (status === null) {
+    return (
+      <Group title="Phone">
+        <div className="set-sec">
+          <div className="set-skeleton" aria-hidden="true" />
+        </div>
+      </Group>
+    );
+  }
+
+  const on = status.server.kind === 'on';
+  const left = pairing ? Math.max(0, Math.ceil((pairing.expiresAtMs - now) / 1000)) : 0;
+
+  return (
+    <>
+      <Group title="Phone">
+        <Row label="Phone sync" sub={<span role="status">{serverLine(status)}</span>}>
+          <input
+            type="checkbox"
+            role="switch"
+            className="switch"
+            aria-label="Phone sync"
+            disabled={busy}
+            checked={status.enabled}
+            onChange={(e) => {
+              const enabled = e.currentTarget.checked;
+              run(() => api.remote.setEnabled(enabled), 'Could not change phone sync');
+            }}
+          />
+        </Row>
+        {on && (
+          <Row
+            label="Pair a phone"
+            sub={pairing ? 'Scan the code with the Cadence phone app, or type the six digits.' : 'Open the Cadence app on your phone and choose Pair.'}
+          >
+            {pairing ? (
+              <button className="btn btn-ghost" disabled={busy} onClick={() => run(() => api.remote.cancelPairing(), 'Could not cancel pairing')}>
+                Cancel
+              </button>
+            ) : (
+              <button className="btn" disabled={busy} onClick={() => run(() => api.remote.startPairing(), 'Could not start pairing')}>
+                Pair a phone
+              </button>
+            )}
+          </Row>
+        )}
+        {on && pairing && (
+          <div className="set-sec">
+            <div className="set-pair">
+              <img className="set-pair-qr" alt="Pairing QR code" src={`data:image/svg+xml;utf8,${encodeURIComponent(pairing.qrSvg)}`} />
+              <div className="set-pair-txt">
+                <span className="set-sub">Pairing code</span>
+                <span className="set-pair-code" aria-label={`Pairing code ${pairing.code.split('').join(' ')}`}>
+                  {pairing.code.slice(0, 3)} {pairing.code.slice(3)}
+                </span>
+                <span className="set-sub">
+                  Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </Group>
+      <Group title="Paired phones">
+        {status.devices.length === 0 && <Row label="No phones yet" sub="A phone appears here once it pairs." />}
+        {status.devices.map((d) => {
+          const playing = status.activeOutput?.deviceId === d.id;
+          return (
+            <Row key={d.id} label={d.name} sub={playing ? 'Playing on this phone now' : lastSeen(d, Date.now())}>
+              {playing ? (
+                <button className="btn" disabled={busy} onClick={() => session.playHere()}>
+                  Play on computer
+                </button>
+              ) : (
+                d.online &&
+                on && (
+                  <button className="btn btn-ghost" disabled={busy || !hasTrack} title={hasTrack ? undefined : 'Start something first'} onClick={() => session.playOnDevice(d.id)}>
+                    Play on phone
+                  </button>
+                )
+              )}
+              <button className="btn btn-ghost" aria-label={`Remove ${d.name}`} disabled={busy} onClick={() => run(() => api.remote.revoke(d.id), 'Could not remove the phone')}>
+                Remove
+              </button>
+            </Row>
+          );
+        })}
+      </Group>
+    </>
+  );
+}
+
 function AboutSection() {
   const { versions } = api.app;
   return (
@@ -427,6 +586,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'audio', label: 'Audio engine', view: AudioSection },
   { id: 'player', label: 'Player', view: PlaybackSection },
   { id: 'appearance', label: 'Appearance', view: AppearanceSection },
+  { id: 'phone', label: 'Phone', view: PhoneSection },
   { id: 'about', label: 'About', view: AboutSection },
 ] as const satisfies readonly { id: SettingsSection; label: string; view: () => ReactNode }[];
 

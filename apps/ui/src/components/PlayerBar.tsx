@@ -5,7 +5,8 @@ import { targetForTrack } from '../catalogActions';
 import { toggleFavorite, useCollection } from '../collection';
 import { artistsLine } from '../format';
 import { useUi } from '../hooks';
-import { CollapseIcon, ExpandIcon, LyricsIcon, NoteIcon, QueueIcon, StarIcon } from '../icons';
+import { CollapseIcon, ExpandIcon, LyricsIcon, NoteIcon, PhoneIcon, QueueIcon, StarIcon } from '../icons';
+import { DevicePicker } from './DevicePicker';
 import { LibraryButton } from './LibraryButton';
 import { RouteBadge } from './RouteBadge';
 import { SeekBar, TimeReadout } from './SeekBar';
@@ -56,6 +57,8 @@ interface PlayerBarProps {
   onToggleLyrics(): void;
   /** Opens Now Playing from a docked bar and leaves it from a floating one. */
   onToggleFullScreen(): void;
+  /** Opens Settings › Phone (from the device picker). */
+  onOpenPhoneSettings(): void;
 }
 
 /**
@@ -65,9 +68,10 @@ interface PlayerBarProps {
  * DOM order so it is the first play-named control in the document; the grid
  * places it visually.
  */
-export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScreen }: PlayerBarProps) {
+export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScreen, onOpenPhoneSettings }: PlayerBarProps) {
   const track = useUi((s) => s.snapshot.current?.track);
   const paused = useUi((s) => s.snapshot.status !== 'playing');
+  const phoneName = useUi((s) => s.remote?.activeOutput?.deviceName ?? null);
   const swap = useSwapClass(track?.id);
   const docked = placement === 'docked';
   const sub = track ? [track.album, artistsLine(track.artists)].filter(Boolean).join(' – ') : 'Pick something to play';
@@ -78,13 +82,20 @@ export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScr
       <span className="pb-art">{art ? <img src={art} alt="" draggable={false} /> : <NoteIcon size={22} />}</span>
       <span className="pb-meta">
         <span className="pb-title" title={track?.title}>{track?.title ?? 'Nothing playing'}</span>
-        <span className="pb-sub" title={track ? sub : undefined}>{sub}</span>
+        {phoneName !== null ? (
+          <span className="pb-sub pb-remote" title={`Playing on ${phoneName}`}>
+            <PhoneIcon size={13} />
+            Playing on {phoneName}
+          </span>
+        ) : (
+          <span className="pb-sub" title={track ? sub : undefined}>{sub}</span>
+        )}
       </span>
     </>
   );
 
   return (
-    <footer className={`playerbar is-${placement} ${track ? '' : 'is-idle'} ${paused ? 'is-paused' : ''}`} aria-label="Player">
+    <footer className={`playerbar is-${placement} ${track ? '' : 'is-idle'} ${paused ? 'is-paused' : ''} ${phoneName !== null ? 'is-remote' : ''}`} aria-label="Player">
       <Transport />
       <div className="pb-seek">
         <TimeReadout part="elapsed" />
@@ -104,6 +115,7 @@ export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScr
         {track && <RouteBadge route={track.route} />}
       </div>
       <div className="pb-right">
+        <DevicePicker onOpenSettings={onOpenPhoneSettings} />
         <VolumeControl />
         <button className={`ctl-btn ${lyricsOn ? 'is-on' : ''}`} aria-label="Lyrics" aria-pressed={lyricsOn} title={docked ? 'Lyrics (L)' : 'Lyrics'} disabled={!track} onClick={onToggleLyrics}>
           <LyricsIcon size={18} />
