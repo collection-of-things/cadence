@@ -66,6 +66,8 @@ const HEARTBEAT_MS = 15_000;
 const ADDRESS_REFRESH_MS = 10_000;
 /** How long the computer waits for a reclaimed track to start before seeking. */
 const RECLAIM_START_TIMEOUT_MS = 8_000;
+/** How long reports from a phone told to stop are ignored while it winds down. */
+const STOPPING_GRACE_MS = 5_000;
 
 /** Transport kinds that go to the phone while it owns playback. */
 const PHONE_ROUTED: ReadonlySet<PlaybackCommand["kind"]> = new Set([
@@ -263,6 +265,8 @@ export class RemoteService {
   private activeOutput: RemoteActiveOutput | null = null;
   /** True while playback moves back to the computer, so its own start is not read as a takeover. */
   private reclaiming = false;
+  /** Phones told to stop, until when. Reports already in flight must not re-take ownership. */
+  private readonly stopping = new Map<string, number>();
   /** The computer's last playback status, to spot it starting again. */
   private lastLocalStatus: PlaybackSnapshot["status"] | null = null;
   private readonly now: () => number;
@@ -318,6 +322,7 @@ export class RemoteService {
     if (!this.isOnline(deviceId)) throw new Error("That phone is not connected. Open Cadence on it first.");
     const elapsed = snap.status === "playing" ? Math.max(0, this.now() - snap.positionAtMs) : 0;
     const positionMs = snap.durationMs > 0 ? Math.min(snap.positionMs + elapsed, snap.durationMs) : snap.positionMs + elapsed;
+    this.stopping.delete(deviceId);
     this.sendToDevice(deviceId, { kind: "handoff", queueId: current.queueId, positionMs, serverNowMs: this.now() });
     return this.status();
   }
@@ -329,7 +334,7 @@ export class RemoteService {
     const positionMs = projectOutputPosition(active, this.now());
     this.reclaiming = true;
     try {
-      this.sendToDevice(active.deviceId, { kind: "control", command: { kind: "stop" }, serverNowMs: this.now() });
+      this.stopPhone(active.deviceId);
       this.setActiveOutput(null);
       const started = this.waitForLocalStart(active.queueId);
       await this.deps.coordinator.handleCommand({ kind: "play", queueId: active.queueId });
@@ -662,6 +667,7 @@ export class RemoteService {
     ws.on("close", () => {
       this.sockets.delete(ws);
       this.deps.devices.touch(deviceId);
+      if (!this.isOnline(deviceId)) this.stopping.delete(deviceId);
       // A phone that vanished mid-session no longer owns playback here.
       if (this.activeOutput?.deviceId === deviceId && !this.isOnline(deviceId)) this.setActiveOutput(null);
       this.emitStatus();
@@ -699,6 +705,7 @@ export class RemoteService {
       return;
     }
     if (m.kind === "release") {
+      this.stopping.delete(deviceId);
       if (this.activeOutput?.deviceId === deviceId) this.setActiveOutput(null);
       return;
     }
@@ -735,11 +742,7 @@ export class RemoteService {
       this.activeOutput !== null &&
       !this.reclaiming
     ) {
-      this.sendToDevice(this.activeOutput.deviceId, {
-        kind: "control",
-        command: { kind: "stop" },
-        serverNowMs: this.now(),
-      });
+      this.stopPhone(this.activeOutput.deviceId);
       this.setActiveOutput(null);
     }
     if (e.kind === "fft" || this.sockets.size === 0) return;
@@ -758,11 +761,25 @@ export class RemoteService {
     this.send(ws, { kind: "error", message, serverNowMs: this.now() });
   }
 
+  private stopPhone(deviceId: string): void {
+    this.stopping.set(deviceId, this.now() + STOPPING_GRACE_MS);
+    this.sendToDevice(deviceId, { kind: "control", command: { kind: "stop" }, serverNowMs: this.now() });
+  }
+
+  private isStopping(deviceId: string): boolean {
+    const until = this.stopping.get(deviceId);
+    if (until === undefined) return false;
+    if (this.now() < until) return true;
+    this.stopping.delete(deviceId);
+    return false;
+  }
+
   private onOutputReport(deviceId: string, report: RemoteOutputReport): void {
+    if (this.isStopping(deviceId)) return;
     const previous = this.activeOutput;
     if (previous !== null && previous.deviceId !== deviceId) {
       // Another phone took over; the old one steps back.
-      this.sendToDevice(previous.deviceId, { kind: "control", command: { kind: "stop" }, serverNowMs: this.now() });
+      this.stopPhone(previous.deviceId);
     }
     const name = this.deps.devices.list(new Set()).find((d) => d.id === deviceId)?.name ?? "Phone";
     this.setActiveOutput({ ...report, deviceId, deviceName: name, reportedAtMs: this.now() });

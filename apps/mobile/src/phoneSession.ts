@@ -83,6 +83,27 @@ export class PhoneSession {
     this.player?.pause();
   }
 
+  resume(): void {
+    if (this.state.active) this.player?.play();
+  }
+
+  /** The player's own volume, 0..1. */
+  volume(): number {
+    return this.player?.volume ?? 1;
+  }
+
+  setVolume(volume: number): void {
+    if (this.player !== null) this.player.volume = Math.min(1, Math.max(0, volume));
+  }
+
+  /** Jump to a queue item by desktop queue id. False when the phone's copy of the queue lacks it. */
+  playQueueId(queueId: string): boolean {
+    const i = this.state.items.findIndex((it) => it.queueId === queueId);
+    if (i < 0) return false;
+    this.load(i, 0, true);
+    return true;
+  }
+
   next(): void {
     const n = this.state.index + 1;
     if (n < this.state.items.length) this.load(n, 0, true);

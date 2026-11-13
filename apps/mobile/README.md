@@ -26,6 +26,26 @@ Expo Go is enough for pairing, remote control and streaming. For
 lock-screen controls and reliable background playback, make a development
 build (`npx expo run:android` or `npx expo run:ios`).
 
+## Playback handoff
+
+The computer can ask a phone to take over (`handoff`), and the phone can take
+over itself. Either way the phone only claims playback once its player is
+actually playing; the first output report is what pauses the computer. If the
+track never loads, the phone stops and the computer keeps playing. The phone
+reports about once a second, sends `release` when it stops, and obeys the
+computer's `control` and `session` messages. The computer ignores reports from
+a phone it just told to stop, so a late report can't take playback back.
+
+Not supported:
+
+- Shuffle and repeat changes made on the computer don't reach a phone-owned
+  session; the phone plays a copy of the queue taken at takeover.
+- Queue edits on the computer during a phone session aren't mirrored.
+- Handing off a streaming-service song is refused with a note; those open in
+  their own app.
+- The handoff position is the computer's position when the request was sent.
+- Not verified on a real phone.
+
 ## Layout
 
 - `src/desktopApi.ts` HTTP calls: host info and pairing.
@@ -45,3 +65,7 @@ React Native and Electron don't share an install layout well.
 npm run typecheck
 npm test
 ```
+
+The desktop's `test/phone-handoff.test.ts` runs `src/phoneRemote.ts`
+against the real desktop service, so run `npm install` here before the
+desktop tests.
