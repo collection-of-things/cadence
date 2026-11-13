@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import {
   AppState,
   FlatList,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import type { QueueItem, TrackRef } from '@cadence/protocol';
 import { DesktopLink, projectedPositionMs, type LinkState } from './desktopLink';
+import { PhoneRemote } from './phoneRemote';
 import { PhoneSession, type PhoneState } from './phoneSession';
 import type { SavedHost } from './savedHost';
 import { colors, radius } from './theme';
@@ -76,40 +77,31 @@ export function PlayerScreen({
   // One link and one phone session per paired host; App remounts this screen on re-pair.
   const [link] = useState(() => new DesktopLink(host, onHostChanged));
   const [phone] = useState(() => new PhoneSession());
+  const [note, setNote] = useState<string | null>(null);
+  // Ownership (reports, handoff, control, release) lives in PhoneRemote; the
+  // computer stops the phone itself when someone presses play there.
+  const [remote] = useState(() => new PhoneRemote(link, phone, setNote));
   const ls = useSyncExternalStore(link.subscribe, link.getState);
   const ps = useSyncExternalStore(phone.subscribe, phone.getState);
-  const [note, setNote] = useState<string | null>(null);
-  const handingBack = useRef(false);
 
   useEffect(() => {
     link.start();
+    const offMessages = link.subscribeMessages((msg) => remote.handle(msg));
     const sub = AppState.addEventListener('change', (s) => {
       if (s === 'active') link.poke();
     });
     return () => {
       sub.remove();
+      offMessages();
+      remote.dispose();
       link.stop();
       phone.stop();
     };
-  }, [link, phone]);
+  }, [link, phone, remote]);
 
   useEffect(() => {
     if (ls.connection === 'revoked') onRevoked();
   }, [ls.connection, onRevoked]);
-
-  // One player at a time: if the computer starts playing while the phone
-  // has playback (someone pressed play there), the phone steps back.
-  const desktopStatus = ls.snapshot?.status;
-  const lastDesktopStatus = useRef(desktopStatus);
-  useEffect(() => {
-    const was = lastDesktopStatus.current;
-    lastDesktopStatus.current = desktopStatus;
-    if (handingBack.current || !ps.active) return;
-    if (desktopStatus === 'playing' && was !== 'playing') {
-      phone.stop();
-      setNote('The computer started playing, so the phone stopped.');
-    }
-  }, [desktopStatus, ps.active, phone]);
 
   useTicker(ls.snapshot?.status === 'playing' && !ps.active);
 
@@ -137,15 +129,8 @@ export function PlayerScreen({
       await Linking.openURL(target.url).catch(() => setNote(`Could not open ${target.label.replace('Open in ', '')}.`));
       return;
     }
-    await phone.start({
-      items: desktopOrder,
-      index: Math.max(0, desktopIndex),
-      positionMs: pos,
-      repeat: ls.queue.repeat,
-      base: ls.base,
-      token: link.token,
-    });
-    link.send({ kind: 'pause' });
+    const result = await remote.takeOver();
+    if (result === 'unavailable') setNote('The phone could not take over right now.');
   };
 
   const handBack = async () => {
@@ -154,15 +139,10 @@ export function PlayerScreen({
     const pos = ps.positionMs;
     phone.stop();
     if (item === null) return;
-    handingBack.current = true;
-    try {
-      link.send({ kind: 'play', queueId: item.queueId });
-      const started = await waitForDesktopPlaying(link, item.queueId);
-      if (started && pos > 1000) link.send({ kind: 'seek', positionMs: pos });
-      if (!started) setNote('The computer did not start that song. It may have left the queue.');
-    } finally {
-      handingBack.current = false;
-    }
+    link.send({ kind: 'play', queueId: item.queueId });
+    const started = await waitForDesktopPlaying(link, item.queueId);
+    if (started && pos > 1000) link.send({ kind: 'seek', positionMs: pos });
+    if (!started) setNote('The computer did not start that song. It may have left the queue.');
   };
 
   const toggle = () => {

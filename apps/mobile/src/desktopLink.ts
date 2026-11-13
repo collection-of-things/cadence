@@ -1,6 +1,7 @@
 import type {
   PlaybackSnapshot,
   QueueState,
+  RemoteClientMessage,
   RemoteCommand,
   RemoteServerMessage,
 } from '@cadence/protocol';
@@ -54,6 +55,7 @@ function isServerMessage(u: unknown): u is RemoteServerMessage {
 export class DesktopLink {
   private state: LinkState = INITIAL;
   private readonly listeners = new Set<() => void>();
+  private readonly messageListeners = new Set<(msg: RemoteServerMessage) => void>();
   private ws: WebSocket | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
@@ -100,10 +102,23 @@ export class DesktopLink {
   }
 
   send(command: RemoteCommand): boolean {
+    return this.sendMessage({ kind: 'command', command });
+  }
+
+  /** Send any phone message (commands, output reports, release). False when the socket is not open. */
+  sendMessage(msg: RemoteClientMessage): boolean {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify({ kind: 'command', command }));
+    this.ws.send(JSON.stringify(msg));
     return true;
   }
+
+  /** Every server message, after the link has mirrored it. */
+  subscribeMessages = (cb: (msg: RemoteServerMessage) => void): (() => void) => {
+    this.messageListeners.add(cb);
+    return () => {
+      this.messageListeners.delete(cb);
+    };
+  };
 
   private set(patch: Partial<LinkState>): void {
     this.state = { ...this.state, ...patch };
@@ -146,7 +161,9 @@ export class DesktopLink {
       } catch {
         return;
       }
-      if (isServerMessage(msg)) this.onMessage(msg);
+      if (!isServerMessage(msg)) return;
+      this.onMessage(msg);
+      for (const cb of this.messageListeners) cb(msg);
     };
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
@@ -212,9 +229,7 @@ export class DesktopLink {
       case 'session':
       case 'control':
       case 'handoff':
-        // Playback ownership (phone reports, desktop-driven control and
-        // handoff) is handled on the desktop side; the phone does not act
-        // on these yet.
+        // Acted on by PhoneRemote through subscribeMessages.
         return;
       default: {
         const _exhaustive: never = msg;
