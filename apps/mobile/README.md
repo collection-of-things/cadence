@@ -65,3 +65,7 @@ React Native and Electron don't share an install layout well.
 npm run typecheck
 npm test
 ```
+
+The desktop's `test/phone-handoff.test.ts` runs `src/phoneRemote.ts`
+against the real desktop service, so run `npm install` here before the
+desktop tests.
