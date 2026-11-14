@@ -316,10 +316,16 @@ export class RemoteService {
 
   /** Ask an online phone to take over where the computer is. */
   handoff(deviceId: string): RemoteStatus {
+    if (!this.isOnline(deviceId)) throw new Error("That phone is not connected. Open Cadence on it first.");
+    const active = this.activeOutput;
+    if (active !== null) {
+      this.stopping.delete(deviceId);
+      this.sendToDevice(deviceId, { kind: "handoff", queueId: active.queueId, positionMs: projectOutputPosition(active, this.now()), serverNowMs: this.now() });
+      return this.status();
+    }
     const snap = this.deps.coordinator.getSnapshot();
     const current = snap.current;
     if (current === null) throw new Error("Nothing is playing to move to the phone.");
-    if (!this.isOnline(deviceId)) throw new Error("That phone is not connected. Open Cadence on it first.");
     const elapsed = snap.status === "playing" ? Math.max(0, this.now() - snap.positionAtMs) : 0;
     const positionMs = snap.durationMs > 0 ? Math.min(snap.positionMs + elapsed, snap.durationMs) : snap.positionMs + elapsed;
     this.stopping.delete(deviceId);

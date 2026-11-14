@@ -10,7 +10,21 @@
  * Everything the main process does goes through `window.__cadenceCtl`.
  * Player state flows back via `emit(name, data)` -> the provider preload
  * bridge -> ProviderSession listeners.
+ *
+ * Audio settings arrive in `window.__cadenceAudioConfig`, set by the prelude
+ * that `musickitInjectScript` puts in front of the controller.
  */
+
+export interface MusicKitAudioConfig {
+  /** Web Audio context rate; null keeps the browser default. */
+  readonly contextRate: number | null;
+  readonly eqBands: readonly { freqHz: number; gainDb: number }[];
+}
+
+/** The controller with the current audio settings in front of it. */
+export function musickitInjectScript(config: MusicKitAudioConfig): string {
+  return `window.__cadenceAudioConfig = ${JSON.stringify(config)};\n${MUSICKIT_CONTROLLER_JS}`;
+}
 
 export const MUSICKIT_CONTROLLER_JS = String.raw`
 (() => {
@@ -72,10 +86,12 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
   requestHighQuality();
 
-  // Full volume is unity gain. A fixed margin here makes Apple Music
-  // quieter than other players at the same setting.
+  // Chromium clamps at full scale, and AAC decoding plus resampling lifts a
+  // hot master's peaks just past it (+0.23 dB measured). 1 dB of margin
+  // keeps those peaks intact at little cost in level.
+  const outputHeadroom = Math.pow(10, -1 / 20);
   const initialVolume = Number(mk.volume);
-  let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1));
+  let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
   function applyOutputVolume() { if (mk.volume !== outputVolume) mk.volume = outputVolume; }
   applyOutputVolume();
 
@@ -83,6 +99,282 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     none: 0, loading: 1, playing: 2, paused: 3, stopped: 4,
     ended: 5, seeking: 6, waiting: 7, stalled: 8, completed: 9,
   };
+
+  // --- Web Audio graph ----------------------------------------------------
+  // Routing an element into Web Audio cannot be undone, so the graph is
+  // built only once EQ or a context rate is asked for. Volume and the output
+  // margin stay on mk.volume: Chromium applies the element's volume before
+  // its audio enters the graph, so level is the same on either path.
+  //   element -> source -> input -> dry ------------------> trim -> destination
+  //                              \-> peaking x N -> wet -/
+  const audioConfig = window.__cadenceAudioConfig || {};
+  const configRate = Number(audioConfig.contextRate);
+  const requestedRate = Number.isInteger(configRate) && configRate >= 8000 && configRate <= 384000
+    ? configRate : null;
+  const AudioCtor = window.AudioContext || window.webkitAudioContext || null;
+  const EQ_RAMP_S = 0.03;
+  const graph = {
+    state: AudioCtor ? 'direct' : 'unsupported',
+    error: null,
+    ctx: null, input: null, dry: null, trim: null,
+    wet: null, filters: [], filterKey: '',
+    element: null,
+    sources: new WeakMap(),
+    rejected: new WeakSet(),
+    resuming: false,
+    suspendedTicks: 0,
+    reported: false,
+  };
+
+  function normalizeBands(list) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 32)
+      .filter(b => b && Number.isFinite(b.freqHz) && Number.isFinite(b.gainDb))
+      .map(b => ({ freqHz: b.freqHz, gainDb: b.gainDb }));
+  }
+  let eqBands = normalizeBands(audioConfig.eqBands);
+  // The engine skips bands this close to 0 dB; so does the page.
+  const audibleGain = g => Math.abs(g) > 0.01 ? g : 0;
+  const eqActive = () => eqBands.some(b => audibleGain(b.gainDb) !== 0);
+  const wantGraph = () => requestedRate !== null || eqActive();
+
+  function reportGraphError(message) {
+    graph.error = message;
+    if (graph.reported) return;
+    graph.reported = true;
+    emit('error', { message });
+  }
+
+  // RBJ peaking magnitude in dB, Q = 1: the engine's and Web Audio's formula.
+  function peakingDb(freq, gainDb, at, rate) {
+    const A = Math.pow(10, gainDb / 40);
+    const w0 = 2 * Math.PI * freq / rate;
+    const alpha = Math.sin(w0) / 2;
+    const c0 = Math.cos(w0);
+    const b0 = 1 + alpha * A, b1 = -2 * c0, b2 = 1 - alpha * A;
+    const a0 = 1 + alpha / A, a1 = -2 * c0, a2 = 1 - alpha / A;
+    const w = 2 * Math.PI * at / rate;
+    const c1 = Math.cos(w), s1 = Math.sin(w), c2 = Math.cos(2 * w), s2 = Math.sin(2 * w);
+    const nr = b0 + b1 * c1 + b2 * c2, ni = b1 * s1 + b2 * s2;
+    const dr = a0 + a1 * c1 + a2 * c2, di = a1 * s1 + a2 * s2;
+    return 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di));
+  }
+
+  // Highest gain of the whole band stack, so boosts can be paid for with an
+  // equal cut and never push already-hot peaks into Chromium's clamp.
+  function eqPeakDb(bands, rate) {
+    const live = bands.filter(b => b.gainDb !== 0);
+    if (!live.length) return 0;
+    const top = Math.min(20000, rate / 2 - 1);
+    const probes = live.map(b => b.freqHz);
+    for (let i = 0; i <= 240; i++) probes.push(20 * Math.pow(top / 20, i / 240));
+    let peak = 0;
+    for (const at of probes) {
+      let db = 0;
+      for (const b of live) db += peakingDb(b.freqHz, b.gainDb, at, rate);
+      if (db > peak) peak = db;
+    }
+    return peak;
+  }
+
+  function setParam(param, value, now, ramp) {
+    try {
+      if (!ramp) { param.cancelScheduledValues(0); param.value = value; return; }
+      // Hold wherever a running ramp has got to, then glide; a jump clicks.
+      if (typeof param.cancelAndHoldAtTime === 'function') param.cancelAndHoldAtTime(now);
+      else { param.cancelScheduledValues(now); param.setValueAtTime(param.value, now); }
+      param.linearRampToValueAtTime(value, now + EQ_RAMP_S);
+    } catch (e) { param.value = value; }
+  }
+
+  function applyEq(ramp) {
+    const ctx = graph.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const rate = ctx.sampleRate;
+    const active = eqActive();
+    const bands = eqBands.map(b => ({
+      freqHz: Math.min(rate / 2 - 1, Math.max(10, b.freqHz)),
+      gainDb: audibleGain(b.gainDb),
+    }));
+    const key = active ? bands.map(b => b.freqHz).join(',') : '';
+    const trim = Math.pow(10, -eqPeakDb(active ? bands : [], rate) / 20);
+    if (key === graph.filterKey) {
+      // Same bands: glide the gains, no rewiring.
+      graph.filters.forEach((f, i) => setParam(f.gain, bands[i].gainDb, now, ramp));
+      setParam(graph.trim.gain, trim, now, ramp);
+      return;
+    }
+    let next = null;
+    if (active) {
+      // Build the new chain off to the side; the live path is untouched
+      // until it is complete.
+      const filters = [];
+      let wet = null;
+      try {
+        for (const b of bands) {
+          const f = ctx.createBiquadFilter();
+          f.type = 'peaking';
+          f.frequency.value = b.freqHz;
+          f.Q.value = 1;
+          f.gain.value = b.gainDb;
+          if (filters.length) filters[filters.length - 1].connect(f);
+          filters.push(f);
+        }
+        wet = ctx.createGain();
+        wet.gain.value = 0;
+        filters[filters.length - 1].connect(wet);
+        wet.connect(graph.trim);
+        graph.input.connect(filters[0]);
+      } catch (e) {
+        // input -> filters is the last connection made, so the live path
+        // never saw this chain.
+        for (const f of filters) { try { f.disconnect(); } catch (e2) {} }
+        if (wet) { try { wet.disconnect(); } catch (e2) {} }
+        reportGraphError('Apple Music EQ could not be applied: ' + (e && e.message || e));
+        return;
+      }
+      next = { filters, wet };
+    }
+    const old = graph.wet ? { filters: graph.filters, wet: graph.wet } : null;
+    // Crossfade from the current path to the new one.
+    setParam(graph.dry.gain, active ? 0 : 1, now, ramp);
+    if (next) setParam(next.wet.gain, 1, now, ramp);
+    if (old) setParam(old.wet.gain, 0, now, ramp);
+    setParam(graph.trim.gain, trim, now, ramp);
+    graph.filters = next ? next.filters : [];
+    graph.wet = next ? next.wet : null;
+    graph.filterKey = key;
+    if (old) {
+      const drop = () => {
+        try { graph.input.disconnect(old.filters[0]); } catch (e) {}
+        try { old.wet.disconnect(); } catch (e) {}
+      };
+      if (ramp) setTimeout(drop, EQ_RAMP_S * 1000 + 50); else drop();
+    }
+  }
+
+  function ensureContext() {
+    if (graph.ctx) return graph.ctx;
+    // Default rate unless asked: a sampleRate argument makes Chromium
+    // resample everything the page plays to that rate.
+    const ctx = requestedRate !== null ? new AudioCtor({ sampleRate: requestedRate }) : new AudioCtor();
+    try {
+      const input = ctx.createGain();
+      const dry = ctx.createGain();
+      const trim = ctx.createGain();
+      // The whole path reaches the destination before any element is routed in.
+      input.connect(dry);
+      dry.connect(trim);
+      trim.connect(ctx.destination);
+      Object.assign(graph, { ctx, input, dry, trim });
+    } catch (e) {
+      try { ctx.close(); } catch (e2) {}
+      throw e;
+    }
+    try {
+      ctx.addEventListener('statechange', () => {
+        if (ctx.state !== 'running' && mk.playbackState === STATES.playing) resumeContext();
+        post(false);
+      });
+    } catch (e) {}
+    applyEq(false);
+    return ctx;
+  }
+
+  function resumeContext() {
+    const ctx = graph.ctx;
+    if (!ctx || ctx.state === 'running' || ctx.state === 'closed' || graph.resuming) return;
+    graph.resuming = true;
+    Promise.resolve()
+      .then(() => ctx.resume())
+      .catch(() => {})
+      .then(() => {
+        graph.resuming = false;
+        if (ctx.state === 'running') { ensureGraph(); post(false); }
+      });
+  }
+
+  function findElement() {
+    try {
+      const byId = document.getElementById('apple-music-player');
+      if (byId) return byId;
+      for (const el of document.querySelectorAll('audio')) {
+        if (/^blob:/.test(el.currentSrc || el.src || '')) return el;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function attach(el) {
+    let source = graph.sources.get(el);
+    if (!source) {
+      try {
+        source = graph.ctx.createMediaElementSource(el);
+      } catch (e) {
+        // Already routed elsewhere: the element keeps the path it has.
+        graph.rejected.add(el);
+        reportGraphError('Apple Music EQ could not reach the player: ' + (e && e.message || e));
+        return;
+      }
+      graph.sources.set(el, source);
+      try { source.connect(graph.input); }
+      catch (e) {
+        // The element now only sounds through Web Audio; never leave it unconnected.
+        try { source.connect(graph.ctx.destination); } catch (e2) {}
+        reportGraphError('Apple Music EQ could not be connected: ' + (e && e.message || e));
+        return;
+      }
+    }
+    graph.element = el;
+    graph.state = 'attached';
+  }
+
+  function ensureGraph() {
+    // Once built, the graph keeps following MusicKit's element even with EQ flat.
+    if (graph.state === 'failed' || (!graph.ctx && !wantGraph())) return;
+    if (graph.state === 'unsupported') {
+      reportGraphError('Apple Music EQ is unavailable: this page has no Web Audio.');
+      return;
+    }
+    let ctx;
+    try { ctx = ensureContext(); }
+    catch (e) {
+      graph.state = 'failed';
+      reportGraphError('Apple Music EQ is unavailable; playing without it. ' + (e && e.message || e));
+      return;
+    }
+    if (ctx.state !== 'running') resumeContext();
+    const el = findElement();
+    // Only MediaSource streams (blob: URLs) are same-origin; a cross-origin
+    // file routed into Web Audio plays as silence. A stopped context would
+    // silence the element too, so it stays direct until the context runs.
+    if (el && el !== graph.element && !graph.rejected.has(el) &&
+        ctx.state === 'running' && /^blob:/.test(el.currentSrc || el.src || '')) {
+      attach(el);
+    }
+    if (!graph.element) graph.state = 'waiting';
+  }
+
+  // Play must not start into a stopped context.
+  async function readyGraph() {
+    ensureGraph();
+    const ctx = graph.ctx;
+    if (!ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+    try { await Promise.race([ctx.resume(), new Promise(r => setTimeout(r, 1500))]); } catch (e) {}
+    ensureGraph();
+  }
+
+  function watchGraph() {
+    ensureGraph();
+    const ctx = graph.ctx;
+    if (!ctx || graph.state !== 'attached' || ctx.state === 'running' ||
+        mk.playbackState !== STATES.playing) { graph.suspendedTicks = 0; return; }
+    resumeContext();
+    if (++graph.suspendedTicks === 4) {
+      emit('error', { message: 'Apple Music output is stalled: its Web Audio context is ' + ctx.state + '.' });
+    }
+  }
 
   function apiImpl() {
     const a = mk.api;
@@ -194,8 +486,10 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       }
       if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
       applyOutputVolume();
+      await readyGraph();
       await mk.play();
       applyOutputVolume();
+      ensureGraph();
       // Seek after loading the stream, including zero. Seeking before play
       // can target the previous item; skipping zero retains its old position.
       const targetSeconds = Math.max(0, positionMs || 0) / 1000;
@@ -269,6 +563,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       // Selection diagnostics only; these do not measure delivered media.
       requestedBitrateKbps: requestedBitrate,
       sdkBitrateKbps: Number(mk.bitrate) || null,
+      audioGraph: graph.state,
+      audioGraphError: graph.error,
+      contextSampleRateHz: graph.ctx ? graph.ctx.sampleRate : null,
+      contextState: graph.ctx ? graph.ctx.state : null,
+      eqFilters: graph.filters.length,
       nowPlayingId: item ? String(item.id) : null,
       nowPlayingKind: playParamsKind(item),
       queuePos: qi.position,
@@ -294,7 +593,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     if (!item) lastNowPlayingId = null;
   }
 
-  mk.addEventListener('playbackStateDidChange', () => { applyOutputVolume(); post(true); });
+  mk.addEventListener('playbackStateDidChange', () => { applyOutputVolume(); watchGraph(); post(true); });
   mk.addEventListener('playbackTimeDidChange', () => post(false));
   mk.addEventListener('nowPlayingItemDidChange', () => post(true));
   if (MK.Events && MK.Events.authorizationStatusDidChange) {
@@ -318,15 +617,33 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       if (qi.nextItemId === String(spec.id)) { await mk.skipToNextItem(); }
       else { await setQueueAndPlay(spec, 0); }
       applyOutputVolume();
+      ensureGraph();
       post(true);
       return true;
     },
     pause() { mk.pause(); post(true); return true; },
-    async resume() { await requireFullPlayback(); applyOutputVolume(); await mk.play(); applyOutputVolume(); post(true); return true; },
+    async resume() {
+      await requireFullPlayback();
+      applyOutputVolume();
+      await readyGraph();
+      await mk.play();
+      applyOutputVolume();
+      ensureGraph();
+      post(true);
+      return true;
+    },
     seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },
-    setVolume(x) { outputVolume = Math.max(0, Math.min(1, x)); applyOutputVolume(); return true; },
+    setVolume(x) { outputVolume = Math.max(0, Math.min(1, x)) * outputHeadroom; applyOutputVolume(); return true; },
+    // Live EQ: gains glide, so playback never restarts.
+    setEq(bands) {
+      eqBands = normalizeBands(bands);
+      ensureGraph();
+      if (graph.state !== 'failed') applyEq(true);
+      post(true);
+      return !graph.error && graph.state !== 'failed' && graph.state !== 'unsupported';
+    },
     // --- queue mirror ---
     async playLater(spec) {
       // Dedupe: a successor refresh for the same id is a no-op.
@@ -380,11 +697,12 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       return false;
     },
   };
+  ensureGraph();
   post(true);
   // Always post on the tick — a frozen boundary state must keep reaching the
   // adapter (position-at-tail detection depends on periodic samples, and a
   // deduped silence looks identical to healthy idle playback).
-  setInterval(() => { applyOutputVolume(); post(true); }, 750);
+  setInterval(() => { applyOutputVolume(); watchGraph(); post(true); }, 750);
   return true;
   } finally {
     // A failed install must not poison later retries (navigations re-inject).

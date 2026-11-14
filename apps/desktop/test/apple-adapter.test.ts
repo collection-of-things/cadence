@@ -3,7 +3,7 @@
  * covers the council-flagged paths without a live music.apple.com.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { AppleMusicKitAdapter } from "../src/adapters/providers/apple-musickit.js";
+import { AppleMusicKitAdapter, parseContextRate } from "../src/adapters/providers/apple-musickit.js";
 import { ProviderEvalTimeout } from "../src/adapters/providers/provider-session.js";
 import type { AdapterEvent, QueueItem } from "@cadence/protocol";
 
@@ -590,5 +590,61 @@ describe("apple adapter page events", () => {
     await out;
     (sess as any).prepare = origPrep;
     (sess as any).eval = origEval;
+  });
+});
+
+describe("apple adapter EQ and audio graph", () => {
+  const bands = [{ freqHz: 60, gainDb: 4 }, { freqHz: 1000, gainDb: -2 }];
+
+  it("sends EQ to the installed page and carries it into every later install", async () => {
+    const { adapter, sess } = makeAdapter();
+    await adapter.setEq(bands);
+    expect(sess.evals.at(-1)).toBe(`window.__cadenceCtl.setEq(${JSON.stringify(bands)})`);
+    const script = (adapter as any).injectScript() as string;
+    expect(script.startsWith(`window.__cadenceAudioConfig = ${JSON.stringify({ contextRate: null, eqBands: bands })};`)).toBe(true);
+  });
+
+  it("holds EQ for the next install when the page is not loaded", async () => {
+    const { adapter, sess } = makeAdapter();
+    (adapter as any).installed = false;
+    await adapter.setEq(bands);
+    expect(sess.evals).toEqual([]);
+    expect((adapter as any).injectScript()).toContain(JSON.stringify(bands));
+  });
+
+  it("passes the configured context rate into the page", () => {
+    const adapter = new AppleMusicKitAdapter({ contextRate: 96000 });
+    expect((adapter as any).injectScript()).toContain('"contextRate":96000');
+  });
+
+  it("reports EQ support and the context rate from the page's graph state", async () => {
+    const { adapter, sess, events } = makeAdapter();
+    expect((await adapter.capabilities()).audio.eq).toBe("yes");
+    sess.emit("playerState", { state: "playing", isAuthorized: true, positionMs: 0, durationMs: 0,
+      audioGraph: "attached", contextSampleRateHz: 96000, audioGraphError: null });
+    const caps = await adapter.capabilities();
+    expect(caps.notes).toContain("Audio graph: attached, context 96000 Hz.");
+    expect(events.filter((e) => e.kind === "capabilitiesChanged").length).toBeGreaterThan(0);
+    sess.emit("playerState", { state: "playing", isAuthorized: true, positionMs: 0, durationMs: 0,
+      audioGraph: "failed", contextSampleRateHz: null, audioGraphError: "no audio device" });
+    expect((await adapter.capabilities()).audio.eq).toBe("no");
+    sess.emit("playerState", { state: "playing", isAuthorized: true, positionMs: 0, durationMs: 0,
+      audioGraph: "waiting", contextSampleRateHz: 48000, audioGraphError: "could not reach player" });
+    expect((await adapter.capabilities()).audio.eq).toBe("no");
+  });
+
+  it("reports a rejected EQ change to its caller", async () => {
+    const { adapter, sess } = makeAdapter();
+    sess.eval = async () => false;
+    await expect(adapter.setEq(bands)).rejects.toThrow();
+  });
+
+  it("accepts only a plain integer rate from the environment", () => {
+    expect(parseContextRate(undefined)).toBeNull();
+    expect(parseContextRate("")).toBeNull();
+    expect(parseContextRate("96000")).toBe(96000);
+    expect(parseContextRate("96k")).toBeNull();
+    expect(parseContextRate("44100.5")).toBeNull();
+    expect(parseContextRate("1000000")).toBeNull();
   });
 });

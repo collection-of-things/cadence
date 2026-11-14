@@ -25,8 +25,9 @@ import type {
 } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
 import { ProviderEvalTimeout, ProviderSession } from "./provider-session.js";
-import { MUSICKIT_CONTROLLER_JS } from "./inject/musickit-controller.js";
+import { musickitInjectScript } from "./inject/musickit-controller.js";
 import { AppleMusicCatalog } from "./apple-music-catalog.js";
+import type { EqCapable } from "../types.js";
 
 interface QueueSpec {
   type: "song" | "library-song" | "station" | "album" | "playlist";
@@ -53,6 +54,20 @@ function specFor(track: TrackRef): QueueSpec {
   return { type: "song", id: track.source.providerItemId };
 }
 
+/** Parse CADENCE_APPLE_CONTEXT_RATE; anything but a plain rate means default. */
+export function parseContextRate(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const rate = Number(raw);
+  return Number.isInteger(rate) && rate >= 8000 && rate <= 384000 ? rate : null;
+}
+
+export interface AppleMusicKitOptions {
+  /** Web Audio context rate for the page's EQ graph; null = browser default. */
+  readonly contextRate?: number | null;
+}
+
+type EqBand = { freqHz: number; gainDb: number };
+
 interface PagePlayerState {
   state: string;
   positionMs: number;
@@ -63,11 +78,19 @@ interface PagePlayerState {
   queueLen: number;
   nextItemId: string | null;
   ended: boolean;
+  audioGraph?: string;
+  audioGraphError?: string | null;
+  contextSampleRateHz?: number | null;
 }
 
-export class AppleMusicKitAdapter extends ProviderViewAdapter {
+export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapable {
   readonly route = "apple-musickit" as const;
   private readonly session: ProviderSession;
+  private readonly contextRate: number | null;
+  /** Last EQ sent; every (re)install carries it into the page. */
+  private eqBands: EqBand[] = [];
+  /** What the page last reported about its Web Audio graph. */
+  private graph: { state: string; rateHz: number | null; error: string | null } | null = null;
   private readonly catalogService = new AppleMusicCatalog({
     amp: (path, params, method) => this.amp(path, params, method),
     storefront: async () => this.evalCtl<string>("storefront()"),
@@ -83,12 +106,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
   /** Successors mirrored into the MusicKit queue, in append order. */
   private mirrored: { queueId: string; providerId: string; station: boolean }[] = [];
 
-  constructor() {
+  constructor(opts: AppleMusicKitOptions = {}) {
     super();
+    this.contextRate = opts.contextRate ?? null;
     this.session = new ProviderSession({
       partition: "persist:provider-apple",
       url: "https://music.apple.com/us/browse",
-      injectScript: MUSICKIT_CONTROLLER_JS,
+      injectScript: () => this.injectScript(),
       onEvent: (e) => this.onPageEvent(e.name, e.data),
     });
   }
@@ -122,7 +146,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     // 30s catalog IPC wait in the normal case.
     let ok: boolean;
     try {
-      ok = await this.session.eval<boolean>(MUSICKIT_CONTROLLER_JS, 30_000);
+      ok = await this.session.eval<boolean>(this.injectScript(), 30_000);
     } catch (e) {
       this.installBackoffUntil = Date.now() + 15_000;
       throw e;
@@ -135,6 +159,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     } else {
       this.installBackoffUntil = Date.now() + 15_000;
     }
+  }
+
+  private injectScript(): string {
+    return musickitInjectScript({ contextRate: this.contextRate, eqBands: this.eqBands });
   }
 
   /** Run a controller call inside the page. Navigations wipe injected state;
@@ -243,10 +271,10 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         exclusiveOutput: "no",
       },
       audio: {
-        // EME-encrypted streams are not exposed to WebAudio — PCM/EQ is
-        // structurally impossible on this route, not merely unverified.
+        // Decrypted audio reaches the page's Web Audio graph (Cider 1 runs
+        // its EQ this way), but never the Rust engine.
         pcmAccess: "no",
-        eq: "no",
+        eq: this.graph?.error || this.graph?.state === "failed" || this.graph?.state === "unsupported" ? "no" : "yes",
         replayGain: "no",
         qualityCeiling: "AAC per MusicKit web (no lossless/Atmos on web)",
       },
@@ -257,7 +285,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
         "Uses the site's own developer token — no paid Apple key.",
         "Full-track playback needs an Apple Music subscription.",
         "Radio stations can't seek or scrub — seek is ignored on stations.",
-        "PCM/EQ/lossless access not established — do not assume.",
+        "EQ runs in a Web Audio graph inside the page; no lossless on web.",
+        ...(this.graph === null ? [] : [this.graphNote(this.graph)]),
       ],
     });
   }
@@ -396,6 +425,37 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (lease.generationId !== this.generation) return;
     if (this.current?.station) return; // stations stream — nothing to seek
     await this.session.eval(`window.__cadenceCtl.seek(${Math.round(positionMs)})`).catch(() => {});
+  }
+
+  async setEq(bands: readonly EqBand[]): Promise<void> {
+    this.eqBands = bands.map((b) => ({ freqHz: b.freqHz, gainDb: b.gainDb }));
+    // Not installed: the next install carries the bands.
+    if (!this.installed) return;
+    const applied = await this.session.eval(`window.__cadenceCtl.setEq(${JSON.stringify(this.eqBands)})`);
+    if (applied !== true) throw new Error("Apple Music EQ could not be applied");
+  }
+
+  private graphNote(g: { state: string; rateHz: number | null; error: string | null }): string {
+    const rate = g.rateHz !== null ? `, context ${g.rateHz} Hz` : "";
+    const error = g.error !== null ? ` (${g.error})` : "";
+    return `Audio graph: ${g.state}${rate}${error}.`;
+  }
+
+  /** Track the page's graph report; log and republish only on change. */
+  private noteGraph(s: PagePlayerState): void {
+    if (typeof s.audioGraph !== "string") return;
+    const next = {
+      state: s.audioGraph,
+      rateHz: typeof s.contextSampleRateHz === "number" ? s.contextSampleRateHz : null,
+      error: typeof s.audioGraphError === "string" ? s.audioGraphError.slice(0, 200) : null,
+    };
+    const prev = this.graph;
+    if (prev !== null && prev.state === next.state && prev.rateHz === next.rateHz && prev.error === next.error) {
+      return;
+    }
+    this.graph = next;
+    console.error(`[cadence-apple] ${this.graphNote(next)}`);
+    this.emit({ kind: "capabilitiesChanged" });
   }
 
   async setVolume(volume: number): Promise<void> {
@@ -703,6 +763,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter {
     if (typeof data !== "object" || data === null) return;
     const s = data as PagePlayerState;
     if (typeof s.state !== "string") return; // forged/empty event — ignore
+    this.noteGraph(s);
     if (s.isAuthorized !== this.authorized) {
       this.authorized = s.isAuthorized;
       if (this.authorized) {

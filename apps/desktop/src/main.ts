@@ -21,7 +21,10 @@ import { AdapterRegistry } from "./adapters/registry.js";
 import { LocalRouteAdapter } from "./adapters/local-route-adapter.js";
 import { makePlaceholderAdapter, providerRoutes } from "./adapters/placeholders.js";
 import { createProviderAdapters } from "./adapters/providers/index.js";
+import { parseContextRate } from "./adapters/providers/apple-musickit.js";
+import { isEqCapable } from "./adapters/types.js";
 import { AudioServiceClient } from "./audio/audio-client.js";
+import { applyEqToRoutes } from "./audio/eq-routing.js";
 import { resolveAudioBinary } from "./audio/binary-path.js";
 import { Coordinator } from "./coordinator/coordinator.js";
 import { SettingsStore, settingsPath } from "./coordinator/settings-store.js";
@@ -69,6 +72,14 @@ if (sandboxDisabled) {
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("no-zygote");
   }
+}
+// CADENCE_APPLE_CONTEXT_RATE=96000: experiment — run Apple Music's Web Audio
+// graph at this rate instead of the browser default. Unset = default.
+const appleContextRate = parseContextRate(process.env.CADENCE_APPLE_CONTEXT_RATE);
+if (process.env.CADENCE_APPLE_CONTEXT_RATE && appleContextRate === null) {
+  console.error(
+    `[cadence-apple] ignoring CADENCE_APPLE_CONTEXT_RATE=${process.env.CADENCE_APPLE_CONTEXT_RATE}: expected an integer from 8000 to 384000`,
+  );
 }
 app.setName("cadence");
 
@@ -230,6 +241,7 @@ async function main(): Promise<void> {
   const registered = new Set(["local"]);
   for (const adapter of createProviderAdapters({
     graph: audioClient,
+    apple: { contextRate: appleContextRate },
     spotify: {
       getCredentials: async () => {
         const username = process.env.CADENCE_SPOTIFY_USERNAME;
@@ -352,7 +364,14 @@ async function main(): Promise<void> {
     coordinator,
     library,
     registry,
-    audio: audioClient,
+    audio: {
+      // Apply to every engine, but report the active route's result to the UI.
+      setEq: async (bands) => {
+        await applyEqToRoutes(bands, coordinator.activeRoute, (next) => audioClient.setEq([...next]), registry.list().filter(isEqCapable));
+      },
+      listDevices: () => audioClient.listDevices(),
+      setDevice: (name) => audioClient.setDevice(name),
+    },
     remote,
     routeSignIn: async (route) => {
       const adapter = registry.get(route);

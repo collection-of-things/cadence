@@ -41,3 +41,14 @@ export interface ReplayGainCapable {
 export function isReplayGainCapable(a: RouteAdapter): a is RouteAdapter & ReplayGainCapable {
   return "setReplayGain" in a && typeof a.setReplayGain === "function";
 }
+
+/** Routes that run their own EQ outside the Rust engine (Apple's page graph). */
+export interface EqCapable {
+  /** Apply the engine's band list; gains in dB, peaking filters at Q 1. */
+  setEq(bands: readonly { freqHz: number; gainDb: number }[]): Promise<void>;
+}
+
+/** True when the adapter applies EQ itself. */
+export function isEqCapable(a: RouteAdapter): a is RouteAdapter & EqCapable {
+  return "setEq" in a && typeof a.setEq === "function";
+}

@@ -276,6 +276,25 @@ afterEach(async () => {
 });
 
 describe("desktop-initiated handoff", () => {
+  it("hands the active phone's current song and position to another phone", async () => {
+    const first = await pairedPhone();
+    const second = await pairedPhone();
+    service.handoff(first.deviceId);
+    await until(() => first.phone.player.state.active);
+    first.phone.player.finishLoading();
+    await until(() => service.status().activeOutput?.deviceId === first.deviceId);
+    first.phone.player.next();
+    first.phone.player.tick(12_000);
+    first.phone.raw({ kind: "output", output: { queueId: "q2", playing: true, positionMs: 12_000, durationMs: 200_000, volume: 1 } });
+    await until(() => service.status().activeOutput?.queueId === "q2" && service.status().activeOutput!.positionMs === 12_000);
+    service.handoff(second.deviceId);
+    await until(() => second.phone.player.state.active);
+    expect(second.phone.player.current()?.queueId).toBe("q2");
+    expect(second.phone.player.state.positionMs).toBeGreaterThanOrEqual(12_000);
+    second.phone.player.finishLoading();
+    await until(() => service.status().activeOutput?.deviceId === second.deviceId);
+    await until(() => !first.phone.player.state.active);
+  });
   it("the phone starts at the desktop's item and position, and the computer pauses once the phone really plays", async () => {
     const { phone, deviceId } = await pairedPhone();
     service.handoff(deviceId);

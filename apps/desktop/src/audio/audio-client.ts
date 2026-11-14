@@ -270,6 +270,7 @@ export class AudioServiceClient implements PcmStreamSink {
 
   /** Set the parametric EQ band gains. */
   async setEq(bands: { freqHz: number; gainDb: number }[]): Promise<unknown> {
+    await this.ensureStarted();
     return this.request("audio.setEq", { bands });
   }
 
