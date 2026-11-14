@@ -67,7 +67,7 @@
 .seek-knob {
   position: absolute;
   top: 50%;
-  left: calc(var(--p) * 100%);
+  left: 0;
   width: 11px;
   height: 11px;
   margin: -5.5px 0 0 -5.5px;
@@ -76,10 +76,9 @@
   box-shadow: 0 1px 4px oklch(0 0 0 / 0.5);
   pointer-events: none;
   opacity: 0;
-  transform: scale(0.6);
 }
 .seek-track:hover::before, .seek-track:hover::after, .seek-track:focus-within::before, .seek-track:focus-within::after { height: 6px; margin-top: -3px; }
-.seek-track:hover .seek-knob, .seek-track:focus-within .seek-knob { opacity: 1; transform: none; }
+.seek-track:hover .seek-knob, .seek-track:focus-within .seek-knob { opacity: 1; }
 .seek-input { position: absolute; inset: 0; width: 100%; margin: 0; opacity: 0; cursor: pointer; }
 :root[data-input='keyboard'] .seek-track:has(.seek-input:focus-visible)::before { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
 .seek-off .seek-track { cursor: default; }

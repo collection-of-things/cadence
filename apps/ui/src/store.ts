@@ -100,7 +100,7 @@ export interface UiState {
  */
 export interface UiRuntime {
   fft: { bands: Float32Array; peak: number; atMs: number; generationId: number };
-  clock: { positionMs: number; atMs: number; playing: boolean; durationMs: number };
+  clock: { positionMs: number; atMs: number; playing: boolean; durationMs: number; seekRevision: number };
 }
 
 export const EMPTY_QUEUE: QueueState = {
@@ -230,7 +230,7 @@ export interface UiSession {
 export function createUiStore(api: StoreApiSurface): UiSession {
   const runtime: UiRuntime = {
     fft: { bands: new Float32Array(48), peak: 0, atMs: 0, generationId: -1 },
-    clock: { positionMs: 0, atMs: Date.now(), playing: false, durationMs: 0 },
+    clock: { positionMs: 0, atMs: Date.now(), playing: false, durationMs: 0, seekRevision: 0 },
   };
 
   const store = createStore<UiState>()(() => ({
@@ -435,6 +435,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       const dur = get().snapshot.durationMs;
       const clamped = Math.max(0, Math.min(positionMs, dur || positionMs));
       runtime.clock.positionMs = clamped;
+      runtime.clock.seekRevision++;
       runtime.clock.atMs = Date.now();
       const at = runtime.clock.atMs;
       pendingSeek = { positionMs: clamped, atMs: at, queueId: get().snapshot.current?.queueId, generationId: get().generationId };
