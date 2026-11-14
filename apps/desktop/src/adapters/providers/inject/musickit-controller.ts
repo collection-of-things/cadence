@@ -86,10 +86,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
   requestHighQuality();
 
-  // Chromium clamps at full scale, and AAC decoding plus resampling lifts a
-  // hot master's peaks just past it (+0.23 dB measured). 1 dB of margin
-  // keeps those peaks intact at little cost in level.
-  const outputHeadroom = Math.pow(10, -1 / 20);
+  // A hot Apple Music track measured +1.1 dBTP after decoding. Two dB of
+  // fixed headroom preserves its waveform and leaves room for inter-sample peaks.
+  const outputHeadroom = Math.pow(10, -2 / 20);
   const initialVolume = Number(mk.volume);
   let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
   function applyOutputVolume() { if (mk.volume !== outputVolume) mk.volume = outputVolume; }
