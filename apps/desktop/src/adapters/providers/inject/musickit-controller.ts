@@ -91,7 +91,20 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   const outputHeadroom = Math.pow(10, -2 / 20);
   const initialVolume = Number(mk.volume);
   let outputVolume = Math.max(0, Math.min(1, Number.isFinite(initialVolume) ? initialVolume : 1)) * outputHeadroom;
-  function applyOutputVolume() { if (mk.volume !== outputVolume) mk.volume = outputVolume; }
+  let seekGain = 1;
+  let seekSequence = 0;
+  function applyOutputVolume() {
+    const volume = outputVolume * seekGain;
+    if (mk.volume !== volume) mk.volume = volume;
+  }
+  async function fadeSeek(from, to, sequence) {
+    for (let i = 1; i <= 5; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      if (sequence !== seekSequence) return;
+      seekGain = from + (to - from) * i / 5;
+      applyOutputVolume();
+    }
+  }
   applyOutputVolume();
 
   const STATES = (MK && MK.PlaybackStates) || {
@@ -633,7 +646,24 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       post(true);
       return true;
     },
-    seek(ms) { return mk.seekToTime(ms / 1000).then(() => (post(true), true)); },
+    async seek(ms) {
+      const sequence = ++seekSequence;
+      const fading = mk.playbackState === STATES.playing || seekGain < 1;
+      if (fading && seekGain > 0) await fadeSeek(seekGain, 0, sequence);
+      try {
+        await mk.seekToTime(ms / 1000);
+        post(true);
+        return true;
+      } finally {
+        if (fading && sequence === seekSequence) {
+          // Keep silence through a burst of seeks; an older timer cannot
+          // unmute over a newer seek or interrupt its fade.
+          setTimeout(() => {
+            if (sequence === seekSequence) void fadeSeek(seekGain, 1, sequence);
+          }, 100);
+        }
+      }
+    },
     next() { return mk.skipToNextItem().then(() => (post(true), true)); },
     previous() { return mk.skipToPreviousItem().then(() => (post(true), true)); },
     setVolume(x) { outputVolume = Math.max(0, Math.min(1, x)) * outputHeadroom; applyOutputVolume(); return true; },
