@@ -210,7 +210,7 @@ describe("real injected MusicKit controller", () => {
     const { ctl, mk } = await harness();
     ctl.setVolume(1);
     const full = mk.volume;
-    expect(full).toBeCloseTo(0.8912509381, 9);
+    expect(full).toBeCloseTo(0.7943282347, 9);
     ctl.setVolume(.5);
     expect(mk.volume).toBe(full * .5);
     ctl.setVolume(0);
@@ -251,7 +251,7 @@ describe("real injected MusicKit controller", () => {
   it("uses a safe default for an invalid SDK volume while preserving mute", async () => {
     const invalid = await harness({ initialVolume: Number.NaN });
     await invalid.ctl.play(song, 0);
-    expect(invalid.mk.volume).toBeCloseTo(0.8912509381, 9);
+    expect(invalid.mk.volume).toBeCloseTo(0.7943282347, 9);
     const muted = await harness({ initialVolume: 0 });
     await muted.ctl.play(song, 0);
     expect(muted.mk.volume).toBe(0);
@@ -259,7 +259,7 @@ describe("real injected MusicKit controller", () => {
 
   it("applies volume at install and restores it on state changes and status ticks", async () => {
     const initial = await harness({ initialVolume: .5 });
-    expect(initial.mk.volume).toBeCloseTo(.4456254691, 9);
+    expect(initial.mk.volume).toBeCloseTo(.3971641174, 9);
     for (const volume of [0, .5, 1]) {
       const { ctl, mk, listeners, tick } = await harness();
       ctl.setVolume(volume);
@@ -389,7 +389,7 @@ describe("real injected MusicKit controller", () => {
 
 const EQ_FREQS = [60, 150, 400, 1000, 2400, 6000, 12000, 15000];
 const flat = EQ_FREQS.map(freqHz => ({ freqHz, gainDb: 0 }));
-const margin = 0.8912509381;
+const margin = 0.7943282347;
 
 describe("Apple Music Web Audio graph", () => {
   it("leaves MusicKit's element alone until EQ or a context rate is asked for", async () => {
@@ -439,7 +439,7 @@ describe("Apple Music Web Audio graph", () => {
     expect(mk.volume).toBeCloseTo(margin, 9);
   });
 
-  it("keeps volume linear and the 1 dB margin with the graph attached", async () => {
+  it("keeps volume linear and the 2 dB margin with the graph attached", async () => {
     const { ctl, mk, webAudio } = await harness({ audio: { config: { contextRate: 48000 } } });
     await ctl.play(song, 0);
     ctl.setVolume(1);
