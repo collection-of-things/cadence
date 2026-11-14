@@ -12,6 +12,7 @@ type Item = { id: string; attributes: { durationInMillis: number }; playParams: 
 interface Controller {
   play(spec: { type: "song" | "station"; id: string }, positionMs: number): Promise<boolean>;
   resume(): Promise<boolean>;
+  seek(positionMs: number): Promise<boolean>;
   setVolume(volume: number): boolean;
   setEq(bands: { freqHz: number; gainDb: number }[]): boolean;
   state(): boolean;
@@ -186,6 +187,43 @@ async function harness(options: {
 const song = { type: "song", id: "s1" } as const;
 
 describe("real injected MusicKit controller", () => {
+  it("fades Apple Music around a seek and restores the requested volume", async () => {
+    const { ctl, mk } = await harness();
+    mk.playbackState = 2;
+    let volumeAtSeek = -1;
+    mk.seekToTime = async () => { volumeAtSeek = mk.volume; };
+    await ctl.seek(5000);
+    expect(volumeAtSeek).toBeLessThan(0.01);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(mk.volume).toBeCloseTo(Math.pow(10, -2 / 20));
+  });
+
+  it("restores volume after a failed seek and preserves volume changes during it", async () => {
+    const { ctl, mk } = await harness();
+    mk.playbackState = 2;
+    mk.seekToTime = async () => { ctl.setVolume(0.4); throw new Error("seek failed"); };
+    await expect(ctl.seek(5000)).rejects.toThrow("seek failed");
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(mk.volume).toBeCloseTo(0.4 * Math.pow(10, -2 / 20));
+  });
+
+  it("stays muted across repeated seeks and resumes after the last one", async () => {
+    const { ctl, mk } = await harness();
+    mk.playbackState = 2;
+    const volumes: number[] = [];
+    mk.seekToTime = async () => { volumes.push(mk.volume); };
+    await ctl.seek(5000);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(mk.volume).toBeLessThan(0.01);
+    await ctl.seek(10000);
+    expect(volumes.every(volume => volume < 0.01)).toBe(true);
+    expect(mk.volume).toBeLessThan(0.01);
+    await new Promise(resolve => setTimeout(resolve, 75));
+    expect(mk.volume).toBeLessThan(0.01);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(mk.volume).toBeCloseTo(Math.pow(10, -2 / 20));
+  });
+
   it("requests high bitrate before loading and resuming songs", async () => {
     const { ctl, mk } = await harness();
     expect(mk.bitrate).toBe(256);
@@ -259,7 +297,7 @@ describe("real injected MusicKit controller", () => {
 
   it("applies volume at install and restores it on state changes and status ticks", async () => {
     const initial = await harness({ initialVolume: .5 });
-    expect(initial.mk.volume).toBeCloseTo(.3971641174, 9);
+    expect(initial.mk.volume).toBeCloseTo(0.5 * Math.pow(10, -2 / 20), 9);
     for (const volume of [0, .5, 1]) {
       const { ctl, mk, listeners, tick } = await harness();
       ctl.setVolume(volume);

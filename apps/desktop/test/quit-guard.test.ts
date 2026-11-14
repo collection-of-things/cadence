@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wireCloseToTray } from "../src/quit-guard.js";
+import { wireQuitGuard } from "../src/quit-guard.js";
 
 /**
  * Regression for the app.quit() hang: on main, the window 'close' handler
@@ -13,7 +13,7 @@ import { wireCloseToTray } from "../src/quit-guard.js";
 interface Rig {
   fireBeforeQuit(): void;
   fireClose(): { prevented: boolean };
-  hidden: number;
+  quitCalls: number;
   requestQuit(): void;
 }
 
@@ -22,13 +22,11 @@ function rig(): Rig {
     beforeQuit: [],
     close: [],
   };
-  const rigState = { hidden: 0 };
-  const guard = wireCloseToTray({
+  const rigState = { quitCalls: 0 };
+  const guard = wireQuitGuard({
     onBeforeQuit: (cb) => listeners.beforeQuit.push(cb),
     onWindowClose: (cb) => listeners.close.push(cb),
-    hideWindow: () => {
-      rigState.hidden += 1;
-    },
+    quitApp: () => { rigState.quitCalls += 1; },
   });
   return {
     fireBeforeQuit: () => {
@@ -40,19 +38,17 @@ function rig(): Rig {
       for (const cb of listeners.close) cb(e);
       return { prevented };
     },
-    get hidden() {
-      return rigState.hidden;
-    },
+    get quitCalls() { return rigState.quitCalls; },
     requestQuit: guard.requestQuit,
   };
 }
 
-describe("close-to-tray policy", () => {
-  it("hides the window instead of closing while the app runs", () => {
+describe("quit policy", () => {
+  it("quits the app when the window is closed", () => {
     const r = rig();
     const { prevented } = r.fireClose();
     expect(prevented).toBe(true);
-    expect(r.hidden).toBe(1);
+    expect(r.quitCalls).toBe(1);
   });
 
   it("lets the window close after before-quit (the app.quit() path)", () => {
@@ -61,7 +57,6 @@ describe("close-to-tray policy", () => {
     r.fireBeforeQuit();
     const { prevented } = r.fireClose();
     expect(prevented).toBe(false);
-    expect(r.hidden).toBe(0);
   });
 
   it("lets the window close after the tray Quit item", () => {
@@ -69,6 +64,5 @@ describe("close-to-tray policy", () => {
     r.requestQuit();
     const { prevented } = r.fireClose();
     expect(prevented).toBe(false);
-    expect(r.hidden).toBe(0);
   });
 });

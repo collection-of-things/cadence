@@ -34,7 +34,7 @@ import { LibraryScanner } from "./library/scanner.js";
 import { LibraryService, chokidarWatcherFactory } from "./library/library-service.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { registerMediaKeys } from "./media-keys.js";
-import { wireCloseToTray } from "./quit-guard.js";
+import { wireQuitGuard } from "./quit-guard.js";
 import { RemoteDevices } from "./remote/remote-devices.js";
 import { RemoteService } from "./remote/remote-service.js";
 
@@ -165,6 +165,15 @@ function createWindow(): BrowserWindow {
 }
 
 async function main(): Promise<void> {
+  // Terminal interrupts must reach the same cleanup path as a normal quit.
+  let signalQuitRequested = false;
+  const quitOnSignal = () => {
+    if (signalQuitRequested) return;
+    signalQuitRequested = true;
+    app.quit();
+  };
+  process.on("SIGINT", quitOnSignal);
+  process.on("SIGTERM", quitOnSignal);
   const singleInstance = app.requestSingleInstanceLock();
   if (!singleInstance) {
     app.quit();
@@ -420,17 +429,16 @@ async function main(): Promise<void> {
     },
   });
 
-  // Close-to-tray: the window hides, playback continues — per the v3 design
-  // provider playback must survive the main window closing. Explicit Quit
-  // only from the tray menu (or app.quit() paths like single-instance);
-  // before-quit arms the guard so programmatic quit paths can still close.
+  // A window-manager close is a quit: playback must not outlive the window.
   let tray: Tray | null = null;
   const win = createWindow();
-  const { requestQuit } = wireCloseToTray({
+  const { requestQuit } = wireQuitGuard({
     onBeforeQuit: (cb) => app.on("before-quit", cb),
     onWindowClose: (cb) => win.on("close", cb),
-    hideWindow: () => win.hide(),
+    quitApp: () => { setImmediate(() => app.quit()); },
   });
+  win.on("closed", () => app.quit());
+  const showWindow = () => { if (!win.isDestroyed()) win.show(); };
 
   // macOS recolors the template for its menu bar; other platforms use the app tile.
   const trayIcon = nativeImage.createFromPath(
@@ -441,7 +449,7 @@ async function main(): Promise<void> {
   tray.setToolTip("Cadence");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Show Cadence", click: () => win.show() },
+      { label: "Show Cadence", click: showWindow },
       { type: "separator" },
       {
         label: "Quit",
@@ -454,27 +462,38 @@ async function main(): Promise<void> {
       },
     ]),
   );
-  tray.on("click", () => win.show());
+  tray.on("click", showWindow);
 
   app.on("activate", () => {
-    win.show();
+    showWindow();
   });
   app.on("window-all-closed", () => {
-    // Intentionally empty: windows hide instead of closing; the app exits
-    // only through the explicit Quit path above.
+    // app.quit() handles shutdown after the main window closes.
   });
-  app.on("will-quit", () => {
+  let cleanupStarted = false;
+  let cleanupComplete = false;
+  app.on("will-quit", (event) => {
+    if (cleanupComplete) return;
+    event.preventDefault();
+    if (cleanupStarted) return;
+    cleanupStarted = true;
     unregisterKeys();
     unbindEvents();
     tray?.destroy();
     tray = null;
-    void remote.dispose();
     coordinator.dispose();
-    void library.dispose();
-    for (const adapter of registry.list()) {
-      void adapter.dispose();
-    }
-    void audioClient.dispose();
+    const cleanup = Promise.allSettled([
+      remote.dispose(),
+      library.dispose(),
+      ...registry.list().map((adapter) => adapter.dispose()),
+      audioClient.dispose(),
+    ]);
+    // A stalled provider must not leave the app running indefinitely.
+    const deadline = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+    void Promise.race([cleanup, deadline]).then(() => {
+      cleanupComplete = true;
+      app.quit();
+    });
   });
 }
 

@@ -3,6 +3,7 @@ import { session } from '../session';
 import { formatTime } from '../format';
 import { positionNow, useUi } from '../hooks';
 import { activeCapabilities } from '../routes';
+import { smoothPlayhead } from './smoothPlayhead';
 import './controls.css';
 
 function useCanSeek(): { duration: number; disabled: boolean } {
@@ -18,25 +19,40 @@ function useCanSeek(): { duration: number; disabled: boolean } {
  */
 export function SeekBar() {
   const { duration, disabled } = useCanSeek();
+  const trackId = useUi((s) => s.snapshot.current?.queueId);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const knobRef = useRef<HTMLSpanElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const scrubbing = useRef(false);
 
   useEffect(() => {
     let raf = 0;
-    const loop = () => {
+    let previous: { position: number; time: number; revision: number } | undefined;
+    const loop = (time: number) => {
       raf = requestAnimationFrame(loop);
       const input = inputRef.current;
       const wrap = wrapRef.current;
-      if (!input || !wrap || scrubbing.current) return;
-      const pos = positionNow();
-      if (document.activeElement !== input) input.value = String(Math.round(pos));
-      wrap.style.setProperty('--p', String(duration > 0 ? Math.min(1, pos / duration) : 0));
+      if (!input || !wrap) return;
+      if (scrubbing.current) { previous = undefined; return; }
+      const clock = session.runtime.clock;
+      const pos = smoothPlayhead(positionNow(), time, previous, clock.playing, clock.seekRevision);
+      previous = { position: pos, time, revision: clock.seekRevision };
+      input.value = String(Math.round(pos));
+      paintPosition(pos);
     };
     raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [duration]);
+    return () => { cancelAnimationFrame(raf); scrubbing.current = false; };
+  }, [duration, trackId]);
+
+  const paintPosition = (position: number) => {
+    const wrap = wrapRef.current;
+    const knob = knobRef.current;
+    if (!wrap || !knob) return;
+    const ratio = duration > 0 ? Math.max(0, Math.min(1, position / duration)) : 0;
+    wrap.style.setProperty('--p', String(ratio));
+    knob.style.transform = `translate3d(${ratio * wrap.clientWidth}px, 0, 0)`;
+  };
 
   const commit = () => {
     const input = inputRef.current;
@@ -62,7 +78,7 @@ export function SeekBar() {
         onMouseLeave={() => tipRef.current?.classList.remove('on')}
       >
         <div className="seek-tip" ref={tipRef} />
-        <span className="seek-knob" aria-hidden="true" />
+        <span className="seek-knob" ref={knobRef} aria-hidden="true" />
         <input
           ref={inputRef}
           type="range"
@@ -74,17 +90,15 @@ export function SeekBar() {
           defaultValue={0}
           disabled={disabled}
           onChange={(e) => {
-            const wrap = wrapRef.current;
-            const v = Number(e.currentTarget.value);
             scrubbing.current = true;
-            if (wrap) wrap.style.setProperty('--p', String(duration > 0 ? v / duration : 0));
+            paintPosition(Number(e.currentTarget.value));
           }}
           onPointerUp={commit}
+          onPointerCancel={() => { scrubbing.current = false; }}
           onKeyDown={(e) => {
-            // Drive seeks off the live position — the focused input's own
-            // value goes stale while the rAF writer holds back.
             const delta = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 5000
               : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -5000
+              : e.key === 'PageUp' ? duration / 10 : e.key === 'PageDown' ? -duration / 10
               : e.key === 'Home' ? -Infinity : e.key === 'End' ? Infinity : 0;
             if (!delta) return;
             e.preventDefault();
