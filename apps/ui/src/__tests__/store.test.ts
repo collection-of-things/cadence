@@ -246,6 +246,43 @@ describe('commands', () => {
     expect(session.runtime.clock.positionMs).toBe(200_000);
   });
 
+  it('keeps the latest seek visible while earlier playback updates arrive', async () => {
+    let finish!: () => void;
+    fake.api.sendCommand = (command) => {
+      fake.sent.push(command);
+      return new Promise<void>((resolve) => { finish = resolve; });
+    };
+    session.seek(10_000);
+    session.dispatch({ kind: 'position', generationId: 1, positionMs: 1_500, atMs: Date.now() });
+    expect(session.runtime.clock.positionMs).toBe(10_000);
+    session.seek(15_000);
+    session.seek(20_000);
+    expect(fake.sent).toEqual([{ kind: 'seek', positionMs: 10_000 }]);
+    session.dispatch({ kind: 'snapshot', snapshot: snap({ positionMs: 10_000, positionAtMs: Date.now() }) });
+    expect(session.runtime.clock.positionMs).toBe(20_000);
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fake.sent).toEqual([{ kind: 'seek', positionMs: 10_000 }, { kind: 'seek', positionMs: 20_000 }]);
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    session.dispatch({ kind: 'position', generationId: 1, positionMs: 20_100, atMs: Date.now() });
+    expect(session.runtime.clock.positionMs).toBe(20_100);
+  });
+
+  it('does not send a queued seek after navigation', async () => {
+    let finish!: () => void;
+    fake.api.sendCommand = (command) => {
+      fake.sent.push(command);
+      return command.kind === 'seek' ? new Promise<void>((resolve) => { finish = resolve; }) : Promise.resolve();
+    };
+    session.seek(10_000);
+    session.seek(20_000);
+    session.previous();
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fake.sent).toEqual([{ kind: 'seek', positionMs: 10_000 }, { kind: 'previous' }]);
+  });
+
   it('togglePlay maps status to the right command', () => {
     session.togglePlay();
     expect(fake.sent.at(-1)).toEqual({ kind: 'pause' });

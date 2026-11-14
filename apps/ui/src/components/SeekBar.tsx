@@ -31,7 +31,7 @@ export function SeekBar() {
       const wrap = wrapRef.current;
       if (!input || !wrap || scrubbing.current) return;
       const pos = positionNow();
-      if (document.activeElement !== input) input.value = String(Math.round(pos));
+      input.value = String(Math.round(pos));
       wrap.style.setProperty('--p', String(duration > 0 ? Math.min(1, pos / duration) : 0));
     };
     raf = requestAnimationFrame(loop);
@@ -80,9 +80,8 @@ export function SeekBar() {
             if (wrap) wrap.style.setProperty('--p', String(duration > 0 ? v / duration : 0));
           }}
           onPointerUp={commit}
+          onPointerCancel={() => { scrubbing.current = false; }}
           onKeyDown={(e) => {
-            // Drive seeks off the live position — the focused input's own
-            // value goes stale while the rAF writer holds back.
             const delta = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 5000
               : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -5000
               : e.key === 'Home' ? -Infinity : e.key === 'End' ? Infinity : 0;

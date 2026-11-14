@@ -258,6 +258,10 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     setTimeout(() => set({ toasts: get().toasts.filter((x) => x.id !== t.id) }), 6500);
   }
 
+  let pendingSeek: { positionMs: number; atMs: number; queueId: string | undefined; generationId: number } | null = null;
+  let seekInFlight = false;
+  let queuedSeek: number | null = null;
+
   function syncClock(snap: PlaybackSnapshot) {
     runtime.clock.positionMs = snap.positionMs;
     runtime.clock.atMs = snap.positionAtMs || Date.now();
@@ -268,7 +272,15 @@ export function createUiStore(api: StoreApiSurface): UiSession {
   /** Store the computer's snapshot and show it, or the phone's, whichever owns playback. */
   function showLocal(local: PlaybackSnapshot, extra: Partial<UiState> = {}) {
     const remote = extra.remote !== undefined ? extra.remote : get().remote;
-    const shown = shownSnapshot(local, remote, extra.queue ?? get().queue);
+    let shown = shownSnapshot(local, remote, extra.queue ?? get().queue);
+    if (pendingSeek) {
+      if (shown.current?.queueId !== pendingSeek.queueId || (shown.lease?.generationId ?? get().generationId) !== pendingSeek.generationId) {
+        pendingSeek = null;
+        queuedSeek = null;
+      } else {
+        shown = { ...shown, positionMs: pendingSeek.positionMs, positionAtMs: pendingSeek.atMs };
+      }
+    }
     set({ ...extra, localSnapshot: local, snapshot: shown });
     syncClock(shown);
   }
@@ -323,7 +335,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       case 'position': {
         if (e.generationId < s.generationId) break;
         const local = { ...s.localSnapshot, positionMs: e.positionMs, positionAtMs: e.atMs };
-        if (phoneOwnsPlayback()) {
+        if (phoneOwnsPlayback() || pendingSeek) {
           set({ localSnapshot: local });
           break;
         }
@@ -356,10 +368,30 @@ export function createUiStore(api: StoreApiSurface): UiSession {
   }
 
   const cmd = (c: PlaybackCommand) => {
+    if (c.kind === 'next' || c.kind === 'previous' || c.kind === 'play' || c.kind === 'setQueue' || c.kind === 'remove') {
+      pendingSeek = null;
+      queuedSeek = null;
+    }
     api.sendCommand(c).catch((err: unknown) => {
       pushToast(get().snapshot.lease?.route ?? 'local', cleanIpcError(err, 'Command failed'), true);
     });
   };
+
+  function sendSeek(positionMs: number) {
+    seekInFlight = true;
+    api.sendCommand({ kind: 'seek', positionMs }).catch((err: unknown) => {
+      pushToast(get().snapshot.lease?.route ?? 'local', cleanIpcError(err, 'Command failed'), true);
+    }).finally(() => {
+      seekInFlight = false;
+      if (queuedSeek !== null) {
+        const next = queuedSeek;
+        queuedSeek = null;
+        sendSeek(next);
+      } else {
+        pendingSeek = null;
+      }
+    });
+  }
 
   const unsubs: (() => void)[] = [];
   const session: UiSession = {
@@ -405,11 +437,13 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       runtime.clock.positionMs = clamped;
       runtime.clock.atMs = Date.now();
       const at = runtime.clock.atMs;
+      pendingSeek = { positionMs: clamped, atMs: at, queueId: get().snapshot.current?.queueId, generationId: get().generationId };
       set({
         snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: at },
         ...(phoneOwnsPlayback() ? {} : { localSnapshot: { ...get().localSnapshot, positionMs: clamped, positionAtMs: at } }),
       });
-      cmd({ kind: 'seek', positionMs: clamped });
+      if (seekInFlight) queuedSeek = clamped;
+      else sendSeek(clamped);
     },
     setVolume(v) {
       const volume = Math.max(0, Math.min(1, v));
