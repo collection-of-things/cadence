@@ -19,7 +19,7 @@ export { SpotifyWebAdapter } from "./spotify-web.js";
 
 import type { RouteAdapter } from "@cadence/protocol";
 import { YouTubeMusicAdapter } from "./youtube-music.js";
-import { AppleMusicKitAdapter } from "./apple-musickit.js";
+import { AppleMusicKitAdapter, type AppleMusicKitOptions } from "./apple-musickit.js";
 import { SpotifyLibrespotAdapter, type LibrespotGraph } from "./spotify-librespot.js";
 import { SpotifyWebAdapter } from "./spotify-web.js";
 
@@ -30,13 +30,14 @@ export interface ProviderAdaptersDeps {
     import("./spotify-librespot.js").LibrespotAdapterDeps,
     "binaryPath" | "getCredentials" | "getAccessToken"
   >;
+  apple?: AppleMusicKitOptions;
 }
 
 /** Construct all provider route adapters. Register on the adapter registry. */
 export function createProviderAdapters(deps: ProviderAdaptersDeps): RouteAdapter[] {
   return [
     new YouTubeMusicAdapter(),
-    new AppleMusicKitAdapter(),
+    new AppleMusicKitAdapter(deps.apple),
     new SpotifyLibrespotAdapter({ graph: deps.graph, ...(deps.spotify ?? {}) }),
     new SpotifyWebAdapter(),
   ];

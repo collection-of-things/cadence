@@ -7,23 +7,28 @@ import type {
   TrackRef,
 } from '@cadence/protocol';
 import { createUiStore, type StoreApiSurface } from '../store';
-import { sameLocation } from '../App';
+import { historyReducer, INITIAL_HISTORY, sameLocation, type History, type Location } from '../navigation';
 import { ProviderSearchView } from '../components/provider/views';
 import appSource from '../App.tsx?raw';
-import sidebarSource from '../components/Sidebar.tsx?raw';
+
+/** Run a list of navigations from the start page. */
+function visit(...to: Location[]): History {
+  return to.reduce((history, next) => historyReducer(history, { kind: 'navigate', to: next }), INITIAL_HISTORY);
+}
+import topBarSource from '../components/TopBar.tsx?raw';
 import viewsSource from '../components/provider/views.tsx?raw';
 
 /**
  * Regressions from the ui/cider-v3 merge absorbing the Apple Music provider
- * nav: the sidebar dropped the typed query on the way to the catalog search,
+ * nav: the search field dropped the typed query on the way to the catalog search,
  * Local Files search bounced into the streaming library while Apple was
  * active, and the immersive now-playing flag survived a queue clear so the
  * next track reopened it unasked.
  *
  * The query handoff and the localfiles tab routing are navigation-shaped, so
- * they are covered by sameLocation plus SSR markup; the wiring that only a
- * mounted session can exercise is asserted on component sources, matching
- * transport-names.test.tsx.
+ * they are covered by the history reducer plus SSR markup; the wiring that
+ * only a mounted session can exercise is asserted on component sources,
+ * matching transport-names.test.tsx.
  */
 
 function track(id: string): TrackRef {
@@ -79,8 +84,8 @@ async function makeSession(initial: PlaybackSnapshot) {
 }
 
 describe('catalog search handoff', () => {
-  it('the sidebar carries the typed query into the search location', () => {
-    const openSearch = sidebarSource.match(/const openSearch = \(query: string\) => \{([\s\S]*?)\n  \};/);
+  it('the top bar search carries the typed query into the search location', () => {
+    const openSearch = topBarSource.match(/const openSearch = \(query: string\) => \{([\s\S]*?)\n  \};/);
     expect(openSearch).not.toBeNull();
     const nav = openSearch![1]!.match(/onNavigate\(\{ page: 'search'[^;]*\}\)/);
     expect(nav).not.toBeNull();
@@ -110,11 +115,61 @@ describe('catalog search handoff', () => {
   });
 
   it('repeat submissions of the same query still reach the view via a nonce', () => {
-    // sameLocation dedupes on query alone; navigate must stamp a fresh nonce
-    // on every search submission so ProviderSearchView resets its field even
-    // when the query is unchanged.
-    const stamp = appSource.match(/next\.page === 'search'[\s\S]*?nonce: \+\+searchNonce\.current/);
-    expect(stamp).not.toBeNull();
+    // sameLocation dedupes on query alone, so every search submission gets a
+    // fresh nonce: the view resets its field even when the query is unchanged.
+    const first = visit({ page: 'search', query: 'a' });
+    const again = historyReducer(first, { kind: 'navigate', to: { page: 'search', query: 'a' } });
+    expect(again.location).toMatchObject({ page: 'search', query: 'a' });
+    expect(again.location).not.toEqual(first.location);
+    // The repeat updates in place: Back still leaves search in one step.
+    expect(again.back).toEqual(first.back);
+  });
+
+  it('a local search rides the library location the same way', () => {
+    const first = visit({ page: 'library', tab: 'songs', query: 'cairn' });
+    expect(first.location).toMatchObject({ page: 'library', tab: 'songs', query: 'cairn' });
+    const again = historyReducer(first, { kind: 'navigate', to: { page: 'library', tab: 'songs', query: 'cairn' } });
+    expect(again.location).not.toEqual(first.location);
+    expect(again.back).toEqual(first.back);
+  });
+});
+
+describe('history', () => {
+  it('goes back and forward through visited pages', () => {
+    const there = visit({ page: 'browse' }, { page: 'radio' });
+    const back = historyReducer(there, { kind: 'back' });
+    expect(back.location).toEqual({ page: 'browse' });
+    expect(historyReducer(back, { kind: 'forward' }).location).toEqual({ page: 'radio' });
+  });
+
+  it('navigating to the page already shown adds no history', () => {
+    const once = visit({ page: 'browse' });
+    expect(historyReducer(once, { kind: 'navigate', to: { page: 'browse' } })).toBe(once);
+  });
+
+  it('a new navigation drops the forward stack', () => {
+    const back = historyReducer(visit({ page: 'browse' }, { page: 'radio' }), { kind: 'back' });
+    expect(historyReducer(back, { kind: 'navigate', to: { page: 'sources' } }).forward).toEqual([]);
+  });
+
+  it('switching Settings section replaces the entry, so one Back leaves Settings', () => {
+    const settings = visit(
+      { page: 'browse' },
+      { page: 'settings', section: 'accounts' },
+      { page: 'settings', section: 'audio' },
+      { page: 'settings', section: 'appearance' },
+    );
+    expect(settings.location).toEqual({ page: 'settings', section: 'appearance' });
+    expect(settings.back).toEqual([{ page: 'home' }, { page: 'browse' }]);
+    const out = historyReducer(settings, { kind: 'back' });
+    expect(out.location).toEqual({ page: 'browse' });
+    // Forward returns to the section last shown.
+    expect(historyReducer(out, { kind: 'forward' }).location).toEqual({ page: 'settings', section: 'appearance' });
+  });
+
+  it('Close settings goes Back, which after section switches is the page before Settings', () => {
+    const gear = topBarSource.match(/if \(!settingsOpen\)[^;]*;\s*else if \(canGoBack\) onBack\(\);/);
+    expect(gear).not.toBeNull();
   });
 });
 

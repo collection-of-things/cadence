@@ -9,7 +9,7 @@
  * webContents.executeJavaScript into the page world.
  */
 
-import { BrowserWindow, session, webContents, type WebContents } from "electron";
+import { BrowserWindow, session, type WebContents } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,9 +28,10 @@ export interface ProviderSessionOptions {
   preloadPath?: string;
   /**
    * Expression re-evaluated after every page load (in-page navigations wipe
-   * injected state). Must be idempotent — controllers self-guard.
+   * injected state). Must be idempotent — controllers self-guard. A function
+   * is called per load, so the script can carry current settings.
    */
-  injectScript?: string;
+  injectScript?: string | (() => string);
   /** Called for every event posted by the injected controller. */
   onEvent?: (event: { name: string; data: unknown }) => void;
 }
@@ -67,7 +68,6 @@ export class ProviderSession {
   private win: BrowserWindow | null = null;
   private listeners = new Set<(e: { name: string; data: unknown }) => void>();
   private readyPromise: Promise<void> | null = null;
-  private userAgentTouched = false;
 
   constructor(private opts: ProviderSessionOptions) {
     this.partition = opts.partition;
@@ -101,6 +101,10 @@ export class ProviderSession {
           sandbox: true,
           // Keep playback alive while hidden; the coordinator owns audibility.
           backgroundThrottling: false,
+          // A hidden view gets no user gestures. Electron's default, stated
+          // because provider Web Audio graphs depend on it: a context that
+          // could not start would silence the element routed into it.
+          autoplayPolicy: "no-user-gesture-required",
         },
       });
 
@@ -127,7 +131,7 @@ export class ProviderSession {
         const script = this.opts.injectScript;
         win.webContents.on("did-finish-load", () => {
           void win.webContents
-            .executeJavaScript(script, true)
+            .executeJavaScript(typeof script === "function" ? script() : script, true)
             .catch(() => undefined);
         });
       }

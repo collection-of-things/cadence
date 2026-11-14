@@ -1,72 +1,53 @@
 /**
- * Provider pages — thin wrappers over the shared catalog machinery.
- * Apple Music gets the full treatment today; other platforms slot in behind
- * the same CatalogPage surface.
+ * Provider pages, built from the shared catalog pieces. Apple Music gets the
+ * full treatment today; other platforms slot in behind the same CatalogPage.
  */
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type {
-  CatalogArtist,
-  CatalogContainer,
-  CatalogEntry,
-  CatalogRequest,
-  TrackRef,
-} from '@cadence/protocol';
-import { stationToTrack } from '@cadence/protocol';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CatalogArtist, CatalogContainer, CatalogEntry, CatalogRequest } from '@cadence/protocol';
 import { api, session } from '../../session';
 import { formatTime } from '../../format';
 import { useUi } from '../../hooks';
-import { NoteIcon, PlayIcon, PlusIcon, SearchIcon, ShuffleIcon } from '../../icons';
-import { DEFAULT_PALETTE, extractPalette, type Rgb } from '../../palette';
+import { ClockIcon, NoteIcon, PlayIcon, SearchIcon, ShuffleIcon, SongIcon } from '../../icons';
+import { cleanIpcError } from '../../ipcError';
+import { useCoverTheme } from '../../pageTint';
+import { routeForPlatform, routeLabel, routeState } from '../../routes';
+import { targetForContainer } from '../../catalogActions';
+import { AddGlyph, useJustAdded } from '../AddGlyph';
+import { LibraryButton } from '../LibraryButton';
+import { EmptyState } from '../Shelf';
+import { TrackListToolbar, useTrackListControls } from '../TrackListToolbar';
+import '../home.css';
 import {
   CatalogPageView,
   CatalogSectionView,
+  CatalogSkeleton,
   ProviderPageFrame,
-  routeForPlatform,
+  SignInButton,
+  SongList,
+  songsOf,
   useCatalogPage,
   type CatalogNav,
 } from './catalog';
-import { cleanIpcError } from './errors';
 import './provider.css';
 
 interface ProviderViewProps {
   nav: CatalogNav;
 }
 
-function useAuthorized(route: ReturnType<typeof routeForPlatform>): boolean {
-  const caps = useUi((s) => s.capabilities);
-  return route !== null && caps.find((c) => c.route === route)?.state === 'ready';
-}
+const SHELF_TITLES = { home: 'Home', browse: 'Browse', radio: 'Radio' } as const;
 
-/** Home — Apple "Listen Now" when signed in, editorial browse otherwise. */
-export function ProviderHomeView({ nav }: ProviderViewProps) {
+/**
+ * A page of catalog shelves for the active platform: `home` (Apple's Listen
+ * Now when signed in, editorial browse otherwise), `browse` or `radio`.
+ */
+export function ProviderShelvesView({ nav, kind }: ProviderViewProps & { kind: keyof typeof SHELF_TITLES }) {
   const platform = useUi((s) => s.platform);
   const route = routeForPlatform(platform);
-  const { page, error, loading } = useCatalogPage(route, { kind: 'home' });
+  const { page, error, loading } = useCatalogPage(route, { kind });
+  const title = kind === 'home' && platform === 'apple' ? 'Listen Now' : SHELF_TITLES[kind];
   return (
-    <ProviderPageFrame title={platform === 'apple' ? 'Listen Now' : 'Home'} loading={loading} error={error} route={route}>
-      {page && <CatalogPageView page={page} nav={nav} />}
-    </ProviderPageFrame>
-  );
-}
-
-export function ProviderBrowseView({ nav }: ProviderViewProps) {
-  const platform = useUi((s) => s.platform);
-  const route = routeForPlatform(platform);
-  const { page, error, loading } = useCatalogPage(route, { kind: 'browse' });
-  return (
-    <ProviderPageFrame title="Browse" loading={loading} error={error} route={route}>
-      {page && <CatalogPageView page={page} nav={nav} />}
-    </ProviderPageFrame>
-  );
-}
-
-export function ProviderRadioView({ nav }: ProviderViewProps) {
-  const platform = useUi((s) => s.platform);
-  const route = routeForPlatform(platform);
-  const { page, error, loading } = useCatalogPage(route, { kind: 'radio' });
-  return (
-    <ProviderPageFrame title="Radio" loading={loading} error={error} route={route}>
+    <ProviderPageFrame title={title} loading={loading} error={error} route={route}>
       {page && <CatalogPageView page={page} nav={nav} />}
     </ProviderPageFrame>
   );
@@ -80,22 +61,22 @@ const TAB_LABELS: Record<LibraryTab, string> = {
   artists: 'Artists',
   playlists: 'Playlists',
 };
+const LIBRARY_PAGE_SIZE = 50;
 
-/** The user's streaming library — songs, albums, artists, playlists. */
+/** The user's streaming library: songs, albums, artists and playlists, a page at a time. */
 export function ProviderLibraryView({ nav }: ProviderViewProps) {
   const platform = useUi((s) => s.platform);
   const route = routeForPlatform(platform);
-  const authorized = useAuthorized(route);
+  const authorized = useUi((s) => routeState(s, route) === 'ready');
   const [tab, setTab] = useState<LibraryTab>('songs');
-  const [pages, setPages] = useState<CatalogEntry[]>([]);
+  const [entries, setEntries] = useState<CatalogEntry[]>([]);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const query = useUi((s) => s.libraryQuery);
 
   useEffect(() => {
     let live = true;
-    setPages([]);
+    setEntries([]);
     setNextOffset(null);
     setError(null);
     if (route === null || !authorized || !api.catalog) {
@@ -104,11 +85,10 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
     }
     setLoading(true);
     api.catalog
-      .query(route, { kind: 'library', collection: tab, limit: 50 })
+      .query(route, { kind: 'library', collection: tab, limit: LIBRARY_PAGE_SIZE })
       .then((page) => {
         if (!live) return;
-        const entries = page.sections.flatMap((s) => s.entries);
-        setPages(entries);
+        setEntries(page.sections.flatMap((s) => s.entries));
         setNextOffset(page.nextOffset ?? null);
         setLoading(false);
       })
@@ -126,9 +106,9 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
     if (route === null || nextOffset === null || !api.catalog) return;
     setLoading(true);
     api.catalog
-      .query(route, { kind: 'library', collection: tab, limit: 50, offset: nextOffset })
+      .query(route, { kind: 'library', collection: tab, limit: LIBRARY_PAGE_SIZE, offset: nextOffset })
       .then((page) => {
-        setPages((prev) => [...prev, ...page.sections.flatMap((s) => s.entries)]);
+        setEntries((prev) => [...prev, ...page.sections.flatMap((s) => s.entries)]);
         setNextOffset(page.nextOffset ?? null);
         setLoading(false);
       })
@@ -138,94 +118,43 @@ export function ProviderLibraryView({ nav }: ProviderViewProps) {
       });
   };
 
-  const q = query.trim().toLowerCase();
-  const filtered = q
-    ? pages.filter((e) => {
-        const text =
-          e.kind === 'song'
-            ? `${e.track.title} ${e.track.artists.map((a) => a.name).join(' ')}`
-            : e.kind === 'album'
-              ? `${e.album.title} ${e.album.subtitle ?? ''}`
-              : e.kind === 'playlist'
-                ? `${e.playlist.title} ${e.playlist.subtitle ?? ''}`
-                : e.kind === 'artist'
-                  ? e.artist.name
-                  : e.station.name;
-        return text.toLowerCase().includes(q);
-      })
-    : pages;
-  const songTracks = filtered
-    .filter((e): e is Extract<CatalogEntry, { kind: 'song' }> => e.kind === 'song')
-    .map((e) => e.track);
+  const songCount = songsOf(entries).length;
 
   return (
-    <div className="catalog-view">
-      <div className="stage-scroll catalog-scroll">
-        <header className="page-head catalog-intro">
-          <h1>Library</h1>
-        </header>
-        <nav className="catalog-tabs" aria-label="Library sections">
+    <ProviderPageFrame title="Library">
+        <nav className="src-pills catalog-tabs" aria-label="Library sections">
           {LIBRARY_TABS.map((t) => (
-            <button
-              key={t}
-              className={`catalog-tab ${tab === t ? 'on' : ''}`}
-              onClick={() => setTab(t)}
-            >
+            <button key={t} className={`src-pill ${tab === t ? 'on' : ''}`} aria-pressed={tab === t} onClick={() => setTab(t)}>
               {TAB_LABELS[t]}
             </button>
           ))}
         </nav>
         {!authorized && (
-          <div className="catalog-empty">
-            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-            <div>
-              <h2>Sign in to see your library</h2>
-              <p>Your streaming library appears here once you are signed in.</p>
-              {route && (
-                <button className="btn src-signin" onClick={() => session.signInRoute(route)}>
-                  Sign in
-                </button>
-              )}
-            </div>
-          </div>
+          <EmptyState title="Sign in to see your library" body="Your streaming library appears here once you are signed in.">
+            {route && <SignInButton route={route} />}
+          </EmptyState>
         )}
-        {authorized && loading && pages.length === 0 && (
-          <div className="catalog-loading" role="status">Loading your library…</div>
+        {authorized && loading && entries.length === 0 && <CatalogSkeleton label="Loading your library" rows={tab === 'songs'} />}
+        {authorized && error && <EmptyState title="Could not load your library" body={error} alert />}
+        {authorized && !error && entries.length > 0 && (
+          <CatalogSectionView title={TAB_LABELS[tab]} entries={entries} nav={nav} />
         )}
-        {authorized && error && (
-          <div className="catalog-empty" role="alert">
-            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-            <div><h2>Could not load your library</h2><p>{error}</p></div>
-          </div>
+        {authorized && !loading && !error && entries.length === 0 && (
+          <EmptyState title="Nothing saved yet" body="Music you add to your library will show up here." />
         )}
-        {authorized && !error && pages.length > 0 && (
-          <CatalogSectionView
-            id="library"
-            title={TAB_LABELS[tab]}
-            entries={filtered}
-            nav={nav}
-          />
-        )}
-        {authorized && !loading && !error && pages.length === 0 && (
-          <div className="catalog-empty" role="status">
-            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-            <div><h2>Nothing saved yet</h2><p>Music you add to your library will show up here.</p></div>
-          </div>
-        )}
-        {authorized && tab === 'songs' && songTracks.length > 0 && (
-          <p className="catalog-count">{songTracks.length} songs</p>
+        {authorized && tab === 'songs' && songCount > 0 && (
+          <p className="catalog-count">{songCount} {songCount === 1 ? 'song' : 'songs'}</p>
         )}
         {nextOffset !== null && (
           <button className="btn catalog-more" disabled={loading} onClick={loadMore}>
             {loading ? 'Loading…' : 'Load more'}
           </button>
         )}
-      </div>
-    </div>
+    </ProviderPageFrame>
   );
 }
 
-/** Catalog search — grouped results across songs, albums, artists, playlists. */
+/** Catalog search: grouped results across songs, albums, artists, playlists. */
 export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { query?: string | undefined; nonce?: number | undefined }) {
   const platform = useUi((s) => s.platform);
   const route = routeForPlatform(platform);
@@ -233,7 +162,7 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
   const [debounced, setDebounced] = useState(text);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // The sidebar carries its query in the search location — adopt it. A new
+  // The top bar carries its query in the search location; adopt it. A new
   // submission (new query or nonce) applies immediately: an explicit submit
   // shouldn't wait out the typing debounce. An absent query clears the field
   // (Back, blank Search).
@@ -252,139 +181,112 @@ export function ProviderSearchView({ nav, query, nonce }: ProviderViewProps & { 
   }, [text]);
 
   const request: CatalogRequest | null = debounced ? { kind: 'search', text: debounced, limit: 10 } : null;
-  // nonce in deps: resubmitting an unchanged query must retry the fetch —
-  // the serialized request is identical, so reqKey alone wouldn't refetch.
+  // nonce in deps: resubmitting an unchanged query must retry the fetch.
+  // The serialized request is identical, so it alone wouldn't refetch.
   const { page, error, loading } = useCatalogPage(route, request, [nonce]);
 
   return (
-    <div className="catalog-view">
-      <div className="stage-scroll catalog-scroll">
-        <header className="page-head catalog-intro"><h1>Search</h1></header>
-        <div className="catalog-search-field">
+    <ProviderPageFrame title="Search">
+        <div className="src-field catalog-search-field">
           <SearchIcon size={16} />
           <input
             type="search"
-            placeholder="Search Apple Music"
+            placeholder={route ? `Search ${routeLabel(route)}` : 'Search'}
             aria-label="Search the streaming catalog"
             autoFocus
             value={text}
             onChange={(e) => setText(e.currentTarget.value)}
           />
         </div>
-        {loading && <div className="catalog-loading" role="status">Searching…</div>}
-        {!loading && error && (
-          <div className="catalog-empty" role="alert">
-            <span className="catalog-empty-icon"><NoteIcon size={28} /></span>
-            <div><h2>Search failed</h2><p>{error}</p></div>
-          </div>
-        )}
+        {loading && <CatalogSkeleton label="Searching" />}
+        {!loading && error && <EmptyState title="Search failed" body={error} alert />}
         {!loading && !error && page && <CatalogPageView page={page} nav={nav} />}
         {!loading && !error && !page && !debounced && (
-          <div className="catalog-empty"><div><h2>Search the catalog</h2><p>Songs, albums, artists, playlists and radio.</p></div></div>
+          <EmptyState title="Search the catalog" body="Songs, albums, artists, playlists and radio." />
         )}
-      </div>
-    </div>
+    </ProviderPageFrame>
   );
 }
 
-/** Album/playlist detail — driven by the catalog, styled like AlbumView. */
-export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps & {
-  container: CatalogContainer;
-  onBack(): void;
-}) {
+/** Album or playlist detail, driven by the catalog and laid out like AlbumView. */
+export function CatalogDetailView({ container, nav }: ProviderViewProps & { container: CatalogContainer }) {
   const request: CatalogRequest = container.isLibraryItem
     ? { kind: 'libraryDetail', collection: container.kind === 'album' ? 'albums' : 'playlists', id: container.id }
     : { kind: container.kind, id: container.id };
   const { page, error, loading } = useCatalogPage(container.route, request);
-  const [palette, setPalette] = useState<Rgb[]>(DEFAULT_PALETTE);
+  const queued = useJustAdded();
 
   const artworkUrl = page?.artwork?.url ?? container.artwork?.url;
-  useEffect(() => {
-    let live = true;
-    if (!artworkUrl) {
-      setPalette(DEFAULT_PALETTE);
-      return;
-    }
-    void extractPalette(artworkUrl).then((p) => {
-      if (live) setPalette(p ?? DEFAULT_PALETTE);
-    });
-    return () => {
-      live = false;
-    };
-  }, [artworkUrl]);
+  // The page wears this cover's colours: the flood, Play and the playing row.
+  const pageStyle = useCoverTheme(artworkUrl);
 
-  const trackEntries =
-    page?.sections.flatMap((s) => s.entries).filter(
-      (e): e is Extract<CatalogEntry, { kind: 'song' }> => e.kind === 'song',
-    ) ?? [];
-  const tracks: TrackRef[] = trackEntries.map((e) => e.track);
+  const tracks = useMemo(() => songsOf(page?.sections.flatMap((s) => s.entries) ?? []), [page]);
+  const { shown, controls } = useTrackListControls(tracks);
   const totalDuration = tracks.reduce((sum, t) => sum + t.durationMs, 0);
-  const tone = palette[0] ?? DEFAULT_PALETTE[0]!;
-  const pageStyle = { '--catalog-detail-rgb': tone.join(' ') } as CSSProperties;
+  const byline = page?.subtitle ?? container.subtitle;
   const origin = { kind: container.kind, id: container.id, name: container.title } as const;
-  const eyebrow = container.kind === 'album' ? 'ALBUM' : 'PLAYLIST';
-
-  const shuffledPlay = () => {
-    const items = [...tracks];
-    for (let i = items.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [items[i], items[j]] = [items[j]!, items[i]!];
-    }
-    session.playTracks(items, 0, origin);
-  };
+  const count = tracks.length || container.itemCount || 0;
 
   return (
-    <div className="catalog-detail-page" style={pageStyle}>
-      <div className="catalog-detail-page-glow" aria-hidden="true" />
-      <div className="stage-scroll catalog-detail-page-scroll">
-        <button className="catalog-detail-back" onClick={onBack}>
-          <BackArrow /> <span>Back</span>
-        </button>
-        <section className="catalog-detail-hero">
-          <div className="catalog-detail-artwork-wrap">
+    <div className="album" style={pageStyle}>
+      <div className="stage-scroll album-scroll">
+        <section className="album-hero">
+          <div className="album-art">
             {artworkUrl
-              ? <img className="catalog-detail-artwork" src={artworkUrl} alt={`${container.title} artwork`} />
-              : <div className="catalog-detail-artwork catalog-detail-artwork-empty"><NoteIcon size={58} /></div>}
+              ? <img src={artworkUrl} alt={`${container.title} artwork`} draggable={false} />
+              : <NoteIcon size={58} />}
           </div>
-          <div className="catalog-detail-details">
-            <span className="catalog-detail-eyebrow">{eyebrow}</span>
+          <div className="album-info">
             <h1>{page?.title ?? container.title}</h1>
-            {(page?.subtitle ?? container.subtitle) && (
-              <p className="catalog-detail-artist-name">{page?.subtitle ?? container.subtitle}</p>
+            {byline && (
+              <div className="album-byline">
+                <span className="album-avatar" aria-hidden="true">
+                  {artworkUrl ? <img src={artworkUrl} alt="" /> : byline.slice(0, 1)}
+                </span>
+                <span>{byline}</span>
+              </div>
             )}
-            <div className="catalog-detail-facts" aria-label="Details">
-              {container.year !== undefined && <span className="catalog-detail-fact">{container.year}</span>}
-              <span className="catalog-detail-fact">
-                {page?.truncated ? `first ${tracks.length} tracks` : `${tracks.length || container.itemCount || 0} tracks`}
+            <div className="album-chips" aria-label="Details">
+              <span className="chip"><NoteIcon size={12} />{container.kind === 'album' ? 'Album' : 'Playlist'}</span>
+              {container.year !== undefined && <span className="chip"><ClockIcon size={12} />{container.year}</span>}
+              <span className="chip">
+                <SongIcon size={12} />
+                {page?.truncated ? `First ${tracks.length} tracks` : `${count} ${count === 1 ? 'track' : 'tracks'}`}
               </span>
-              {totalDuration > 0 && <span className="catalog-detail-fact">{formatTime(totalDuration)}</span>}
+              {totalDuration > 0 && <span className="chip">{formatTime(totalDuration)}</span>}
             </div>
-            <div className="catalog-detail-actions">
-              <button className="catalog-detail-shuffle" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={shuffledPlay}>
+            <div className="album-actions">
+              <button className="round-btn album-round" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={() => session.playShuffled(tracks, origin)}>
                 <ShuffleIcon size={18} />
               </button>
-              <button className="catalog-detail-play" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
-                <PlayIcon size={19} /> <span>Play</span>
+              <button className="play-pill album-play-pill" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+                <PlayIcon size={17} /> Play
               </button>
-              <button className="catalog-detail-add" aria-label="Add to queue" title="Add to queue" disabled={!tracks.length}
-                onClick={() => tracks.forEach((t) => session.append(t))}>
-                <PlusIcon size={19} />
+              <button className="round-btn album-round" aria-label="Add to queue" title={queued.added ? 'Added to queue' : 'Add to queue'} disabled={!tracks.length}
+                onClick={() => {
+                  session.append(tracks);
+                  queued.flash();
+                }}>
+                <AddGlyph added={queued.added} size={18} />
               </button>
+              <LibraryButton target={targetForContainer(container)} className="round-btn album-round" size={18} />
             </div>
           </div>
         </section>
-        <section className="catalog-detail-tracklist" aria-label={`${container.title} track list`}>
-          <div className="catalog-detail-tracklist-head">
-            <h2>Tracks</h2>
-            {tracks.length > 0 && <span>{tracks.length} songs</span>}
-          </div>
-          {loading && <div className="catalog-detail-track-status" role="status">Loading tracks…</div>}
-          {!loading && error && <div className="catalog-detail-track-status" role="alert">{error}</div>}
-          {!loading && !error && tracks.length === 0 && (
-            <div className="catalog-detail-track-status">No tracks on this {container.kind}.</div>
-          )}
-          {!loading && !error && page && (
-            <CatalogPageView page={{ sections: page.sections.filter((s) => s.entries.length > 0) }} nav={nav} />
+        <section className="album-tracks" aria-label={`${container.title} tracks`}>
+          {loading && <CatalogSkeleton label="Loading tracks" rows />}
+          {!loading && error && <p className="list-empty" role="alert">{error}</p>}
+          {!loading && !error && tracks.length === 0 && <p className="list-empty">No tracks on this {container.kind}.</p>}
+          {!loading && !error && tracks.length > 0 && <TrackListToolbar {...controls} />}
+          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No tracks match.</p>}
+          {!loading && !error && (
+            <SongList
+              tracks={shown}
+              origin={origin}
+              nav={nav}
+              variant={container.kind === 'album' ? 'album' : 'song'}
+              albumArtist={byline}
+            />
           )}
         </section>
       </div>
@@ -392,32 +294,21 @@ export function CatalogDetailView({ container, nav, onBack }: ProviderViewProps 
   );
 }
 
-/** Artist page — header + sections (top songs, albums, similar). */
-export function ArtistView({ artist, nav, onBack }: ProviderViewProps & {
-  artist: CatalogArtist;
-  onBack(): void;
-}) {
+/** Artist page: a Play button for the top songs, then the artist's sections. */
+export function ArtistView({ artist, nav }: ProviderViewProps & { artist: CatalogArtist }) {
   const { page, error, loading } = useCatalogPage(artist.route, { kind: 'artist', id: artist.id });
-  const topTracks =
-    page?.sections.find((s) => s.id === 'artist-top-songs')?.entries
-      .filter((e): e is Extract<CatalogEntry, { kind: 'song' }> => e.kind === 'song')
-      .map((e) => e.track) ?? [];
+  const topTracks = songsOf(page?.sections.find((s) => s.id === 'artist-top-songs')?.entries ?? []);
 
   return (
     <ProviderPageFrame title={artist.name} loading={loading} error={error} route={artist.route}>
-      <button className="catalog-detail-back" onClick={onBack}><BackArrow /> <span>Back</span></button>
       {topTracks.length > 0 && (
-        <div className="catalog-detail-actions" style={{ padding: '0 0 12px' }}>
-          <button className="catalog-detail-play" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
-            <PlayIcon size={19} /> <span>Play top songs</span>
+        <div className="album-actions artist-actions">
+          <button className="play-pill" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
+            <PlayIcon size={16} /> <span>Play top songs</span>
           </button>
         </div>
       )}
       {page && <CatalogPageView page={page} nav={nav} />}
     </ProviderPageFrame>
   );
-}
-
-function BackArrow() {
-  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.8 5.5-6.5 6.5 6.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }

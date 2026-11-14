@@ -5,7 +5,9 @@
     "noEmit": true,
     "declaration": false,
     "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "allowImportingTsExtensions": true,
+    "paths": { "@cadence/protocol": ["../../packages/protocol/src/index.ts"] }
   },
   "include": ["src", "test", "tsup.config.ts", "vitest.config.ts"]
 }

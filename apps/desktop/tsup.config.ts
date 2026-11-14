@@ -20,4 +20,7 @@ export default defineConfig({
   splitting: false,
   // Native + runtime-provided modules must not be bundled.
   external: ["electron", "better-sqlite3"],
+  // The protocol package ships TypeScript source only; Node cannot load it
+  // at runtime, so its values (constants, helpers) are inlined.
+  noExternal: ["@cadence/protocol"],
 });

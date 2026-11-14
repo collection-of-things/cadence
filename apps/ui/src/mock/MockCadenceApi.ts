@@ -11,8 +11,8 @@ import type {
   PlatformId,
   PlaybackCommand,
   PlaybackSnapshot,
-  QueueItem,
   QueueState,
+  RemoteStatus,
   RouteCapabilities,
   RouteId,
   ScanProgress,
@@ -236,6 +236,7 @@ export class MockCadenceApi implements CadenceApi {
 
   async sendCommand(cmd: PlaybackCommand): Promise<void> {
     await Promise.resolve();
+    if (this.routeToMockPhone(cmd)) return;
     const q = this.queue;
     const s = this.snapshot;
     switch (cmd.kind) {
@@ -424,6 +425,7 @@ export class MockCadenceApi implements CadenceApi {
         const t = q.text.toLowerCase();
         out = out.filter((a) => a.title.toLowerCase().includes(t) || a.artist.toLowerCase().includes(t));
       }
+      if (q?.artist) out = out.filter((a) => a.artist === q.artist);
       return clone(out);
     },
     artists: async (_q?: LibraryQuery) => {
@@ -441,6 +443,7 @@ export class MockCadenceApi implements CadenceApi {
       return [...map.values()];
     },
     track: async (id: string) => clone(this.tracks.find((t) => t.id === id) ?? null),
+    counts: async () => ({ albums: this.albums.length, tracks: this.tracks.length }),
     addFoldersAndScan: async () => {
       this.simulateScan();
       return true;
@@ -454,6 +457,18 @@ export class MockCadenceApi implements CadenceApi {
     },
     roots: async () => ['/music', '/music/flac'],
     removeRoots: async (paths: string[]) => ({ removed: paths.length }),
+    importLyrics: async (trackId: string) => {
+      const track = this.tracks.find((t) => t.id === trackId);
+      if (!track) return null;
+      track.lyrics = '[00:00.50]Signal on the wire\n[00:04.00]Numbers in the rain';
+      return clone(track);
+    },
+    setLyricsOffset: async (trackId: string, offsetMs: number) => {
+      const track = this.tracks.find((t) => t.id === trackId);
+      if (!track) return null;
+      track.lyricsOffsetMs = offsetMs;
+      return clone(track);
+    },
   };
 
   private simulateScan() {
@@ -527,6 +542,129 @@ export class MockCadenceApi implements CadenceApi {
     active: async () => this.activePlatform,
     setActive: async (platform: PlatformId) => {
       this.activePlatform = platform;
+    },
+  };
+
+  private remoteState: RemoteStatus = {
+    enabled: false,
+    server: { kind: 'off' },
+    devices: [
+      { id: 'mock-phone', name: 'Pixel 9', pairedAtMs: Date.now() - 86_400_000, lastSeenAtMs: Date.now() - 3_600_000, online: false },
+      { id: 'mock-ipad', name: 'Kitchen iPad', pairedAtMs: Date.now() - 7 * 86_400_000, lastSeenAtMs: Date.now() - 3 * 86_400_000, online: false },
+    ],
+    pairing: null,
+    activeOutput: null,
+  };
+
+  /** While the mock phone owns playback, transport goes to it, as in the real main process. */
+  private routeToMockPhone(cmd: PlaybackCommand): boolean {
+    const out = this.remoteState.activeOutput;
+    if (out === null) return false;
+    const now = Date.now();
+    const pos = out.positionMs + (out.playing ? now - out.reportedAtMs : 0);
+    switch (cmd.kind) {
+      case 'pause':
+      case 'resume':
+        this.setRemote({ ...this.remoteState, activeOutput: { ...out, playing: cmd.kind === 'resume', positionMs: pos, reportedAtMs: now } });
+        return true;
+      case 'play':
+        this.setRemote({
+          ...this.remoteState,
+          activeOutput: { ...out, playing: true, queueId: cmd.queueId ?? out.queueId, positionMs: cmd.queueId ? 0 : pos, reportedAtMs: now },
+        });
+        return true;
+      case 'seek':
+        this.setRemote({ ...this.remoteState, activeOutput: { ...out, positionMs: cmd.positionMs, reportedAtMs: now } });
+        return true;
+      case 'setVolume':
+        this.setRemote({ ...this.remoteState, activeOutput: { ...out, volume: cmd.volume } });
+        return true;
+      case 'next':
+      case 'previous': {
+        const i = this.queue.items.findIndex((it) => it.queueId === out.queueId) + (cmd.kind === 'next' ? 1 : -1);
+        const item = this.queue.items[Math.max(0, Math.min(i, this.queue.items.length - 1))];
+        if (item) {
+          this.setRemote({
+            ...this.remoteState,
+            activeOutput: { ...out, queueId: item.queueId, positionMs: 0, durationMs: item.track.durationMs, reportedAtMs: now },
+          });
+        }
+        return true;
+      }
+      case 'stop':
+        this.setRemote({ ...this.remoteState, activeOutput: null });
+        return true;
+      default:
+        return false;
+    }
+  }
+  private remoteListeners = new Set<(s: RemoteStatus) => void>();
+  private setRemote(next: RemoteStatus): RemoteStatus {
+    this.remoteState = next;
+    for (const cb of this.remoteListeners) cb(clone(next));
+    return clone(next);
+  }
+
+  /** Mock phone sync: a fake server on a fixed LAN address and a static QR. */
+  remote = {
+    status: async () => clone(this.remoteState),
+    setEnabled: async (enabled: boolean) =>
+      this.setRemote({
+        ...this.remoteState,
+        enabled,
+        pairing: enabled ? this.remoteState.pairing : null,
+        server: enabled ? { kind: 'on', port: 47820, addresses: ['192.168.1.20'] } : { kind: 'off' },
+        // The mock Pixel connects as soon as sync is on; the iPad stays away.
+        devices: this.remoteState.devices.map((d) => ({ ...d, online: enabled && d.id === 'mock-phone' })),
+        activeOutput: enabled ? this.remoteState.activeOutput : null,
+      }),
+    /** Mock handoff: the phone picks up at the computer's position and the computer pauses. */
+    handoff: async (deviceId: string) => {
+      const device = this.remoteState.devices.find((d) => d.id === deviceId);
+      const current = this.snapshot.current;
+      if (!device?.online) throw new Error('That phone is not connected. Open Cadence on it first.');
+      if (current === null) throw new Error('Nothing is playing to move to the phone.');
+      const now = Date.now();
+      const s = this.snapshot;
+      const positionMs = s.positionMs + (s.status === 'playing' ? now - s.positionAtMs : 0);
+      await this.sendCommand({ kind: 'pause' });
+      return this.setRemote({
+        ...this.remoteState,
+        activeOutput: {
+          deviceId,
+          deviceName: device.name,
+          queueId: current.queueId,
+          playing: true,
+          positionMs,
+          durationMs: s.durationMs,
+          volume: 0.7,
+          reportedAtMs: now,
+        },
+      });
+    },
+    reclaim: async () => {
+      const out = this.remoteState.activeOutput;
+      if (out === null) return clone(this.remoteState);
+      const positionMs = out.positionMs + (out.playing ? Date.now() - out.reportedAtMs : 0);
+      const next = this.setRemote({ ...this.remoteState, activeOutput: null });
+      await this.sendCommand({ kind: 'play', queueId: out.queueId });
+      await this.sendCommand({ kind: 'seek', positionMs });
+      return next;
+    },
+    startPairing: async () => {
+      const code = '482913';
+      const link = `cadence://pair?h=192.168.1.20&p=47820&c=${code}&n=mock`;
+      const qrSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#fff"/><path d="M1 1h3v3H1zM6 1h3v3H6zM1 6h3v3H1zM6 6h1v1H6zM8 7h1v2H8z" fill="#000"/></svg>`;
+      return this.setRemote({ ...this.remoteState, pairing: { code, link, qrSvg, expiresAtMs: Date.now() + 300_000 } });
+    },
+    cancelPairing: async () => this.setRemote({ ...this.remoteState, pairing: null }),
+    revoke: async (deviceId: string) =>
+      this.setRemote({ ...this.remoteState, devices: this.remoteState.devices.filter((d) => d.id !== deviceId) }),
+    onStatus: (cb: (s: RemoteStatus) => void) => {
+      this.remoteListeners.add(cb);
+      return () => {
+        this.remoteListeners.delete(cb);
+      };
     },
   };
 
@@ -706,6 +844,17 @@ export class MockCadenceApi implements CadenceApi {
         }
         case 'lyrics':
           return { sections: [], lyrics: '[00:00.50]Signal on the wire\n[00:04.00]Numbers in the rain' };
+        case 'songLinks':
+          return {
+            sections: [{
+              id: 'song-links',
+              title: '',
+              entries: [
+                { kind: 'album', album: { kind: 'album', id: 'al.mock-1', route, provider: 'apple', title: 'Mock Album' } },
+                { kind: 'artist', artist: { kind: 'artist', id: 'ar.mock-1', route, provider: 'apple', name: 'Mock Artist' } },
+              ],
+            }],
+          };
         case 'addToLibrary':
           return { sections: [] };
       }

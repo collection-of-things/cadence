@@ -6,6 +6,7 @@ import type {
   LibraryQuery,
   PlatformId,
   PlaybackCommand,
+  RemoteStatus,
   RouteId,
   ScanProgress,
 } from "@cadence/protocol";
@@ -43,11 +44,15 @@ const api: CadenceApi = {
     albums: (q?: LibraryQuery) => invoke(C.libraryAlbums, q),
     artists: (q?: LibraryQuery) => invoke(C.libraryArtists, q),
     track: (id: string) => invoke(C.libraryTrack, id),
+    counts: () => invoke(C.libraryCounts),
     addFoldersAndScan: () => invoke(C.libraryAddFolders),
     scan: (paths: string[]) => invoke(C.libraryScan, paths),
     onScanProgress: (cb: (p: ScanProgress) => void) => subscribe(C.scanProgress, cb),
     roots: () => invoke(C.libraryRoots),
     removeRoots: (paths: string[]) => invoke(C.libraryRemoveRoots, paths),
+    importLyrics: (trackId: string) => invoke(C.libraryImportLyrics, trackId),
+    setLyricsOffset: (trackId: string, offsetMs: number) =>
+      invoke(C.librarySetLyricsOffset, { trackId, offsetMs }),
   },
 
   audio: {
@@ -73,6 +78,17 @@ const api: CadenceApi = {
 
   search: {
     provider: (route: RouteId, text: string) => invoke(C.searchProvider, { route, text }),
+  },
+
+  remote: {
+    status: () => invoke(C.remoteStatus),
+    setEnabled: (enabled: boolean) => invoke(C.remoteSetEnabled, enabled),
+    startPairing: () => invoke(C.remoteStartPairing),
+    cancelPairing: () => invoke(C.remoteCancelPairing),
+    revoke: (deviceId: string) => invoke(C.remoteRevoke, deviceId),
+    handoff: (deviceId: string) => invoke(C.remoteHandoff, deviceId),
+    reclaim: () => invoke(C.remoteReclaim),
+    onStatus: (cb: (s: RemoteStatus) => void) => subscribe(C.remoteStatusEvent, cb),
   },
 
   app: {

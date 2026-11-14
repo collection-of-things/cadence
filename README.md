@@ -15,6 +15,7 @@ implements (docs/prototype-v1.md links to it).
   capability records, coordinator events, audio-service JSON-RPC.
 - `apps/desktop` — Electron main: shell, coordinator, library, adapters, IPC.
 - `apps/ui` — React renderer: now-playing, library, queue, visuals.
+- `apps/mobile`: Expo phone app: pairs over Wi-Fi, remote control, plays the queue on the phone (see its README).
 - `services/audio` — Rust binary: decode -> PCM graph -> FFT -> CPAL.
 - `scripts/` — fixtures + verify.
 - `test/fixtures` — generated local audio fixtures (not committed).

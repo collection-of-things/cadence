@@ -191,6 +191,7 @@ export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
       year: spec.year,
       artwork,
       trackCount: n,
+      genre: spec.genre,
     });
   });
   return { tracks, albums };

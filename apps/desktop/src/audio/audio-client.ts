@@ -1,16 +1,9 @@
-import { execFile, spawn } from "node:child_process";
-import { close, createWriteStream, open, unlink } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
-import { promisify } from "node:util";
 import type { AudioRpcEvent } from "@cadence/protocol";
 import { encodeMessage, parseLine } from "./json-rpc.js";
 import type { PcmFormat, PcmStream, PcmStreamSink } from "./pcm-stream.js";
 
-const execFileAsync = promisify(execFile);
-const closeAsync = promisify(close);
-const unlinkAsync = promisify(unlink);
 
 /** Lifecycle of the supervised audio-service child process. */
 export type AudioClientState = "down" | "starting" | "up" | "failed";
@@ -129,7 +122,6 @@ export class AudioServiceClient implements PcmStreamSink {
   private readonly spawnFn: SpawnAudio;
   private readonly requestTimeoutMs: number;
   private readonly restart: RestartPolicy;
-  private readonly sleep: (ms: number) => Promise<void>;
   private readonly onLog: ((line: string) => void) | undefined;
 
   private proc: AudioChildProcess | null = null;
@@ -140,7 +132,6 @@ export class AudioServiceClient implements PcmStreamSink {
   private attempts = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private nextId = 1;
-  private streamSeq = 0;
   private lineTail = "";
   private readonly pending = new Map<number, PendingRequest>();
   private readonly eventListeners = new Set<(e: AudioRpcEvent) => void>();
@@ -152,7 +143,6 @@ export class AudioServiceClient implements PcmStreamSink {
     this.spawnFn = deps.spawn ?? defaultSpawn;
     this.requestTimeoutMs = deps.requestTimeoutMs ?? 10_000;
     this.restart = { ...DEFAULT_RESTART, ...deps.restart };
-    this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.onLog = deps.onLog;
   }
 
@@ -280,6 +270,7 @@ export class AudioServiceClient implements PcmStreamSink {
 
   /** Set the parametric EQ band gains. */
   async setEq(bands: { freqHz: number; gainDb: number }[]): Promise<unknown> {
+    await this.ensureStarted();
     return this.request("audio.setEq", { bands });
   }
 
@@ -546,66 +537,6 @@ function defaultSpawn(binaryPath: string): AudioChildProcess {
     },
     on: (event, cb) => child.on(event, cb),
   };
-}
-
-/**
- * pcm-stream over a named fifo. O_RDWR avoids the classic open-for-write
- * block; fs-level writes queue through the pipe's buffer so awaiting write()
- * gives the librespot-style producer natural backpressure.
- */
-class FifoPcmStream implements PcmStream {
-  private tail: Promise<void> = Promise.resolve();
-  private closed = false;
-  private readonly writable;
-
-  constructor(
-    readonly streamId: string,
-    private readonly fifoPath: string,
-    private readonly fd: number,
-  ) {
-    this.writable = createWriteStream(fifoPath, { fd, autoClose: false });
-  }
-
-  /** Push one PCM chunk; resolves when the pipe accepts it (backpressure). */
-  write(chunk: Uint8Array): Promise<void> {
-    if (this.closed) return Promise.reject(new AudioServiceDown("pcm stream closed"));
-    const p = this.tail.then(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          this.writable.write(chunk, (err: Error | null | undefined) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-    );
-    this.tail = p.then(
-      () => undefined,
-      () => undefined,
-    );
-    return p;
-  }
-
-  /** Signal end-of-stream and release the fifo. */
-  async end(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    await this.tail;
-    this.writable.end();
-    await this.closeAndUnlink();
-  }
-
-  /** Abort immediately and release the fifo. */
-  async abort(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    this.writable.destroy();
-    await this.closeAndUnlink();
-  }
-
-  private async closeAndUnlink(): Promise<void> {
-    await closeAsync(this.fd).catch(() => undefined);
-    await unlinkAsync(this.fifoPath).catch(() => undefined);
-  }
 }
 
 /**

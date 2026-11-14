@@ -1,34 +1,32 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { LibraryAlbum, TrackRef } from '@cadence/protocol';
+import type { LibraryAlbum } from '@cadence/protocol';
 import { api, session } from '../session';
-import { formatTime } from '../format';
 import { useUi } from '../hooks';
 import { FolderIcon, NoteIcon, SearchIcon } from '../icons';
+import { useLibraryRead } from '../library';
+import type { LibraryTab } from '../navigation';
+import { SkeletonRows } from './Shelf';
 import { TrackRow } from './TrackRow';
 
-export type LibraryTab = 'albums' | 'artists' | 'songs';
 const TITLES: Record<LibraryTab, string> = { albums: 'Albums', artists: 'Artists', songs: 'Songs' };
 
 function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(album: LibraryAlbum): void }) {
-  const [albums, setAlbums] = useState<LibraryAlbum[] | null>(null);
-  const scan = useUi((s) => s.scan);
-  useEffect(() => {
-    let live = true;
-    api.library.albums(query ? { text: query } : {}).then((a) => live && setAlbums(a));
-    return () => {
-      live = false;
-    };
-    // scan.phase in deps: a finished scan or root removal refetches the grid.
-  }, [query, scan.phase]);
+  const albums = useLibraryRead(() => api.library.albums(query ? { text: query } : {}), [query], []);
 
-  if (!albums) return <div className="lib-status">Loading albums…</div>;
+  if (!albums) {
+    return (
+      <div className="album-grid" aria-hidden="true">
+        {Array.from({ length: 12 }, (_, i) => <span key={i} className="skeleton skeleton-album" />)}
+      </div>
+    );
+  }
   if (!albums.length) return <div className="lib-status">No albums match.</div>;
 
   return (
     <div className="album-grid">
-      {albums.map((a, i) => (
-        <button key={a.id} className="album-card" style={{ '--i': i } as CSSProperties} onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+      {albums.map((a) => (
+        <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
           {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
           <span className="album-title">{a.title}</span>
           <span className="album-artist">
@@ -41,34 +39,20 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
   );
 }
 
-function ArtistsList({ query }: { query: string }) {
-  const [artists, setArtists] = useState<{ name: string; albumCount: number; trackCount: number }[] | null>(null);
-  const scan = useUi((s) => s.scan);
-  useEffect(() => {
-    let live = true;
-    api.library.artists({}).then((a) => live && setArtists(a));
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scan.phase refetches after scans
-  }, [scan.phase]);
-  if (!artists) return <div className="lib-status">Loading artists…</div>;
+function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(name: string): void }) {
+  const artists = useLibraryRead(() => api.library.artists({}), [], []);
+  if (!artists) return <SkeletonRows />;
   const shown = query ? artists.filter((a) => a.name.toLowerCase().includes(query.toLowerCase())) : artists;
   if (!shown.length) return <div className="lib-status">No artists match.</div>;
-
-  const play = async (name: string) => {
-    const tracks = await api.library.tracks({ artist: name });
-    session.playTracks(tracks, 0, { kind: 'manual' });
-  };
 
   return (
     <div className="artist-list">
       {shown.map((a) => (
-        <button key={a.name} className="artist-row" onClick={() => void play(a.name)}>
+        <button key={a.name} className="artist-row" onClick={() => onSelectArtist(a.name)}>
           <span className="artist-avatar">{a.name.slice(0, 1).toUpperCase()}</span>
           <span className="artist-name">{a.name}</span>
           <span className="artist-counts">
-            {a.albumCount} album{a.albumCount === 1 ? '' : 's'} · {a.trackCount} tracks
+            {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}
           </span>
         </button>
       ))}
@@ -77,18 +61,8 @@ function ArtistsList({ query }: { query: string }) {
 }
 
 function TracksTable({ query }: { query: string }) {
-  const [tracks, setTracks] = useState<TrackRef[] | null>(null);
+  const tracks = useLibraryRead(() => api.library.tracks(query ? { text: query } : {}), [query], []);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const scan = useUi((s) => s.scan);
-  useEffect(() => {
-    let live = true;
-    setTracks(null);
-    api.library.tracks(query ? { text: query } : {}).then((t) => live && setTracks(t));
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scan.phase refetches after scans
-  }, [query, scan.phase]);
 
   const list = tracks ?? [];
   const virtualizer = useVirtualizer({
@@ -98,7 +72,7 @@ function TracksTable({ query }: { query: string }) {
     overscan: 12,
   });
 
-  if (!tracks) return <div className="lib-status">Loading tracks…</div>;
+  if (!tracks) return <SkeletonRows />;
   if (!list.length) return <div className="lib-status">No tracks match.</div>;
 
   return (
@@ -126,27 +100,27 @@ function TracksTable({ query }: { query: string }) {
   );
 }
 
-/** Library pages (Albums / Artists / Songs); the sidebar picks the tab. */
-export function LibraryView({ tab, onTab, onSelectAlbum }: { tab: LibraryTab; onTab(tab: LibraryTab): void; onSelectAlbum(album: LibraryAlbum): void }) {
-  const storeQuery = useUi((s) => s.libraryQuery);
-  const [text, setText] = useState(storeQuery);
-  const [query, setQuery] = useState(storeQuery);
-  const scan = useUi((s) => s.scan);
-  const [counts, setCounts] = useState<{ albums: number; tracks: number } | null>(null);
-  useEffect(() => {
-    let live = true;
-    void Promise.all([api.library.albums({}), api.library.tracks({})]).then(([a, t]) => {
-      if (live) setCounts({ albums: a.length, tracks: t.length });
-    }).catch(() => undefined);
-    return () => { live = false; };
-  }, [scan.phase]);
+interface LibraryViewProps {
+  tab: LibraryTab;
+  onTab(tab: LibraryTab): void;
+  onSelectAlbum(album: LibraryAlbum): void;
+  onSelectArtist(name: string): void;
+  /** A search submitted from the top bar; `nonce` changes on every submission. */
+  query?: string | undefined;
+  nonce?: number | undefined;
+}
 
-  // The sidebar search navigates here carrying its query — adopt it once.
+/** Library pages (Albums / Artists / Songs); the sidebar picks the tab. */
+export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: submitted, nonce }: LibraryViewProps) {
+  const [text, setText] = useState(submitted ?? '');
+  const [query, setQuery] = useState(submitted ?? '');
+  const scan = useUi((s) => s.scan);
+  const counts = useLibraryRead(() => api.library.counts(), [], null);
+
+  // Each top-bar submission replaces what is in the field.
   useEffect(() => {
-    if (!storeQuery) return;
-    setText(storeQuery);
-    session.setLibraryQuery(''); // adopt once — don't resurrect it on remount
-  }, [storeQuery]);
+    if (submitted) setText(submitted);
+  }, [submitted, nonce]);
 
   const jumpedRef = useRef(false);
   useEffect(() => {
@@ -187,7 +161,11 @@ export function LibraryView({ tab, onTab, onSelectAlbum }: { tab: LibraryTab; on
     <div className="lib">
       <header className="lib-head">
         <h1>{TITLES[tab]}</h1>
-        {counts && <span className="lib-count">{counts.albums} albums · {counts.tracks} songs</span>}
+        {counts && (
+          <span className="lib-count">
+            {counts.albums} {counts.albums === 1 ? 'album' : 'albums'} · {counts.tracks} {counts.tracks === 1 ? 'song' : 'songs'}
+          </span>
+        )}
       </header>
       <div className="lib-bar">
         <div className="lib-search">
@@ -231,7 +209,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum }: { tab: LibraryTab; on
       )}
       <div className="lib-body">
         {tab === 'albums' && <AlbumsGrid query={query} onSelectAlbum={onSelectAlbum} />}
-        {tab === 'artists' && <ArtistsList query={query} />}
+        {tab === 'artists' && <ArtistsList query={query} onSelectArtist={onSelectArtist} />}
         {tab === 'songs' && <TracksTable query={query} />}
       </div>
     </div>

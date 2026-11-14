@@ -105,6 +105,8 @@ export interface TrackRef {
   replayGainDb?: number;
   /** Raw lyrics text — LRC (synced) or plain. UI parses. */
   lyrics?: string;
+  /** Local tracks: the listener's sync nudge, added to every lyric line's time. */
+  lyricsOffsetMs?: number;
   /** Honest per-track availability (region locks, key refusals). */
   availability: "available" | "unavailable" | "unknown";
   availabilityDetail?: string;
@@ -157,7 +159,7 @@ export interface ActiveOutput {
   sampleRateHz: number;
   channels: number;
   bitDepth: number | "float";
-  /** True when DSP/EQ/resample is bypassed end-to-end (strict fidelity mode). */
+  /** True when fidelity mode bypasses Cadence's EQ, ReplayGain and resampler. Idle playback may also need no DSP without this flag. OS/device conversion is not verified. */
   fidelityBypass: boolean;
   exclusive: boolean;
 }
@@ -309,6 +311,14 @@ export interface LibraryAlbum {
   year?: number;
   artwork?: ArtworkRef;
   trackCount: number;
+  /** Genres from the album's track tags, when any track has them. */
+  genre?: string[];
+}
+
+/** How much music the local library holds. */
+export interface LibraryCounts {
+  albums: number;
+  tracks: number;
 }
 
 export interface LibraryQuery {
@@ -330,3 +340,4 @@ export interface ScanProgress {
 export * from "./audio-ipc.js";
 export * from "./cadence-api.js";
 export * from "./catalog.js";
+export * from "./remote.js";

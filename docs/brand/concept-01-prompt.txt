@@ -1,0 +1,4 @@
+Generated with the built-in image generation tool.
+
+The generation prompt was not recorded when this image was saved and could not be
+recovered afterwards. The line above is the only provenance kept.

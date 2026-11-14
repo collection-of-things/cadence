@@ -73,7 +73,7 @@ dir printed by `launch`); without it they use the most recent session.
 |---|---|
 | `smoke` | launch, bridge ready, all 5 fixtures indexed by identity, Library nav, album open, click-to-play on the expected track, stream routed to the verify tap, **real non-silent monitor capture**, pause |
 | `audio` | real PCM out: monitor capture is **not silent**, **level sane** vs decoded reference, **pause silences the tap**, capture **aligns to the reference** (cross-correlation), **seek moved the source position** (delta + elapsed window time) |
-| `navigate` | sidebar rows land on their views (incl. the Songs/Albums/Artists library tabs), search shows the fixture in visible rows, album open/back/forward, queue panel, now-playing overlay actually opens, settings sheet, Sources page |
+| `navigate` | sidebar rows land on their views (incl. the Songs/Albums/Artists library tabs), search shows the fixture in visible rows, album open/back/forward, queue panel, now-playing overlay actually opens, settings page, Sources page |
 | `playback` | click-to-play the expected track, position advances, pause/resume, spacebar toggle, seek-bar seek, next/previous, row-menu "Play next", queue row jump to the expected track, queue remove (all waited on predicates, not sleeps) |
 | `library` | 5 fixture tracks / 2 albums / 2 artists indexed, artwork extracted, sidebar library tabs render, text filter, artist-row play, album fact chips |
 | `providers` | `local` ready; streaming providers reported **ready/skipped per their own capability record** — readiness only, NOT provider playback E2E (pluggable — real provider flows can drop into `helpers/src/flows/` and gate on the same capabilities) |
@@ -203,10 +203,10 @@ in the run dirs.
   `paused Vantage@13959` → `playing Beacon@1365`; on Beacon (queue[0])
   it restarts the same track at ~0. (audio flow reports this as a NOTE,
   does not gate.)
-- **resume-after-restore via the transport is inert.** After relaunch,
-  clicking the Play button does nothing; `window.cadence.sendCommand`
-  `resume` works and plays the restored item. (restart flow reports
-  this as a NOTE, does not gate.)
+- Transport clicks go through `transportButton` (flow.mjs). An earlier
+  "Play after restore is inert" report was the harness clicking the
+  first button whose name contained "Play" — the sidebar's Playlists
+  header — not the transport.
 - **previous after a transition race.** Meridian→Previous can land on
   Vantage when the coordinator's auto-advance fires between checks
   (position accounting around transitions is unreliable).

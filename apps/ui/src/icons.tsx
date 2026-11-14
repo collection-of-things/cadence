@@ -2,7 +2,7 @@ interface P {
   size?: number;
 }
 
-const SW = 1.5;
+const SW = 1.8;
 
 function Svg({ size = 20, children, label }: P & { children: React.ReactNode; label?: string }) {
   return (
@@ -12,7 +12,7 @@ function Svg({ size = 20, children, label }: P & { children: React.ReactNode; la
   );
 }
 
-/** Stroked path shorthand: currentColor, 1.5px, round caps/joins. */
+/** Stroked path shorthand: currentColor, 1.8px, round caps/joins. */
 function strokeProps() {
   return { stroke: 'currentColor', strokeWidth: SW, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
 }
@@ -78,6 +78,27 @@ export const QueueIcon = (p: P) => (
   <Svg {...p}>
     <path d="M3.5 6.5h17M3.5 12h10M3.5 17.5h10" {...strokeProps()} />
     <path d="M16.8 11.4v5.7a.45.45 0 0 0 .7.38l4.3-2.85a.45.45 0 0 0 0-.76l-4.3-2.85a.45.45 0 0 0-.7.4Z" fill="currentColor" />
+  </Svg>
+);
+/** Speaker beside a phone: where playback goes. */
+export const DevicesIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="10.5" height="16" rx="2.2" {...strokeProps()} />
+    <circle cx="8.25" cy="13.6" r="2.6" {...strokeProps()} />
+    <circle cx="8.25" cy="7.6" r="0.6" fill="currentColor" />
+    <rect x="16" y="7.5" width="5" height="12.5" rx="1.6" {...strokeProps()} />
+  </Svg>
+);
+export const ComputerIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4.5" width="18" height="12" rx="2" {...strokeProps()} />
+    <path d="M8.5 20h7M12 16.5V20" {...strokeProps()} />
+  </Svg>
+);
+export const PhoneIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="6.5" y="2.8" width="11" height="18.4" rx="2.4" {...strokeProps()} />
+    <path d="M10.5 17.8h3" {...strokeProps()} />
   </Svg>
 );
 export const CloseIcon = (p: P) => (
@@ -207,6 +228,13 @@ export const LyricsIcon = (p: P) => (
     <path d="M9.6 8.4 8.4 11h1.8v2H7.8v-2.2l1-2.4h.8ZM14.6 8.4 13.4 11h1.8v2h-2.4v-2.2l1-2.4h.8Z" fill="currentColor" />
   </Svg>
 );
+/** A circled plus for "Add to Library", which becomes a circled check once saved. */
+export const LibraryIcon = ({ saved = false, ...p }: P & { saved?: boolean }) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.5" {...strokeProps()} />
+    <path d={saved ? 'm8.2 12.3 2.6 2.6 5-5.4' : 'M12 8.2v7.6M8.2 12h7.6'} {...strokeProps()} />
+  </Svg>
+);
 export const SidebarIcon = (p: P) => (
   <Svg {...p}>
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" {...strokeProps()} />
@@ -224,12 +252,6 @@ export const ExpandIcon = (p: P) => (
     <path d="M15 4h5v5M9 20H4v-5M20 4l-7 7M4 20l7-7" {...strokeProps()} />
   </Svg>
 );
-export const ScreenIcon = (p: P) => (
-  <Svg {...p}>
-    <rect x="3" y="4.5" width="18" height="12" rx="2" {...strokeProps()} />
-    <path d="M8.5 20h7M12 16.5V20" {...strokeProps()} />
-  </Svg>
-);
 export const SortIcon = (p: P) => (
   <Svg {...p}>
     <path d="M7 4v15m0 0-3-3m3 3 3-3M13 6h7M13 11h5M13 16h3" {...strokeProps()} />
@@ -244,18 +266,6 @@ export const RefreshIcon = (p: P) => (
 export const CheckIcon = (p: P) => (
   <Svg {...p}>
     <path d="m5 12.5 4.5 4.5L19 7.5" {...strokeProps()} strokeWidth={1.9} />
-  </Svg>
-);
-export const QueueNextIcon = (p: P) => (
-  <Svg {...p}>
-    <path d="M4 6h11M4 11h11M4 16h6" {...strokeProps()} />
-    <path d="M17 13v7M13.5 16.5h7" {...strokeProps()} />
-  </Svg>
-);
-export const ArtOnlyIcon = (p: P) => (
-  <Svg {...p}>
-    <rect x="3.5" y="5" width="17" height="14" rx="2.5" {...strokeProps()} />
-    <path d="M7.5 5v14M16.5 5v14" {...strokeProps()} />
   </Svg>
 );
 export const BrowseIcon = (p: P) => (

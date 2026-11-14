@@ -16,6 +16,25 @@ export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set([
   ".opus",
 ]);
 
+/** The lyrics file that sits beside an audio file: same name, .lrc extension. */
+export function sidecarLyricsPath(audioPath: string): string {
+  return audioPath.slice(0, audioPath.length - extname(audioPath).length) + ".lrc";
+}
+
+/** Lyrics files larger than this are not lyrics. */
+const MAX_LYRICS_BYTES = 1024 * 1024;
+
+/** Read a lyrics file as text; null when it is missing, empty or too large. */
+export async function readLyricsFile(path: string): Promise<string | null> {
+  const st = await stat(path).catch(() => null);
+  if (st === null || !st.isFile() || st.size > MAX_LYRICS_BYTES) return null;
+  const text = await readFile(path, "utf-8").catch(() => null);
+  if (text === null) return null;
+  // Downloaded files often start with a byte-order mark.
+  const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  return clean.trim() === "" ? null : clean;
+}
+
 /** Stable track id: route prefix + content-independent path hash. */
 export function trackIdForPath(path: string): string {
   return `local:${createHash("sha1").update(path).digest("hex").slice(0, 24)}`;
@@ -145,9 +164,7 @@ export class LibraryScanner {
       const first = embedded[0];
       text = typeof first === "string" ? first : first?.text ?? null;
     }
-    const sidecar = path.replace(/\.[^.]+$/, ".lrc");
-    const lrc = await readFile(sidecar, "utf-8").catch(() => null);
-    return lrc ?? text;
+    return (await readLyricsFile(sidecarLyricsPath(path))) ?? text;
   }
 
   /** Write embedded artwork to the thumbnail cache; returns its path. */

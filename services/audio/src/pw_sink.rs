@@ -33,13 +33,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::decode::PcmKind;
 
-/// The negotiated kind that carries `depth` losslessly — same choice mpv
-/// makes: s16 for <=16-bit int, s32 for deeper int, f32 for float.
+/// Leave fractional precision for volume and DSP even on 16-bit sources.
+/// Returning S16 here would round the processed signal back to 16 bits
+/// before PipeWire receives it. S32 also preserves integer bypass samples.
 fn kind_for(depth: BitDepth) -> PcmKind {
     match depth {
         BitDepth::Float => PcmKind::F32,
-        BitDepth::Int(b) if b > 16 => PcmKind::S32,
-        BitDepth::Int(_) => PcmKind::S16,
+        BitDepth::Int(_) => PcmKind::S32,
     }
 }
 
@@ -334,7 +334,7 @@ impl DeviceCaps for PipeWireCaps {
     }
 
     /// A native stream accepts anything PipeWire can carry — which is every
-    /// rate/channel count. Pick the depth-preserving format (mpv-style).
+    /// rate/channel count. Preserve source depth and fractional gain precision.
     fn accepts(&self, rate: u32, channels: u32, depth: BitDepth) -> Option<PcmKind> {
         if rate == 0 || channels == 0 || channels > 64 {
             return None;
@@ -514,6 +514,10 @@ impl PipeWireCaps {
                 // rate while we deliver `rate` buffers — the adapter then
                 // rate-matches (the same resampling we came here to kill).
                 *pw::keys::NODE_RATE => format!("1/{}", neg.rate),
+                // Preserve the upper passband if PipeWire must convert to
+                // a different graph rate. This does not force resampling or
+                // change the device rate; matching-rate streams stay native.
+                "resample.quality" => "14",
                 // No NODE_ALWAYS_PROCESS — the node suspends when idle,
                 // like mpv's: a held-active driver would pin the graph
                 // rate and block device suspend for nothing.
@@ -1148,6 +1152,22 @@ impl Drop for PipeWireSink {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn integer_streams_leave_precision_for_fractional_volume() {
+        let caps = PipeWireCaps {
+            target: None,
+            device_name: "test".into(),
+            error: Arc::new(Mutex::new(None)),
+            list_cache: Mutex::new(None),
+        };
+        // Even a 16-bit source needs fractional bits after volume or DSP.
+        // Negotiation must not force the final output back onto its grid.
+        for depth in [8, 16, 24, 32] {
+            assert_eq!(caps.accepts(44_100, 2, BitDepth::Int(depth)), Some(PcmKind::S32));
+        }
+        assert_eq!(caps.accepts(44_100, 2, BitDepth::Float), Some(PcmKind::F32));
+    }
     
     fn resolve_positions_ref(neg: &Negotiated) -> Vec<u32> {
         neg.positions.clone().unwrap()

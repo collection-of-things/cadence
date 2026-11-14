@@ -1,0 +1,4 @@
+Built-in image generation. Targeted edits of concept-02.png and music-disc-02.png.
+
+The generation prompt was not recorded when this image was saved and could not be
+recovered afterwards. The line above is the only provenance kept.

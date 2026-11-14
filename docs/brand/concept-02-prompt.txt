@@ -1,0 +1,4 @@
+Built-in image generation. Revision of concept-01.png.
+
+The generation prompt was not recorded when this image was saved and could not be
+recovered afterwards. The line above is the only provenance kept.

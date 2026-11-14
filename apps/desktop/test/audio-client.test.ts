@@ -24,6 +24,24 @@ function lastService(services: MockAudioService[]): MockAudioService {
 }
 
 describe("AudioServiceClient", () => {
+  it("applies EQ when the local audio service has not started yet", async () => {
+    const { services, spawn } = mockSpawnFactory();
+    const client = new AudioServiceClient({
+      binaryPath: "/fake/cadence-audio",
+      spawn: () => {
+        const service = spawn();
+        service.handlers.set("audio.setEq", () => ({}));
+        return service;
+      },
+      requestTimeoutMs: 500,
+    });
+    try {
+      await expect(client.setEq([{ freqHz: 60, gainDb: 2 }])).resolves.toBeDefined();
+      expect(lastService(services).methods()).toContain("audio.setEq");
+    } finally {
+      await client.dispose();
+    }
+  });
   it("starts, answers requests, and correlates responses", async () => {
     const { client, services } = makeClient();
     await client.start();

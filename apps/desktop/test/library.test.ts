@@ -125,6 +125,7 @@ describe("library: scanning + FTS5", () => {
     expect(fixtureAlbum).toBeDefined();
     expect(fixtureAlbum?.artist).toBe("Fixture Artist");
     expect(fixtureAlbum?.trackCount).toBe(1);
+    expect(r.service.counts()).toEqual({ albums: albums.length, tracks: r.service.tracks().length });
     const artists = r.service.artists();
     const fixture = artists.find((a) => a.name === "Fixture Artist");
     expect(fixture).toBeDefined();
@@ -160,6 +161,39 @@ describe("library: scanning + FTS5", () => {
     await r.service.scan([dir]);
     expect(r.service.tracks().length).toBe(1);
     await r.service.dispose();
+  });
+
+  it("picks up a lyrics file dropped beside a song, and keeps imported lyrics across rescans", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cadence-lrc-"));
+    dirs.push(dir);
+    const { copyFile, writeFile } = await import("node:fs/promises");
+    await copyFile(join(fixtureDir, "tagged.flac"), join(dir, "song.flac"));
+    const picked = join(dir, "downloaded.lrc");
+    await writeFile(picked, "﻿[00:01.00]Imported line\n");
+    const r = makeRig();
+    dirs.push(r.dir);
+    const service = new LibraryService({
+      db: r.db,
+      scanner: new LibraryScanner(join(r.dir, "thumbs")),
+      store: new SettingsStore(join(r.dir, "s.json")),
+      pickFolders: () => Promise.resolve(ok([])),
+      pickLyricsFile: () => Promise.resolve(picked),
+    });
+    await service.scan([dir]);
+    const id = service.tracks()[0]!.id;
+
+    // The song file is unchanged, yet its new sidecar shows after a rescan.
+    await writeFile(join(dir, "song.lrc"), "[00:02.00]Sidecar line\n");
+    await service.scan([dir]);
+    expect(service.track(id)?.lyrics).toBe("[00:02.00]Sidecar line\n");
+
+    // An imported file wins, loses its byte-order mark, and survives a rescan.
+    expect((await service.importLyrics(id))?.lyrics).toBe("[00:01.00]Imported line\n");
+    expect(service.setLyricsOffset(id, -500)?.lyricsOffsetMs).toBe(-500);
+    await writeFile(join(dir, "song.lrc"), "[00:03.00]Edited sidecar\n");
+    await service.scan([dir]);
+    expect(service.track(id)).toMatchObject({ lyrics: "[00:01.00]Imported line\n", lyricsOffsetMs: -500 });
+    await service.dispose();
   });
 
   it("addFoldersAndScan persists roots through the picker seam", async () => {

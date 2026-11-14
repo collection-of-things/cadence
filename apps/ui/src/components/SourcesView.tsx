@@ -3,23 +3,12 @@ import type { RouteCapabilities, RouteId, TrackRef } from '@cadence/protocol';
 import { api, session } from '../session';
 import { artistsLine, formatTime } from '../format';
 import { useUi } from '../hooks';
-import { NoteIcon, PlusIcon, SearchIcon } from '../icons';
-import { providerForRoute, RouteBadge, routeLabel } from './RouteBadge';
+import { NoteIcon, SearchIcon } from '../icons';
+import { AddGlyph, useJustAdded } from './AddGlyph';
+import { cleanIpcError } from '../ipcError';
+import { ROUTE_STATE_META, routeLabel } from '../routes';
+import { RouteBadge } from './RouteBadge';
 import './controls.css';
-
-const STATE_META: Record<RouteCapabilities['state'], { label: string; tone: 'ok' | 'warn' | 'dim' }> = {
-  ready: { label: 'Ready', tone: 'ok' },
-  unauthenticated: { label: 'Sign-in required', tone: 'warn' },
-  unavailable: { label: 'Unavailable', tone: 'dim' },
-  degraded: { label: 'Degraded', tone: 'warn' },
-  error: { label: 'Error', tone: 'warn' },
-};
-
-/** IPC handler rejections arrive wrapped; keep the adapter's own message. */
-function cleanIpcError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e);
-  return msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-}
 
 function triChip(key: string, tri: 'yes' | 'no' | 'unknown', label: string) {
   if (tri === 'yes') return { key, label, tone: 'ok' as const };
@@ -34,7 +23,7 @@ const ENGINE_LABELS: Record<RouteCapabilities['playback']['engine'], string> = {
 };
 
 function RouteCard({ cap }: { cap: RouteCapabilities }) {
-  const meta = STATE_META[cap.state];
+  const meta = ROUTE_STATE_META[cap.state];
   const chips = [
     {
       key: 'eng',
@@ -45,28 +34,27 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
     triChip('eq', cap.audio.eq, 'EQ'),
     triChip('pcm', cap.audio.pcmAccess, 'PCM'),
     triChip('rg', cap.audio.replayGain, 'ReplayGain'),
-    cap.audio.qualityCeiling ? { key: 'q', label: cap.audio.qualityCeiling, tone: 'dim' as const } : null,
     { key: 'vis', label: cap.visuals.kind === 'pcm-fft' ? 'PCM FFT' : 'Ambient visuals', tone: 'dim' as const },
   ].filter((c): c is NonNullable<typeof c> => c !== null);
 
   return (
     <section className="src-route">
       <header className="src-route-head">
-        <RouteBadge provider={providerForRoute(cap.route)} />
         <span className="src-route-name">{routeLabel(cap.route)}</span>
-        <span className={`chip chip-${meta.tone} src-state`} title={cap.stateDetail}>
+        <span className={`src-state is-${meta.tone}`} title={cap.stateDetail}>
           <i className="src-dot" aria-hidden />
           {meta.label}
         </span>
       </header>
       {cap.stateDetail && <p className="src-route-detail">{cap.stateDetail}</p>}
-      <div className="cap-chips">
+      <ul className="cap-chips" aria-label="Capabilities">
         {chips.map((c) => (
-          <span key={c.key} className={`chip chip-${c.tone}`}>
+          <li key={c.key} className={`cap-chip is-${c.tone}`} title={c.tone === 'dim' ? 'Not confirmed for this route' : undefined}>
             {c.label}
-          </span>
+          </li>
         ))}
-      </div>
+      </ul>
+      {cap.audio.qualityCeiling && <p className="src-quality">{cap.audio.qualityCeiling}</p>}
       {cap.notes.length > 0 && (
         <ul className="src-notes">
           {cap.notes.map((n) => (
@@ -85,6 +73,25 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
         </button>
       )}
     </section>
+  );
+}
+
+/** "Play next" on a search hit; the plus turns into a check once queued. */
+function PlayNextButton({ track }: { track: TrackRef }) {
+  const { added, flash } = useJustAdded();
+  return (
+    <button
+      className="icon-btn src-hit-next"
+      aria-label={`Play ${track.title} next`}
+      title={added ? 'Plays next' : 'Play next'}
+      onClick={(e) => {
+        e.stopPropagation();
+        session.insertNext(track);
+        flash();
+      }}
+    >
+      <AddGlyph added={added} size={15} />
+    </button>
   );
 }
 
@@ -181,7 +188,7 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
               className="src-hit"
               tabIndex={0}
               onClick={() => session.playTracks(results, i, { kind: 'provider' })}
-              onKeyDown={(e) => e.key === 'Enter' && session.playTracks(results, i, { kind: 'provider' })}
+              onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && session.playTracks(results, i, { kind: 'provider' })}
             >
               {t.artwork ? (
                 <img className="src-hit-art" src={t.artwork.url} alt="" loading="lazy" />
@@ -194,19 +201,9 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
                 <span className="src-hit-title">{t.title}</span>
                 <span className="src-hit-artist">{artistsLine(t.artists)}</span>
               </span>
-              <RouteBadge provider={providerForRoute(t.route)} title={t.route} />
+              <RouteBadge route={t.route} />
               <span className="src-hit-time">{formatTime(t.durationMs)}</span>
-              <button
-                className="icon-btn src-hit-next"
-                aria-label={`Play ${t.title} next`}
-                title="Play next"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  session.insertNext(t);
-                }}
-              >
-                <PlusIcon size={15} />
-              </button>
+              <PlayNextButton track={t} />
             </div>
           ))}
         </div>
@@ -219,10 +216,9 @@ export function SourcesView() {
   const capabilities = useUi((s) => s.capabilities);
   return (
     <div className="src">
-      <header className="src-head"><h1>Sources</h1><span className="lib-count">Playback routes</span></header>
-      <h2 className="src-h">Streaming</h2>
+      <header className="src-head"><h1>Sources</h1></header>
       <ProviderSearch caps={capabilities} />
-      <h2 className="src-h">Sources</h2>
+      <h2 className="src-h">Services</h2>
       <div className="src-routes">
         {capabilities.map((c) => (
           <RouteCard key={c.route} cap={c} />

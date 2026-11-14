@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type {
   CoordinatorEvent,
   PlaybackCommand,
@@ -23,7 +23,7 @@ function track(id: string, route: TrackRef['route'] = 'local'): TrackRef {
   };
 }
 
-function qItem(id: string, n = 0): QueueItem {
+function qItem(id: string): QueueItem {
   return { queueId: `q-${id}`, track: track(id) };
 }
 
@@ -368,5 +368,59 @@ describe('queue order helpers', () => {
     const items = [qItem('a'), qItem('b'), qItem('c')];
     expect(displayOrder(queue(items))).toEqual([0, 1, 2]);
     expect(displayOrder(queue(items, { shuffle: true, shuffleOrder: [2, 0, 1] }))).toEqual([2, 0, 1]);
+  });
+});
+
+describe('phone owns playback', () => {
+  it('shows the phone in the player, sends transport to it, and returns on playHere', async () => {
+    const { MockCadenceApi } = await import('../mock/MockCadenceApi');
+    const mock = new MockCadenceApi();
+    const s = createUiStore(mock);
+    await s.init();
+    await mock.remote.setEnabled(true);
+    await new Promise((r) => setTimeout(r, 0));
+    const before = s.store.getState();
+    expect(before.remote?.server.kind).toBe('on');
+    const current = before.localSnapshot.current;
+    expect(current).not.toBeNull();
+
+    s.playOnDevice('mock-phone');
+    await new Promise((r) => setTimeout(r, 10));
+    let st = s.store.getState();
+    expect(st.remote?.activeOutput?.deviceName).toBe('Pixel 9');
+    expect(st.snapshot.status).toBe('playing');
+    expect(st.snapshot.current?.queueId).toBe(current?.queueId);
+    expect(st.localSnapshot.status).toBe('paused');
+
+    // Pause from the player bar goes to the phone; the computer stays paused.
+    s.togglePlay();
+    await new Promise((r) => setTimeout(r, 10));
+    st = s.store.getState();
+    expect(st.remote?.activeOutput?.playing).toBe(false);
+    expect(st.snapshot.status).toBe('paused');
+    expect(st.localSnapshot.status).toBe('paused');
+
+    s.playHere();
+    await new Promise((r) => setTimeout(r, 10));
+    st = s.store.getState();
+    expect(st.remote?.activeOutput).toBeNull();
+    expect(st.snapshot).toBe(st.localSnapshot);
+    s.dispose();
+    mock.dispose();
+  });
+
+  it('refuses to hand off to a phone that is not connected', async () => {
+    const { MockCadenceApi } = await import('../mock/MockCadenceApi');
+    const mock = new MockCadenceApi();
+    const s = createUiStore(mock);
+    await s.init();
+    await mock.remote.setEnabled(true);
+    s.playOnDevice('mock-ipad');
+    await new Promise((r) => setTimeout(r, 10));
+    const st = s.store.getState();
+    expect(st.remote?.activeOutput ?? null).toBeNull();
+    expect(st.toasts.at(-1)?.message).toMatch(/not connected/);
+    s.dispose();
+    mock.dispose();
   });
 });

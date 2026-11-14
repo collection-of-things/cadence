@@ -40,6 +40,10 @@ function baseArgs(userData, extra = []) {
     "--disable-gpu",
     "--ozone-platform=x11",
     "--no-sandbox",
+    // The private Linux test session already disables Chromium's sandbox.
+    // Castlabs Electron 45.2.1 zygotes trap on this host before the GPU
+    // process starts; bypass them in the harness, not in the shipped app.
+    ...(process.platform === "linux" ? ["--no-zygote"] : []),
     "--disable-session-crashed-bubble",
     ...extra,
   ];

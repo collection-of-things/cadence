@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import type {
   ArtworkRef,
   LibraryAlbum,
+  LibraryCounts,
   LibraryQuery,
   TrackRef,
 } from "@cadence/protocol";
@@ -64,6 +65,8 @@ interface TrackRow {
   size: number;
   availability: string;
   lyrics: string | null;
+  lyrics_override: string | null;
+  lyrics_offset_ms: number;
 }
 
 const SCHEMA = `
@@ -90,7 +93,9 @@ CREATE TABLE IF NOT EXISTS tracks (
   mtime_ms INTEGER NOT NULL,
   size INTEGER NOT NULL,
   availability TEXT NOT NULL DEFAULT 'available',
-  lyrics TEXT
+  lyrics TEXT,
+  lyrics_override TEXT,
+  lyrics_offset_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, artists, album);
 CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album, album_artist);
@@ -107,11 +112,14 @@ export class LibraryDb {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
-    // Migration: lyrics column for databases created before it existed.
+    // Migration: lyrics columns for databases created before they existed.
     const cols = this.db.prepare("PRAGMA table_info(tracks)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "lyrics")) {
-      this.db.exec("ALTER TABLE tracks ADD COLUMN lyrics TEXT");
-    }
+    const addColumn = (name: string, type: string): void => {
+      if (!cols.some((c) => c.name === name)) this.db.exec(`ALTER TABLE tracks ADD COLUMN ${name} ${type}`);
+    };
+    addColumn("lyrics", "TEXT");
+    addColumn("lyrics_override", "TEXT");
+    addColumn("lyrics_offset_ms", "INTEGER NOT NULL DEFAULT 0");
   }
 
   /** Close the database. */
@@ -119,7 +127,10 @@ export class LibraryDb {
     this.db.close();
   }
 
-  /** Insert or replace a track record and its FTS row (rowid = path hash). */
+  /**
+   * Insert or replace a track record and its FTS row (rowid = path hash).
+   * A rescan keeps the listener's imported lyrics and sync nudge.
+   */
   upsertTrack(rec: TrackRecord): void {
     const upsert = this.db.prepare(`
       INSERT INTO tracks (id, path, title, artists_json, artists_text, primary_artist,
@@ -165,6 +176,29 @@ export class LibraryDb {
     return row ?? null;
   }
 
+  /** Lyrics the scanner last read for a file: undefined when it is not indexed. */
+  scannedLyrics(path: string): string | null | undefined {
+    const row = this.db.prepare("SELECT lyrics FROM tracks WHERE path = ?").get(path) as
+      | { lyrics: string | null }
+      | undefined;
+    return row?.lyrics;
+  }
+
+  /** Replace the scanned lyrics of an indexed file (a sidecar .lrc changed). */
+  setScannedLyrics(path: string, lyrics: string): void {
+    this.db.prepare("UPDATE tracks SET lyrics = ? WHERE path = ?").run(lyrics, path);
+  }
+
+  /** Attach lyrics the listener imported; they win over scanned ones. */
+  setLyricsOverride(id: string, lyrics: string): void {
+    this.db.prepare("UPDATE tracks SET lyrics_override = ? WHERE id = ?").run(lyrics, id);
+  }
+
+  /** Store the listener's lyric sync nudge for a track. */
+  setLyricsOffset(id: string, offsetMs: number): void {
+    this.db.prepare("UPDATE tracks SET lyrics_offset_ms = ? WHERE id = ?").run(offsetMs, id);
+  }
+
   /** Remove a track by path (watch unlink, missing file on rescan). */
   deleteByPath(path: string): void {
     const tx = this.db.transaction(() => {
@@ -200,6 +234,7 @@ export class LibraryDb {
              COALESCE(album_artist, primary_artist) AS artist,
              MIN(year) AS year,
              MAX(artwork_path) AS artworkPath,
+             MAX(CASE WHEN genre_json <> '[]' THEN genre_json END) AS genreJson,
              COUNT(*) AS trackCount
       FROM tracks ${where === "" ? "WHERE album IS NOT NULL" : `${where} AND album IS NOT NULL`}
       GROUP BY album, artist
@@ -210,6 +245,7 @@ export class LibraryDb {
       artist: string;
       year: number | null;
       artworkPath: string | null;
+      genreJson: string | null;
       trackCount: number;
     }[];
     return rows.map((r) => ({
@@ -219,7 +255,20 @@ export class LibraryDb {
       ...(r.year !== null ? { year: r.year } : {}),
       ...(r.artworkPath !== null ? { artwork: fileArtwork(r.artworkPath) } : {}),
       trackCount: r.trackCount,
+      ...(r.genreJson !== null ? { genre: JSON.parse(r.genreJson) as string[] } : {}),
     }));
+  }
+
+  /** Album and track totals for the whole library. */
+  counts(): LibraryCounts {
+    return this.db
+      .prepare(
+        `SELECT COUNT(*) AS tracks,
+                COUNT(DISTINCT CASE WHEN album IS NOT NULL
+                  THEN album || char(0) || COALESCE(album_artist, primary_artist) END) AS albums
+         FROM tracks`,
+      )
+      .get() as LibraryCounts;
   }
 
   /** Artists with album/track counts. */
@@ -301,6 +350,7 @@ function fileArtwork(path: string): ArtworkRef {
 function rowToTrackRef(row: TrackRow): TrackRef {
   const artists = JSON.parse(row.artists_json) as string[];
   const genre = JSON.parse(row.genre_json) as string[];
+  const lyrics = row.lyrics_override ?? row.lyrics;
   return {
     id: row.id,
     route: "local",
@@ -321,6 +371,7 @@ function rowToTrackRef(row: TrackRow): TrackRef {
     },
     ...(row.replay_gain_db !== null ? { replayGainDb: row.replay_gain_db } : {}),
     availability: row.availability === "unavailable" ? "unavailable" : "available",
-    ...(row.lyrics !== null ? { lyrics: row.lyrics } : {}),
+    ...(lyrics !== null ? { lyrics } : {}),
+    ...(row.lyrics_offset_ms !== 0 ? { lyricsOffsetMs: row.lyrics_offset_ms } : {}),
   };
 }
