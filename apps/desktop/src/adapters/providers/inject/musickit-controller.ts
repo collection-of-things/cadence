@@ -547,9 +547,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
     // Lingering 'ended' states post-transition are stale unless the position
     // is actually at the tail — a real end has already played the track out.
+    // At the end of a provider queue MusicKit can clear the item and reset
+    // its position and duration before reporting completion.
     const naturalEnd =
       !changingQueue && !clipped && (st === STATES.ended || st === STATES.completed) &&
-      (item === null ? true : dur === 0 ? false : posMs >= dur - 1500);
+      (!item ? true : dur === 0 ? false : posMs >= dur - 1500);
     const s = {
       state: clipped ? 'paused' : changingQueue ? 'buffering' : st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'

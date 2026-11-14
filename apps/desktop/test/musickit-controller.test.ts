@@ -115,7 +115,7 @@ async function harness(options: {
     playbackState: 0,
     currentPlaybackTime: 0,
     currentPlaybackDuration: 0,
-    nowPlayingItem: null as Item | null,
+    nowPlayingItem: null as Item | null | undefined,
     queue: { items: [] as { id: string }[], position: -1 },
     addEventListener: (name: string, cb: () => void) => listeners.set(name, cb),
     api: {
@@ -373,6 +373,17 @@ describe("real injected MusicKit controller", () => {
     mk.playbackState = 10;
     ctl.state();
     expect(events.filter(e => e.name === "playerState").at(-1)?.data.ended).toBe(true);
+  });
+
+  it("reports completion when MusicKit clears the current item and duration", async () => {
+    const { ctl, mk, lastState } = await harness();
+    await ctl.play(song, 0);
+    mk.nowPlayingItem = undefined;
+    mk.currentPlaybackDuration = 0;
+    mk.currentPlaybackTime = 0;
+    mk.playbackState = 10;
+    ctl.state();
+    expect(lastState().ended).toBe(true);
   });
 });
 
