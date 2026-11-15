@@ -118,6 +118,23 @@ describe("library: scanning + FTS5", () => {
     await r.service.dispose();
   });
 
+  it("batch upserts and lists past 500 tracks without an explicit limit", () => {
+    const db = new LibraryDb(":memory:");
+    const rec = (i: number) => ({
+      id: `t${i}`, path: `/m/${i}.flac`, title: `Song ${i}`, artists: ["A"], artistsText: "A",
+      primaryArtist: "A", album: "Al", albumArtist: null, durationMs: 1000, trackNumber: i,
+      discNumber: 1, year: null, genre: [], artworkPath: null, format: "flac", sampleRateHz: null,
+      bitDepth: null, channels: null, replayGainDb: null, mtimeMs: 1, size: 1,
+      availability: "available" as const, lyrics: "la",
+    });
+    db.upsertTracks(Array.from({ length: 600 }, (_, i) => rec(i)));
+    expect(db.tracks({})).toHaveLength(600);
+    expect(db.tracks({ limit: 10 })).toHaveLength(10);
+    expect(db.tracks({})[0]?.lyrics).toBeUndefined();
+    expect(db.track("t1")?.lyrics).toBe("la");
+    db.close();
+  });
+
   it("albums and artists aggregate", async () => {
     const r = await scannedRig();
     const albums = r.service.albums();

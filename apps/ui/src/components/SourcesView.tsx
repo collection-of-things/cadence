@@ -191,7 +191,7 @@ function ProviderSearch({ caps }: { caps: RouteCapabilities[] }) {
               onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && session.playTracks(results, i, { kind: 'provider' })}
             >
               {t.artwork ? (
-                <img className="src-hit-art" src={t.artwork.url} alt="" loading="lazy" />
+                <img className="src-hit-art" src={t.artwork.url} alt="" width={38} height={38} loading="lazy" decoding="async" />
               ) : (
                 <span className="src-hit-art src-hit-noart">
                   <NoteIcon size={16} />
