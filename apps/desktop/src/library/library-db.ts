@@ -64,10 +64,16 @@ interface TrackRow {
   mtime_ms: number;
   size: number;
   availability: string;
-  lyrics: string | null;
-  lyrics_override: string | null;
+  /** Absent on list rows: lyrics are only loaded by `track(id)`. */
+  lyrics?: string | null;
+  lyrics_override?: string | null;
   lyrics_offset_ms: number;
 }
+
+const LIST_COLUMNS = `id, path, title, artists_json, artists_text, primary_artist, album,
+  album_artist, duration_ms, track_number, disc_number, year, genre_json, artwork_path,
+  format, sample_rate_hz, bit_depth, channels, replay_gain_db, mtime_ms, size,
+  availability, lyrics_offset_ms`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tracks (
@@ -100,6 +106,7 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, artists, album);
 CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album, album_artist);
 CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(primary_artist);
+CREATE INDEX IF NOT EXISTS idx_tracks_sort ON tracks(album, disc_number, track_number, title);
 `;
 
 /**
@@ -107,10 +114,13 @@ CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(primary_artist);
  */
 export class LibraryDb {
   private readonly db: Database.Database;
+  private readonly upsertBatch: (recs: readonly TrackRecord[]) => void;
 
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
+    // NORMAL is durable enough under WAL; the index is rebuildable by a rescan.
+    this.db.pragma("synchronous = NORMAL");
     this.db.exec(SCHEMA);
     // Migration: lyrics columns for databases created before they existed.
     const cols = this.db.prepare("PRAGMA table_info(tracks)").all() as { name: string }[];
@@ -120,6 +130,7 @@ export class LibraryDb {
     addColumn("lyrics", "TEXT");
     addColumn("lyrics_override", "TEXT");
     addColumn("lyrics_offset_ms", "INTEGER NOT NULL DEFAULT 0");
+    this.upsertBatch = this.prepareUpsert();
   }
 
   /** Close the database. */
@@ -132,6 +143,15 @@ export class LibraryDb {
    * A rescan keeps the listener's imported lyrics and sync nudge.
    */
   upsertTrack(rec: TrackRecord): void {
+    this.upsertBatch([rec]);
+  }
+
+  /** Upsert many tracks in a single transaction (scan batches). */
+  upsertTracks(recs: readonly TrackRecord[]): void {
+    if (recs.length > 0) this.upsertBatch(recs);
+  }
+
+  private prepareUpsert(): (recs: readonly TrackRecord[]) => void {
     const upsert = this.db.prepare(`
       INSERT INTO tracks (id, path, title, artists_json, artists_text, primary_artist,
         album, album_artist, duration_ms, track_number, disc_number, year, genre_json,
