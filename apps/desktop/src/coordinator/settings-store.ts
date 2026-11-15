@@ -7,6 +7,9 @@ import { dirname, join } from "node:path";
  * (tmp + rename) so a crash mid-write cannot corrupt prior state.
  */
 export class SettingsStore {
+  /** Document as last written by this instance; spares saveSection a re-read. */
+  private cached: Record<string, unknown> | null = null;
+
   constructor(private readonly path: string) {}
 
   /** Read and parse the whole settings document; null when absent or corrupt. */
@@ -30,7 +33,7 @@ export class SettingsStore {
 
   /** Merge one service's section into the document and persist atomically. */
   saveSection(key: string, value: unknown): void {
-    const doc = this.loadDocument();
+    const doc = this.cached ?? this.loadDocument();
     doc[key] = value;
     this.saveDocument(doc);
   }
@@ -39,8 +42,10 @@ export class SettingsStore {
   saveDocument(doc: Record<string, unknown>): void {
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.tmp-${process.pid}`;
+    this.cached = null;
     writeFileSync(tmp, JSON.stringify(doc));
     renameSync(tmp, this.path);
+    this.cached = doc;
   }
 }
 
