@@ -14,6 +14,9 @@ import type { FolderPicker } from "./folder-picker.js";
 import type { LibraryDb } from "./library-db.js";
 import { AUDIO_EXTENSIONS, readLyricsFile, sidecarLyricsPath, type LibraryScanner } from "./scanner.js";
 
+/** Files parsed in parallel within a scan batch. */
+const SCAN_CONCURRENCY = 4;
+
 /** Handle for a running filesystem watcher. */
 export interface WatcherHandle {
   /** Stop watching; resolves when closed. */
@@ -247,18 +250,20 @@ export class LibraryService {
     this.emitProgress({ phase: "scanning", scanned: 0, total });
     let scanned = 0;
     const seen = new Set(files);
-    for (const f of files) {
-      const st = await this.fileStampUnchanged(f);
-      if (st) {
-        await this.syncSidecarLyrics(f);
-        scanned += 1;
-        continue;
-      }
-      const rec = await this.scanner.scanFile(f);
-      if (rec !== null) this.db.upsertTrack(rec);
-      scanned += 1;
-      if (scanned % this.batchSize === 0) {
-        this.emitProgress({ phase: "scanning", scanned, total, currentPath: f });
+    for (let i = 0; i < files.length; i += this.batchSize) {
+      if (this.disposed) return;
+      const batch = files.slice(i, i + this.batchSize);
+      const recs = await mapLimit(batch, SCAN_CONCURRENCY, async (f) => {
+        if (await this.fileStampUnchanged(f)) {
+          await this.syncSidecarLyrics(f);
+          return null;
+        }
+        return this.scanner.scanFile(f);
+      });
+      this.db.upsertTracks(recs.filter((r) => r !== null));
+      scanned += batch.length;
+      if (batch.length === this.batchSize) {
+        this.emitProgress({ phase: "scanning", scanned, total, currentPath: batch[batch.length - 1] as string });
         await new Promise((r) => setImmediate(r));
       }
     }
@@ -285,6 +290,20 @@ export class LibraryService {
     if (st === null) return false;
     return Math.round(st.mtimeMs) === stamp.mtimeMs && st.size === stamp.size;
   }
+}
+
+/** Run `fn` over `items` with at most `limit` in flight; results keep input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /** Append a trailing separator so `/music` does not match `/music2/x`. */

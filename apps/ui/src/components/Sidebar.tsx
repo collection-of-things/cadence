@@ -157,7 +157,7 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
           row(
             album.id,
             album.title,
-            album.artwork ? <img className="side-thumb" src={album.artwork.url} alt="" /> : <AlbumsIcon size={17} />,
+            album.artwork ? <img className="side-thumb" src={album.artwork.url} alt="" width={20} height={20} loading="lazy" decoding="async" /> : <AlbumsIcon size={17} />,
             location.page === 'album' && location.album.id === album.id,
             () => onNavigate({ page: 'album', album }),
           ),
@@ -175,7 +175,7 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
             row(
               `playlist:${playlist.id}`,
               playlist.title,
-              playlist.artwork ? <img className="side-thumb" src={playlist.artwork.url} alt="" loading="lazy" /> : <AlbumsIcon size={17} />,
+              playlist.artwork ? <img className="side-thumb" src={playlist.artwork.url} alt="" width={20} height={20} loading="lazy" decoding="async" /> : <AlbumsIcon size={17} />,
               location.page === 'detail' && location.container.id === playlist.id,
               () => onNavigate({ page: 'detail', container: playlist }),
             ),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 import { useStore } from 'zustand/react';
 import { session } from './session';
 import type { UiState } from './store';
@@ -102,4 +102,19 @@ export function useMediaSession(): void {
       }
     };
   }, []);
+}
+
+/** Client width of an element, kept current by a ResizeObserver. */
+export function useElementWidth(ref: RefObject<HTMLElement>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
 }

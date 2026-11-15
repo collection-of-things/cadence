@@ -241,7 +241,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
             {byline && (
               <div className="album-byline">
                 <span className="album-avatar" aria-hidden="true">
-                  {artworkUrl ? <img src={artworkUrl} alt="" /> : byline.slice(0, 1)}
+                  {artworkUrl ? <img src={artworkUrl} alt="" decoding="async" /> : byline.slice(0, 1)}
                 </span>
                 <span>{byline}</span>
               </div>

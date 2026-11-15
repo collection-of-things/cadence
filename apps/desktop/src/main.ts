@@ -228,6 +228,8 @@ async function main(): Promise<void> {
     return net.fetch(pathToFileURL(candidate).toString()).then((res) => {
       const headers = new Headers(res.headers);
       headers.set("Access-Control-Allow-Origin", "*");
+      // Thumbnail names hash the source path, not the image, so no `immutable`.
+      if (res.ok) headers.set("Cache-Control", "public, max-age=3600");
       return new Response(res.body, { status: res.status, headers });
     });
   });
@@ -311,7 +313,7 @@ async function main(): Promise<void> {
       const img = nativeImage.createFromBuffer(Buffer.from(data));
       if (img.isEmpty()) return null;
       const resized = img.resize({ width: 512, quality: "good" });
-      return new Uint8Array(resized.toPNG());
+      return new Uint8Array(resized.toJPEG(85));
     },
   });
   const library = new LibraryService({

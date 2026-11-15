@@ -5,12 +5,12 @@ import { api, session } from './session';
 
 /**
  * Read from the local library. Null until the first read lands; `empty` if a
- * read fails. Reads again when `deps` change or a scan starts or finishes,
+ * read fails. Reads again when `deps` change or a scan finishes,
  * and keeps the last result on screen while the new one loads.
  */
 export function useLibraryRead<T>(read: () => Promise<T>, deps: readonly unknown[], empty: T): T | null {
   const [data, setData] = useState<T | null>(null);
-  const scanPhase = useUi((s) => s.scan.phase);
+  const scanRevision = useUi((s) => s.scanRevision);
   useEffect(() => {
     let live = true;
     read()
@@ -20,7 +20,7 @@ export function useLibraryRead<T>(read: () => Promise<T>, deps: readonly unknown
       live = false;
     };
     // `read` and `empty` are new values every render; `deps` says when to read again.
-  }, [scanPhase, ...deps]);
+  }, [scanRevision, ...deps]);
   return data;
 }
 
