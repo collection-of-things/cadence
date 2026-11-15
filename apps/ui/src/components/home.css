@@ -188,6 +188,9 @@
   outline: none;
 }
 .track-list { gap: 2px; }
+.fav-row { position: absolute; top: 0; left: 0; right: 0; padding-bottom: 2px; }
+.album .track-list > .fav-row { --row-pill: oklch(1 0 0 / 0.035); }
+.album .track-list > .fav-row.is-even { --row-pill: oklch(1 0 0 / 0.03); }
 /* the playing row is a solid bar of the page's accent */
 .track-row.is-current { background: var(--acc); }
 .track-row.is-current .tr-title, .track-row.is-current .tr-index, .track-row.is-current .tr-sub, .track-row.is-current .tr-col,
