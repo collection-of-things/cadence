@@ -142,7 +142,7 @@ export function TrackRow({ track, index, variant, albumArtist, onPlay, nav }: Tr
       </button>
       {variant !== 'album' && (
         <span className="tr-art">
-          {track.artwork ? <img src={track.artwork.url} alt="" loading="lazy" /> : <NoteIcon size={18} />}
+          {track.artwork ? <img src={track.artwork.url} alt="" width={42} height={42} loading="lazy" decoding="async" /> : <NoteIcon size={18} />}
         </span>
       )}
       <span className="tr-main">

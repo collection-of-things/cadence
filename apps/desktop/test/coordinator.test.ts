@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -169,6 +169,22 @@ describe("coordinator: handoff", () => {
     // The current generation still gets through.
     r.local.emitAdapterEvent({ kind: "position", positionMs: 5_000, atMs: 2, generationId: 2 });
     expect(r.coordinator.getSnapshot().positionMs).toBe(5_000);
+  });
+
+  it("persists position at most every 15s but flushes the latest on dispose", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a")] });
+    await r.coordinator.handleCommand({ kind: "play", queueId: r.coordinator.getQueue().items[0]?.queueId ?? "" });
+    expect(r.coordinator.getSnapshot().lease?.generationId).toBe(1);
+    const persisted = () =>
+      (JSON.parse(readFileSync(r.storePath, "utf8")) as { playback: { positionMs: number } }).playback.positionMs;
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 1_000, atMs: 1, generationId: 1 });
+    const first = persisted();
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 2_000, atMs: 2, generationId: 1 });
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 3_000, atMs: 3, generationId: 1 });
+    expect(persisted()).toBe(first);
+    r.coordinator.dispose();
+    expect(persisted()).toBe(3_000);
   });
 
   it("advances on trackEnded and honors repeat modes", async () => {
