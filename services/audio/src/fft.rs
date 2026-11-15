@@ -75,6 +75,19 @@ impl FftAnalyzer {
     /// Feed mono samples; returns a frame whenever a full window is ready.
     pub fn push(&mut self, samples: &[f32]) -> Option<FftFrame> {
         self.pending.extend(samples.iter().copied());
+        self.frame()
+    }
+
+    /// Queue samples without analysing, keeping only the newest window —
+    /// lets the caller pay for `frame` only when it will emit.
+    pub fn feed_latest(&mut self, samples: &[f32]) {
+        self.pending.extend(samples.iter().copied());
+        let excess = self.pending.len().saturating_sub(WINDOW);
+        self.pending.drain(..excess);
+    }
+
+    /// Analyse the oldest full window, if one is queued.
+    pub fn frame(&mut self) -> Option<FftFrame> {
         if self.pending.len() < WINDOW {
             return None;
         }

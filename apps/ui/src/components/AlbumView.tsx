@@ -40,13 +40,13 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
         </div>
         <section className="album-hero">
           <div className="album-art">
-            {album.artwork ? <img src={album.artwork.url} alt={`${album.title} artwork`} draggable={false} /> : <NoteIcon size={64} />}
+            {album.artwork ? <img src={album.artwork.url} alt={`${album.title} artwork`} decoding="async" draggable={false} /> : <NoteIcon size={64} />}
           </div>
           <div className="album-info">
             <h1>{album.title}</h1>
             <div className="album-byline">
               <span className="album-avatar" aria-hidden="true">
-                {album.artwork ? <img src={album.artwork.url} alt="" /> : album.artist.slice(0, 1)}
+                {album.artwork ? <img src={album.artwork.url} alt="" decoding="async" /> : album.artist.slice(0, 1)}
               </span>
               <span>{album.artist}</span>
               {pinned && <span className="album-pinned" title="Pinned"><CheckIcon size={16} /></span>}

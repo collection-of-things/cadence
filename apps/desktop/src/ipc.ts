@@ -218,6 +218,8 @@ export function registerIpcHandlers(deps: IpcDeps): () => void {
     }
   };
   const unsubCoordinator = coordinator.onEvent((e: CoordinatorEvent) => {
+    // The renderer ignores spectrum frames; skip the ~22Hz IPC traffic.
+    if (e.kind === "fft") return;
     broadcast(C.event, e);
   });
   const unsubScan = library.onScanProgress((p) => {
