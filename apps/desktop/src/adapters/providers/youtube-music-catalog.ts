@@ -35,20 +35,25 @@ interface YtmSearchHit {
 
 export class YouTubeMusicCatalog {
   private innertube: unknown = null;
+  private account: string | null = null;
 
   constructor(private deps: YtmCatalogDeps = {}) {}
 
   private async client(): Promise<{
     music: { search(q: string, opts?: { type?: string }): Promise<unknown> };
   }> {
-    if (this.innertube) return this.innertube as never;
+    const cookie = await this.deps.getCookieHeader?.().catch(() => undefined);
+    // Rebuild only when the signed-in account changes (sign-in/out), not on
+    // routine cookie rotation.
+    const account = accountKey(cookie);
+    if (this.innertube && account === this.account) return this.innertube as never;
     // Lazy import so the desktop app can load without youtubei.js present.
     const mod = await import("youtubei.js");
-    const cookie = await this.deps.getCookieHeader?.().catch(() => undefined);
     this.innertube = await mod.Innertube.create({
       ...(cookie ? { cookie } : {}),
       generate_session_locally: true,
     });
+    this.account = account;
     return this.innertube as never;
   }
 
@@ -84,6 +89,11 @@ export class YouTubeMusicCatalog {
       throw new CatalogError(`InnerTube search failed: ${(e as Error).message}`, true);
     }
   }
+}
+
+/** Identifies the signed-in Google account in a cookie header ("" = anonymous). */
+export function accountKey(cookie: string | undefined): string {
+  return cookie?.match(/(?:^|;\s*)(?:__Secure-3PAPISID|SAPISID)=([^;]+)/)?.[1] ?? "";
 }
 
 export function flatten(res: { contents?: { contents?: unknown[] } }): unknown[] {
