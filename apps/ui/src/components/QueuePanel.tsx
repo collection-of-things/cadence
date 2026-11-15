@@ -55,7 +55,7 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
       <span className={`q-eq ${current && playing ? 'on' : ''}`} aria-hidden="true">
         <i /><i /><i />
       </span>
-      {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" loading="lazy" /> : <span className="q-art" />}
+      {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" width={34} height={34} loading="lazy" decoding="async" /> : <span className="q-art" />}
       <span className="q-tt">
         <span className="q-title">{t.title}</span>
         <span className="q-artist">{artistsLine(t.artists)}</span>

@@ -79,7 +79,7 @@ export function PlayerBar({ placement, lyricsOn, onToggleLyrics, onToggleFullScr
   const art = track?.artwork?.url;
   const nowPlaying = (
     <>
-      <span className="pb-art">{art ? <img src={art} alt="" draggable={false} /> : <NoteIcon size={22} />}</span>
+      <span className="pb-art">{art ? <img src={art} alt="" decoding="async" draggable={false} /> : <NoteIcon size={22} />}</span>
       <span className="pb-meta">
         <span className="pb-title" title={track?.title}>{track?.title ?? 'Nothing playing'}</span>
         {phoneName !== null ? (

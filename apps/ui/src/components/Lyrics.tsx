@@ -65,6 +65,19 @@ function LyricsTools({ lyrics, synced }: { lyrics: TrackLyrics; synced: boolean 
   );
 }
 
+/** Index of the last line at or before `position` (-1 before the first); `hint` is the previous answer. */
+function lineAt(lines: Line[], position: number, hint: number): number {
+  if (hint >= -1 && (hint < 0 || lines[hint]!.time <= position) && (hint + 1 >= lines.length || lines[hint + 1]!.time > position)) return hint;
+  let lo = 0;
+  let hi = lines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid]!.time <= position) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
 /**
  * Lyrics for the playing track. Synced (LRC) lyrics follow the playhead and
  * seek when a line is clicked; scrolling by hand pauses the follow until the
@@ -109,8 +122,7 @@ export function Lyrics({ track }: { track: TrackRef }) {
     let activeWasInitial = true;
     const tick = () => {
       const position = positionNow() - offsetRef.current;
-      let next = -1;
-      for (let i = 0; i < lines.length && lines[i]!.time <= position; i++) next = i;
+      const next = lineAt(lines, position, active);
       if (next !== active) {
         const wasInitial = active === -2;
         activeWasInitial = wasInitial || Math.abs(next - active) > 1;
