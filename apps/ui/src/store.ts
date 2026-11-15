@@ -95,11 +95,11 @@ export interface UiState {
 }
 
 /**
- * Frame-rate state that must never re-render React. The Pixi ticker and the
- * seek bar's rAF read this directly; discrete state lives in UiState.
+ * Frame-rate state that must never re-render React. rAF loops (seek bar,
+ * time readouts, lyrics) read this directly; discrete state lives in UiState,
+ * whose snapshots carry the position of the last discrete event only.
  */
 export interface UiRuntime {
-  fft: { bands: Float32Array; peak: number; atMs: number; generationId: number };
   clock: { positionMs: number; atMs: number; playing: boolean; durationMs: number; seekRevision: number };
 }
 
@@ -229,7 +229,6 @@ export interface UiSession {
 
 export function createUiStore(api: StoreApiSurface): UiSession {
   const runtime: UiRuntime = {
-    fft: { bands: new Float32Array(48), peak: 0, atMs: 0, generationId: -1 },
     clock: { positionMs: 0, atMs: Date.now(), playing: false, durationMs: 0, seekRevision: 0 },
   };
 
@@ -258,6 +257,14 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     setTimeout(() => set({ toasts: get().toasts.filter((x) => x.id !== t.id) }), 6500);
   }
 
+  // Newest position tick, kept out of the store so ~10Hz ticks don't notify
+  // subscribers; folded into the snapshot the next time one is rebuilt.
+  let tick: { positionMs: number; atMs: number } | null = null;
+  const localNow = (): PlaybackSnapshot => {
+    const local = get().localSnapshot;
+    return tick ? { ...local, positionMs: tick.positionMs, positionAtMs: tick.atMs } : local;
+  };
+
   let pendingSeek: { positionMs: number; atMs: number; queueId: string | undefined; generationId: number } | null = null;
   let seekInFlight = false;
   let queuedSeek: number | null = null;
@@ -281,6 +288,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         shown = { ...shown, positionMs: pendingSeek.positionMs, positionAtMs: pendingSeek.atMs };
       }
     }
+    tick = null;
     set({ ...extra, localSnapshot: local, snapshot: shown });
     syncClock(shown);
   }
@@ -325,7 +333,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         break;
       }
       case 'queue':
-        showLocal(s.localSnapshot, { queue: e.queue });
+        showLocal(localNow(), { queue: e.queue });
         break;
       case 'capabilities': {
         const rest = s.capabilities.filter((c) => c.route !== e.route);
@@ -334,25 +342,14 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       }
       case 'position': {
         if (e.generationId < s.generationId) break;
-        const local = { ...s.localSnapshot, positionMs: e.positionMs, positionAtMs: e.atMs };
-        if (phoneOwnsPlayback() || pendingSeek) {
-          set({ localSnapshot: local });
-          break;
-        }
-        set({ localSnapshot: local, snapshot: { ...s.snapshot, positionMs: e.positionMs, positionAtMs: e.atMs } });
+        tick = { positionMs: e.positionMs, atMs: e.atMs };
+        if (phoneOwnsPlayback() || pendingSeek) break;
         runtime.clock.positionMs = e.positionMs;
         runtime.clock.atMs = e.atMs;
         break;
       }
-      case 'fft': {
-        if (e.generationId < s.generationId) break;
-        const n = Math.min(e.bands.length, runtime.fft.bands.length);
-        for (let i = 0; i < n; i++) runtime.fft.bands[i] = e.bands[i]!;
-        runtime.fft.peak = e.peak;
-        runtime.fft.atMs = e.atMs;
-        runtime.fft.generationId = e.generationId;
+      case 'fft':
         break;
-      }
       case 'trackEnded': {
         if (e.generationId < s.generationId) break;
         advanceDisplay();
@@ -362,7 +359,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         pushToast(e.route, e.message, e.retriable);
         break;
       case 'output':
-        showLocal({ ...s.localSnapshot, output: e.output });
+        showLocal({ ...localNow(), output: e.output });
         break;
     }
   }
@@ -410,10 +407,10 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       showLocal(snapshot, { queue, capabilities: [...latest.values()], generationId: Math.max(gen, get().generationId), ready: true });
       if (api.remote) {
         const remoteApi = api.remote;
-        unsubs.push(remoteApi.onStatus((remote) => showLocal(get().localSnapshot, { remote })));
+        unsubs.push(remoteApi.onStatus((remote) => showLocal(localNow(), { remote })));
         void remoteApi
           .status()
-          .then((remote) => showLocal(get().localSnapshot, { remote }))
+          .then((remote) => showLocal(localNow(), { remote }))
           .catch(() => undefined);
       }
       const platform = await api.platform?.active().catch(() => 'local' as const);
@@ -438,6 +435,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       runtime.clock.seekRevision++;
       runtime.clock.atMs = Date.now();
       const at = runtime.clock.atMs;
+      if (!phoneOwnsPlayback()) tick = null;
       pendingSeek = { positionMs: clamped, atMs: at, queueId: get().snapshot.current?.queueId, generationId: get().generationId };
       set({
         snapshot: { ...get().snapshot, positionMs: clamped, positionAtMs: at },
@@ -531,7 +529,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
       if (!api.remote) return;
       void api.remote
         .reclaim()
-        .then((remote) => showLocal(get().localSnapshot, { remote }))
+        .then((remote) => showLocal(localNow(), { remote }))
         .catch((e: unknown) => pushToast('local', cleanIpcError(e, 'Could not bring playback back'), true));
     },
     showToast: pushToast,

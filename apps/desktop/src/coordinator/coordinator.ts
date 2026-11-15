@@ -19,6 +19,9 @@ import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persi
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
 
+/** Position ticks arrive ~1/s; persisting each rewrites the whole settings file. */
+const POSITION_PERSIST_INTERVAL_MS = 15_000;
+
 /**
  * Optional stream of raw audio-graph events (fft/output/position) shared by
  * every native-pcm route. In production this is the AudioServiceClient; the
@@ -79,6 +82,7 @@ export class Coordinator {
   private output: ActiveOutput | null = null;
   private lastError: PlaybackSnapshot["lastError"];
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPersistAtMs = 0;
   private disposed = false;
   /** Serializes commands and event-driven starts so handoffs can't overlap. */
   private chain: Promise<void> = Promise.resolve();
@@ -883,7 +887,7 @@ export class Coordinator {
         if (e.positionMs <= this.durationMs || this.durationMs === 0) {
           this.emit({ kind: "position", positionMs: e.positionMs, atMs: e.atMs, generationId: e.generationId });
         }
-        this.persistSoon();
+        if (this.now() - this.lastPersistAtMs >= POSITION_PERSIST_INTERVAL_MS) this.persistSoon();
         return;
       }
       case "state": {
@@ -1132,6 +1136,7 @@ export class Coordinator {
   }
 
   private persistNow(): void {
+    this.lastPersistAtMs = this.now();
     const state: PersistedPlayback = {
       version: 1,
       queue: this.queue,

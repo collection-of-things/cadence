@@ -64,10 +64,16 @@ interface TrackRow {
   mtime_ms: number;
   size: number;
   availability: string;
-  lyrics: string | null;
-  lyrics_override: string | null;
+  /** Absent on list rows: lyrics are only loaded by `track(id)`. */
+  lyrics?: string | null;
+  lyrics_override?: string | null;
   lyrics_offset_ms: number;
 }
+
+const LIST_COLUMNS = `id, path, title, artists_json, artists_text, primary_artist, album,
+  album_artist, duration_ms, track_number, disc_number, year, genre_json, artwork_path,
+  format, sample_rate_hz, bit_depth, channels, replay_gain_db, mtime_ms, size,
+  availability, lyrics_offset_ms`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tracks (
@@ -100,6 +106,7 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(title, artists, album);
 CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album, album_artist);
 CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(primary_artist);
+CREATE INDEX IF NOT EXISTS idx_tracks_sort ON tracks(album, disc_number, track_number, title);
 `;
 
 /**
@@ -107,10 +114,13 @@ CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(primary_artist);
  */
 export class LibraryDb {
   private readonly db: Database.Database;
+  private readonly upsertBatch: (recs: readonly TrackRecord[]) => void;
 
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
+    // NORMAL is durable enough under WAL; the index is rebuildable by a rescan.
+    this.db.pragma("synchronous = NORMAL");
     this.db.exec(SCHEMA);
     // Migration: lyrics columns for databases created before they existed.
     const cols = this.db.prepare("PRAGMA table_info(tracks)").all() as { name: string }[];
@@ -120,6 +130,7 @@ export class LibraryDb {
     addColumn("lyrics", "TEXT");
     addColumn("lyrics_override", "TEXT");
     addColumn("lyrics_offset_ms", "INTEGER NOT NULL DEFAULT 0");
+    this.upsertBatch = this.prepareUpsert();
   }
 
   /** Close the database. */
@@ -132,6 +143,15 @@ export class LibraryDb {
    * A rescan keeps the listener's imported lyrics and sync nudge.
    */
   upsertTrack(rec: TrackRecord): void {
+    this.upsertBatch([rec]);
+  }
+
+  /** Upsert many tracks in a single transaction (scan batches). */
+  upsertTracks(recs: readonly TrackRecord[]): void {
+    if (recs.length > 0) this.upsertBatch(recs);
+  }
+
+  private prepareUpsert(): (recs: readonly TrackRecord[]) => void {
     const upsert = this.db.prepare(`
       INSERT INTO tracks (id, path, title, artists_json, artists_text, primary_artist,
         album, album_artist, duration_ms, track_number, disc_number, year, genre_json,
@@ -153,19 +173,23 @@ export class LibraryDb {
         mtime_ms=excluded.mtime_ms, size=excluded.size, availability=excluded.availability,
         lyrics=excluded.lyrics
     `);
-    const tx = this.db.transaction((r: TrackRecord) => {
-      upsert.run({
-        ...r,
-        artistsJson: JSON.stringify(r.artists),
-        genreJson: JSON.stringify(r.genre),
-      });
-      const row = this.db.prepare("SELECT rowid FROM tracks WHERE path = ?").get(r.path) as { rowid: number };
-      this.db.prepare("DELETE FROM tracks_fts WHERE rowid = ?").run(row.rowid);
-      this.db
-        .prepare("INSERT INTO tracks_fts (rowid, title, artists, album) VALUES (?, ?, ?, ?)")
-        .run(row.rowid, r.title, r.artistsText, r.album ?? "");
+    const rowidOf = this.db.prepare("SELECT rowid FROM tracks WHERE path = ?");
+    const ftsDelete = this.db.prepare("DELETE FROM tracks_fts WHERE rowid = ?");
+    const ftsInsert = this.db.prepare(
+      "INSERT INTO tracks_fts (rowid, title, artists, album) VALUES (?, ?, ?, ?)",
+    );
+    return this.db.transaction((recs: readonly TrackRecord[]) => {
+      for (const r of recs) {
+        upsert.run({
+          ...r,
+          artistsJson: JSON.stringify(r.artists),
+          genreJson: JSON.stringify(r.genre),
+        });
+        const row = rowidOf.get(r.path) as { rowid: number };
+        ftsDelete.run(row.rowid);
+        ftsInsert.run(row.rowid, r.title, r.artistsText, r.album ?? "");
+      }
     });
-    tx(rec);
   }
 
   /** Stored mtime+size for incremental re-scan decisions. */
@@ -221,8 +245,8 @@ export class LibraryDb {
   /** Query tracks; FTS5 text search plus exact-ish field filters. */
   tracks(q: LibraryQuery): TrackRef[] {
     const { where, params } = buildWhere(q);
-    const sql = `SELECT * FROM tracks ${where} ORDER BY album, disc_number, track_number, title LIMIT @limit OFFSET @offset`;
-    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? 500, offset: q.offset ?? 0 }) as TrackRow[];
+    const sql = `SELECT ${LIST_COLUMNS} FROM tracks ${where} ORDER BY album, disc_number, track_number, title LIMIT @limit OFFSET @offset`;
+    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? NO_LIMIT, offset: q.offset ?? 0 }) as TrackRow[];
     return rows.map(rowToTrackRef);
   }
 
@@ -240,7 +264,7 @@ export class LibraryDb {
       GROUP BY album, artist
       ORDER BY artist, year, album
       LIMIT @limit OFFSET @offset`;
-    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? 500, offset: q.offset ?? 0 }) as {
+    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? NO_LIMIT, offset: q.offset ?? 0 }) as {
       title: string;
       artist: string;
       year: number | null;
@@ -282,7 +306,7 @@ export class LibraryDb {
       GROUP BY primary_artist
       ORDER BY primary_artist
       LIMIT @limit OFFSET @offset`;
-    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? 500, offset: q.offset ?? 0 }) as {
+    const rows = this.db.prepare(sql).all({ ...params, limit: q.limit ?? NO_LIMIT, offset: q.offset ?? 0 }) as {
       name: string;
       albumCount: number;
       trackCount: number;
