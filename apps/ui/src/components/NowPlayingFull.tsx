@@ -114,7 +114,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
       <PlayerBar placement="floating" lyricsOn={column === 'lyrics'} onToggleLyrics={toggleLyrics} onToggleFullScreen={onClose} onOpenPhoneSettings={() => { onClose(); onNavigate({ page: 'settings', section: 'phone' }); }} />
 
       <div className="npf-art" aria-hidden={!art}>
-        {art ? <img key={track.id} className={swap} src={art} alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={96} />}
+        {art ? <img key={track.id} className={swap} src={art} decoding="async" alt={`${track.album ?? track.title} artwork`} draggable={false} /> : <NoteIcon size={96} />}
       </div>
 
       <div className="npf-corner">
