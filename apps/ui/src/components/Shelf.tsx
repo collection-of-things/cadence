@@ -47,7 +47,7 @@ export function ShelfTitle({ title, subtitle }: { title: string; subtitle?: stri
 /** A cover image, or a note glyph when there is none. */
 export function Cover({ art, eager = false }: { art: ArtworkRef | undefined; eager?: boolean }) {
   return art
-    ? <img src={art.url} alt="" loading={eager ? 'eager' : 'lazy'} draggable={false} />
+    ? <img src={art.url} alt="" loading={eager ? 'eager' : 'lazy'} decoding="async" draggable={false} />
     : <span className="cover-empty"><NoteIcon size={40} /></span>;
 }
 

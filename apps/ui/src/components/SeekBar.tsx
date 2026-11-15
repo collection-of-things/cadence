@@ -25,19 +25,38 @@ export function SeekBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const scrubbing = useRef(false);
+  // Width is cached so the frame loop never forces layout; NaN last position = repaint.
+  const width = useRef(0);
+  const painted = useRef(NaN);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    width.current = wrap.clientWidth;
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      width.current = wrap.clientWidth;
+      painted.current = NaN;
+    });
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let raf = 0;
     let previous: { position: number; time: number; revision: number } | undefined;
+    painted.current = NaN;
     const loop = (time: number) => {
       raf = requestAnimationFrame(loop);
       const input = inputRef.current;
       const wrap = wrapRef.current;
       if (!input || !wrap) return;
-      if (scrubbing.current) { previous = undefined; return; }
+      if (scrubbing.current) { previous = undefined; painted.current = NaN; return; }
       const clock = session.runtime.clock;
       const pos = smoothPlayhead(positionNow(), time, previous, clock.playing, clock.seekRevision);
       previous = { position: pos, time, revision: clock.seekRevision };
+      if (pos === painted.current) return;
+      painted.current = pos;
       input.value = String(Math.round(pos));
       paintPosition(pos);
     };
@@ -51,7 +70,7 @@ export function SeekBar() {
     if (!wrap || !knob) return;
     const ratio = duration > 0 ? Math.max(0, Math.min(1, position / duration)) : 0;
     wrap.style.setProperty('--p', String(ratio));
-    knob.style.transform = `translate3d(${ratio * wrap.clientWidth}px, 0, 0)`;
+    knob.style.transform = `translate3d(${ratio * (width.current || wrap.clientWidth)}px, 0, 0)`;
   };
 
   const commit = () => {

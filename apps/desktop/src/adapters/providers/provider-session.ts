@@ -319,13 +319,13 @@ export class ProviderSession {
   }
 
   /** Cheap signal that the partition likely holds a signed-in session —
-   * looks for Apple's media-user-token specifically (a signed-out visit
-   * still leaves anonymous cookies). */
-  async hasSessionCookies(): Promise<boolean> {
+   * looks for the provider's auth cookie names (Apple's media-user-token by
+   * default; a signed-out visit still leaves anonymous cookies). */
+  async hasSessionCookies(names: RegExp = /media-user-token|media_user_token/): Promise<boolean> {
     try {
       const ses = session.fromPartition(this.partition);
       const cookies = await ses.cookies.get({ url: this.opts.url });
-      return cookies.some((c) => /media-user-token|media_user_token/.test(c.name));
+      return cookies.some((c) => names.test(c.name));
     } catch {
       return false;
     }
