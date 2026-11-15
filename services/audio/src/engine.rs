@@ -3339,8 +3339,12 @@ impl Engine {
                 }
             }
 
-            // FFT tap -> event.fft ~20Hz while playing
-            let playing = self.state.lock().unwrap().state == PlayState::Playing;
+            // FFT tap -> event.fft ~20Hz while playing. Always drain the
+            // tap, but only analyse when a frame will actually be emitted.
+            let (playing, gen) = {
+                let st = self.state.lock().unwrap();
+                (st.state == PlayState::Playing, st.generation)
+            };
             let n = self.fft_cons.read(&mut tap_buf);
             if playing && n > 0 {
                 mono_buf.clear();
@@ -3351,10 +3355,10 @@ impl Engine {
                     }
                     mono_buf.push(acc / nch as f32);
                 }
-                if let Some(frame) = fft.push(&mono_buf) {
-                    if last_fft_emit.elapsed() >= std::time::Duration::from_millis(45) {
+                fft.feed_latest(&mono_buf);
+                if last_fft_emit.elapsed() >= std::time::Duration::from_millis(45) {
+                    if let Some(frame) = fft.frame() {
                         last_fft_emit = std::time::Instant::now();
-                        let gen = self.state.lock().unwrap().generation;
                         self.emit(
                             "event.fft",
                             json!({
