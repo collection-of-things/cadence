@@ -20,15 +20,13 @@ import type {
 } from '@cadence/protocol';
 import { makeCapabilities, makeLibrary, svgArtwork } from './data';
 
-const FFT_BANDS = 48;
-
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
 /**
  * Simulates the whole coordinator session for standalone `vite dev`:
- * queue truth, position clock, FFT for PCM routes, capability records for
+ * queue truth, position clock, capability records for
  * every route (including unauthenticated providers), library + scan.
  */
 export class MockCadenceApi implements CadenceApi {
@@ -42,7 +40,6 @@ export class MockCadenceApi implements CadenceApi {
   private timer: ReturnType<typeof setInterval> | null = null;
   private generation = 1;
   private activePlatform: PlatformId = 'local';
-  private fftPhase = 0;
   private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Last EQ band set applied via audio.setEq (inspectable in tests). */
   eqBands: { freqHz: number; gainDb: number }[] = [];
@@ -120,28 +117,6 @@ export class MockCadenceApi implements CadenceApi {
   private tick() {
     const s = this.snapshot;
     if (s.status !== 'playing' || !s.lease) return;
-    this.fftPhase += 0.05;
-    const route = s.lease.route;
-    const caps = this.routeCaps(route);
-    if (caps?.visuals.kind === 'pcm-fft') {
-      const bands: number[] = new Array(FFT_BANDS);
-      for (let i = 0; i < FFT_BANDS; i++) {
-        const f = i / FFT_BANDS;
-        const beat = 0.5 + 0.5 * Math.sin(this.fftPhase * 2.6);
-        const v =
-          0.18 +
-          0.4 * Math.exp(-f * 2.4) * (0.5 + 0.5 * Math.sin(this.fftPhase * 3.1 + i * 0.7)) * beat +
-          0.22 * Math.abs(Math.sin(this.fftPhase * 1.3 + i * 1.7)) * (1 - f * 0.6);
-        bands[i] = Math.min(1, v);
-      }
-      this.emit({
-        kind: 'fft',
-        bands: bands.map((v) => -80 + v * 80), // dBFS like the engine (-80..0)
-        peak: Math.max(...bands),
-        atMs: Date.now(),
-        generationId: s.lease.generationId,
-      });
-    }
     s.positionMs += 50;
     if (Math.floor(s.positionMs / 500) !== Math.floor((s.positionMs - 50) / 500)) {
       s.positionAtMs = Date.now();

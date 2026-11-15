@@ -730,10 +730,21 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   };
   ensureGraph();
   post(true);
-  // Always post on the tick — a frozen boundary state must keep reaching the
+  // While active, always post on the tick — a frozen boundary state must keep reaching the
   // adapter (position-at-tail detection depends on periodic samples, and a
   // deduped silence looks identical to healthy idle playback).
-  setInterval(() => { applyOutputVolume(); watchGraph(); post(true); }, 750);
+  // While paused or idle only every 4th tick forces a post; volume is cheap
+  // and still enforced each tick.
+  let idleTicks = 0;
+  setInterval(() => {
+    applyOutputVolume();
+    const st = mk.playbackState;
+    const active = changingQueue || st === STATES.playing || st === STATES.loading ||
+      st === STATES.waiting || st === STATES.stalled || st === STATES.seeking;
+    if (!active && ++idleTicks % 4 !== 0) return;
+    watchGraph();
+    post(true);
+  }, 750);
   return true;
   } finally {
     // A failed install must not poison later retries (navigations re-inject).
