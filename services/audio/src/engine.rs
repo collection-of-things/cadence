@@ -2791,6 +2791,7 @@ impl Engine {
         // reports once per sink instance, not a probing/event storm
         // every tick.
         let mut sink_dead_reported: Option<usize> = None;
+        let mut last_playing = false;
         // Non-gapless Ended events parked while the staged tail plays
         // out — queued because a fast user load can END a successor
         // before the predecessor's drain finishes; each entry carries
@@ -2809,7 +2810,11 @@ impl Engine {
         )> = std::collections::VecDeque::new();
 
         while !self.monitor_stop.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Poll slowly while nothing is playing or parked; play/seek
+            // commands emit their own events, so this only delays the
+            // housekeeping below by at most one idle tick.
+            let idle = !last_playing && pending_ends.is_empty() && deferred_device_error.is_none();
+            std::thread::sleep(std::time::Duration::from_millis(if idle { 80 } else { 20 }));
 
             // negotiated format may change on device/fidelity rebuild
             {
@@ -3339,8 +3344,12 @@ impl Engine {
                 }
             }
 
-            // FFT tap -> event.fft ~20Hz while playing
-            let playing = self.state.lock().unwrap().state == PlayState::Playing;
+            // FFT tap -> event.fft ~20Hz while playing. Always drain the
+            // tap, but only analyse when a frame will actually be emitted.
+            let (playing, gen) = {
+                let st = self.state.lock().unwrap();
+                (st.state == PlayState::Playing, st.generation)
+            };
             let n = self.fft_cons.read(&mut tap_buf);
             if playing && n > 0 {
                 mono_buf.clear();
@@ -3351,10 +3360,10 @@ impl Engine {
                     }
                     mono_buf.push(acc / nch as f32);
                 }
-                if let Some(frame) = fft.push(&mono_buf) {
-                    if last_fft_emit.elapsed() >= std::time::Duration::from_millis(45) {
+                fft.feed_latest(&mono_buf);
+                if last_fft_emit.elapsed() >= std::time::Duration::from_millis(45) {
+                    if let Some(frame) = fft.frame() {
                         last_fft_emit = std::time::Instant::now();
-                        let gen = self.state.lock().unwrap().generation;
                         self.emit(
                             "event.fft",
                             json!({

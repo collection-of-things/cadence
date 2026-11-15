@@ -160,8 +160,9 @@ export function Ambient() {
       move += (t.move - move) * Math.min(1, dt * 1.6);
       if (mixT < 1) mixT = Math.min(1, mixT + dt / 2.8);
       time += dt * speed * 1.15;
-      // ~30fps is plenty for a field this soft.
-      if (ts - lastDraw >= 33) {
+      // ~30fps is plenty for a field this soft; blurred or idle it drops to ~10.
+      const lively = focused && performance.now() - lastInput <= 40_000 && session.store.getState().snapshot.status === 'playing';
+      if (ts - lastDraw >= (lively ? 33 : 100)) {
         draw();
         lastDraw = ts;
       }
@@ -189,6 +190,12 @@ export function Ambient() {
         from = from.map((c, i) => lerp3(c, to[i]!, mixT));
         to = fieldOf(s.palette);
         mixT = 0;
+      } else if (
+        s.snapshot.status === prev.snapshot.status &&
+        (s.snapshot.current !== null) === (prev.snapshot.current !== null) &&
+        s.nowPlayingExpanded === prev.nowPlayingExpanded
+      ) {
+        return;
       }
       kick();
     });
@@ -226,6 +233,12 @@ export function Ambient() {
       document.removeEventListener('visibilitychange', onVisible);
       reduced.removeEventListener('change', onReduced);
       host.classList.remove('is-gl');
+      // Skip while the canvas is still mounted (StrictMode replay): a lost
+      // context can't be re-acquired from the same canvas.
+      const lose = ctx.getExtension('WEBGL_lose_context');
+      setTimeout(() => {
+        if (!canvas.isConnected) lose?.loseContext();
+      }, 0);
     };
   }, []);
 
