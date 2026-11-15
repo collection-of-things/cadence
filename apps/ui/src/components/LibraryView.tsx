@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { LibraryAlbum } from '@cadence/protocol';
 import { api, session } from '../session';
-import { useUi } from '../hooks';
+import { useElementWidth, useUi } from '../hooks';
 import { FolderIcon, NoteIcon, SearchIcon } from '../icons';
 import { useLibraryRead } from '../library';
 import type { LibraryTab } from '../navigation';
@@ -10,6 +10,13 @@ import { SkeletonRows } from './Shelf';
 import { TrackRow } from './TrackRow';
 
 const TITLES: Record<LibraryTab, string> = { albums: 'Albums', artists: 'Artists', songs: 'Songs' };
+
+// Mirrors `.lib .album-grid`: repeat(auto-fill, minmax(168px, 1fr)) with a 10px column gap.
+const ALBUM_MIN_WIDTH = 168;
+const ALBUM_GAP = 10;
+// Title + artist lines plus card padding below the cover; real rows are measured after render.
+const ALBUM_CAPTION_HEIGHT = 74;
+const ARTIST_ROW_HEIGHT = 62;
 
 function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(album: LibraryAlbum): void }) {
   const albums = useLibraryRead(() => api.library.albums(query ? { text: query } : {}), [query], []);
@@ -23,39 +30,87 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
   }
   if (!albums.length) return <div className="lib-status">No albums match.</div>;
 
+  return <VirtualAlbumGrid albums={albums} onSelectAlbum={onSelectAlbum} />;
+}
+
+/** Album cards in virtualised rows; the column count follows the container width. */
+function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; onSelectAlbum(album: LibraryAlbum): void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const width = useElementWidth(scrollRef);
+  const columns = Math.max(1, Math.floor((width + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
+  const cardWidth = Math.max(0, (width - ALBUM_GAP * (columns - 1)) / columns);
+  const virtualizer = useVirtualizer({
+    count: Math.ceil(albums.length / columns),
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => cardWidth + ALBUM_CAPTION_HEIGHT,
+    overscan: 3,
+  });
+
   return (
-    <div className="album-grid">
-      {albums.map((a) => (
-        <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
-          {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
-          <span className="album-title">{a.title}</span>
-          <span className="album-artist">
-            {a.artist}
-            {a.year ? ` · ${a.year}` : ''}
-          </span>
-        </button>
-      ))}
+    <div className="album-grid album-grid-virtual" ref={scrollRef}>
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((vi) => (
+          <div
+            key={vi.key}
+            ref={virtualizer.measureElement}
+            data-index={vi.index}
+            className="album-row"
+            style={{ transform: `translateY(${vi.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+          >
+            {albums.slice(vi.index * columns, (vi.index + 1) * columns).map((a) => (
+              <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+                {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" decoding="async" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
+                <span className="album-title">{a.title}</span>
+                <span className="album-artist">
+                  {a.artist}
+                  {a.year ? ` · ${a.year}` : ''}
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(name: string): void }) {
   const artists = useLibraryRead(() => api.library.artists({}), [], []);
+  // `query` is already debounced by LibraryView.
+  const shown = useMemo(() => {
+    if (!artists || !query) return artists ?? [];
+    const needle = query.toLowerCase();
+    return artists.filter((a) => a.name.toLowerCase().includes(needle));
+  }, [artists, query]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: shown.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ARTIST_ROW_HEIGHT,
+    overscan: 8,
+  });
+
   if (!artists) return <SkeletonRows />;
-  const shown = query ? artists.filter((a) => a.name.toLowerCase().includes(query.toLowerCase())) : artists;
   if (!shown.length) return <div className="lib-status">No artists match.</div>;
 
   return (
-    <div className="artist-list">
-      {shown.map((a) => (
-        <button key={a.name} className="artist-row" onClick={() => onSelectArtist(a.name)}>
-          <span className="artist-avatar">{a.name.slice(0, 1).toUpperCase()}</span>
-          <span className="artist-name">{a.name}</span>
-          <span className="artist-counts">
-            {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}
-          </span>
-        </button>
-      ))}
+    <div className="artist-list" ref={scrollRef}>
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative', flex: 'none' }}>
+        {virtualizer.getVirtualItems().map((vi) => {
+          const a = shown[vi.index]!;
+          return (
+            <div key={a.name} className="artist-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
+              <button className="artist-row" onClick={() => onSelectArtist(a.name)}>
+                <span className="artist-avatar">{a.name.slice(0, 1).toUpperCase()}</span>
+                <span className="artist-name">{a.name}</span>
+                <span className="artist-counts">
+                  {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}
+                </span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

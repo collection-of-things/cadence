@@ -222,33 +222,19 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     return tracks;
   }
 
-  private warming = false;
-  /** Set by signOut so the view isn't rewarmed behind a signed-out user. */
+  /** Set by signOut so leftover cookies aren't treated as a live session. */
   private signedOut = false;
 
   async capabilities(): Promise<RouteCapabilities> {
     // capabilities() must not boot the hidden view — the UI asks on every
-    // launch. Report the last-known state; when the partition holds session
-    // cookies, warm the view in the background so the real auth state
-    // arrives via capabilitiesChanged shortly after.
+    // launch and most launches never touch Apple Music. Cookies alone decide
+    // the reported state; the view starts on first use, and its real auth
+    // state then arrives via capabilitiesChanged.
     if (!this.installed) {
-      // A user who just signed out must stay signed out — don't rewarm the
-      // view off leftover cookies until they sign back in.
-      if (!this.warming && !this.signedOut) {
-        this.warming = true;
-        void this.session
-          .hasSessionCookies()
-          // Re-check inside the continuation — signOut can land between the
-          // cookie read and prepare().
-          .then((has) => (has && !this.signedOut ? this.prepare() : undefined))
-          .catch(() => undefined)
-          .finally(() => {
-            this.warming = false;
-          });
-      }
+      const hasSession = !this.signedOut && (await this.session.hasSessionCookies().catch(() => false));
       return this.baseCapabilities({
         route: this.route,
-        state: "unauthenticated",
+        state: hasSession ? "ready" : "unauthenticated",
         stateDetail: "Session not loaded yet — it activates on first use.",
       });
     }
