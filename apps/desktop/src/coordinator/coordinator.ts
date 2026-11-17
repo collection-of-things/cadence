@@ -18,6 +18,7 @@ import { isFidelityCapable, isReplayGainCapable, isRestartRestorable } from "../
 import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
+import { createTrackBoundary, type TrackBoundary } from "./track-boundary.js";
 
 /**
  * Optional stream of raw audio-graph events (fft/output/position) shared by
@@ -82,16 +83,11 @@ export class Coordinator {
   private disposed = false;
   /** Serializes commands and event-driven starts so handoffs can't overlap. */
   private chain: Promise<void> = Promise.resolve();
-  /** queueId of the successor we asked the active adapter to prefetch. */
-  private pendingPrefetch: string | null = null;
   /** Playhead position the active lease started at — the physical-earliest
    * point an 'ended' event for it could legitimately arrive. */
   private leaseStartPositionMs = 0;
-  /** Set after an engine `ended` while we wait for a self-promoted started. */
-  private promotionTimer: ReturnType<typeof setTimeout> | null = null;
-  /** ended events already handled, keyed `${generation}:${queueId}`. */
-  private handledEnded = new Set<string>();
-  /** queueId+generation the engine self-promoted (tail-race guard). */
+  /** Prefetch belief, ended dedupe and the promotion window. */
+  private readonly boundary: TrackBoundary = createTrackBoundary();
 
   constructor(deps: CoordinatorDeps) {
     this.registry = deps.registry;
@@ -106,6 +102,7 @@ export class Coordinator {
     deps.graphEvents?.onEvent((e) => {
       this.onGraphEvent(e);
     });
+    this.wireTrackBoundary();
     this.restoreFromSettings();
   }
 
@@ -424,7 +421,7 @@ export class Coordinator {
     const adapter = this.registry.get(route);
     this.lease = null;
     this.activeAdapter = null;
-    this.pendingPrefetch = null;
+    this.boundary.send({ type: "prefetch.dropped" });
     if (adapter !== undefined && isRestartRestorable(adapter)) {
       try {
         // Bounded like every other adapter call in the chain — a hung
@@ -446,6 +443,7 @@ export class Coordinator {
   /** Persist immediately (app quit) and stop timers. */
   dispose(): void {
     this.disposed = true;
+    this.boundary.stop();
     if (this.persistTimer !== null) clearTimeout(this.persistTimer);
     this.persistTimer = null;
     this.persistNow();
@@ -552,8 +550,7 @@ export class Coordinator {
   ): Promise<void> {
     const item = this.queue.items[index];
     if (item === undefined) return;
-    this.clearPromotionWait();
-    this.pendingPrefetch = null;
+    this.boundary.send({ type: "handoff.begin" });
     const route = opts.routeOverride ?? item.track.route;
     const adapter = this.registry.get(route);
 
@@ -641,7 +638,7 @@ export class Coordinator {
     // lease only now, so a failed prepare above left the old route intact.
     // The stale-end baseline commits with it: while preparation was
     // provisional the baseline still described the OUTGOING lease's start.
-    this.handledEnded.clear();
+    this.boundary.send({ type: "lease.committed" });
     this.lease = lease;
     this.leaseStartPositionMs = opts.positionMs ?? 0;
     // A self-promotion on the outgoing engine may have moved queue intent
@@ -720,8 +717,7 @@ export class Coordinator {
     const adapter = this.activeAdapter;
     const lease = this.lease;
     this.activeAdapter = null;
-    this.pendingPrefetch = null;
-    this.clearPromotionWait();
+    this.boundary.send({ type: "session.torndown" });
     if (adapter !== null && lease !== null) {
       try {
         await this.withTimeout(adapter.stop(lease), 8_000, "teardown.stop");
@@ -745,7 +741,7 @@ export class Coordinator {
    * for the actual successor (the engine overwrites its `next` slot). */
   private refreshPrefetch(): void {
     if (this.activeAdapter?.prefetch === undefined || this.lease === null) return;
-    this.pendingPrefetch = null;
+    this.boundary.send({ type: "prefetch.dropped" });
     const adapter = this.activeAdapter;
     // If no valid successor exists, the engine's installed prefetch is
     // stale — cancel it rather than let it promote a removed track.
@@ -770,13 +766,13 @@ export class Coordinator {
       await adapter.prefetch(next);
       // The belief is only sound while it still describes the live
       // successor: a handoff or promotion interleaving with the prefetch
-      // call must not leave a stale pendingPrefetch behind.
+      // call must not leave a stale prefetch belief behind.
       const stillSuccessor =
         this.lease?.generationId === issuedGen &&
         this.activeAdapter === adapter &&
         this.queue.items[QueueOps.nextIndexAfterEnd(this.queue) ?? -1]?.queueId ===
           next.queueId;
-      if (stillSuccessor) this.pendingPrefetch = next.queueId;
+      if (stillSuccessor) this.boundary.send({ type: "prefetch.installed", queueId: next.queueId });
     } catch {
       // Prefetch is an optimization; a failure only costs the seamlessness.
     }
@@ -918,11 +914,7 @@ export class Coordinator {
             return;
           }
         }
-        const endedKey = `${e.generationId}:${e.queueId ?? this.lease.queueId}`;
-        if (this.handledEnded.has(endedKey)) return;
-        this.handledEnded.add(endedKey);
         const queueId = e.queueId ?? this.lease.queueId;
-        this.emit({ kind: "trackEnded", queueId, generationId: e.generationId });
         // Advance follows the item that ENDED, not currentIndex — a start
         // already in flight may have moved the index provisionally. If the
         // event's queueId doesn't resolve to a queue item, the lease's item
@@ -933,58 +925,22 @@ export class Coordinator {
             ? queueId
             : this.lease.queueId;
         const endedIdx = this.queue.items.findIndex((it) => it.queueId === endedQid);
-        const idx =
-          endedIdx < 0
-            ? null
-            : QueueOps.nextIndexAfterEnd({ ...this.queue, currentIndex: endedIdx });
-        if (idx === null) {
-          this.status = "stopped";
-          this.lease = null;
-          this.activeAdapter = null;
-          this.positionMs = 0;
-          this.emitSnapshot();
-          this.persistSoon();
-          return;
-        }
-        // When we prefetched a successor, the engine may promote it itself:
-        // seamlessly (gapless:true) or after a format renegotiation. Give the
-        // self-promoted `started` a short window before driving the advance
-        // ourselves — a redundant load here would restart a track already
-        // playing, which is exactly the seam the engine exists to remove.
-        if (this.pendingPrefetch !== null) {
-          // The link recomputes the successor of the ended item when it
-          // runs — the timer only validates that the ended lease still
-          // stands before queueing it.
-          const endedGen = e.generationId;
-          this.promotionTimer = setTimeout(() => {
-            this.promotionTimer = null;
-            if (this.pendingPrefetch !== null) this.pendingPrefetch = null;
-            // Same staleness rule as the immediate link: the lease must
-            // still name the item that ended.
-            if (
-              this.lease?.generationId !== endedGen ||
-              this.lease.queueId !== endedQid
-            ) {
-              return;
-            }
-            this.enqueueStart(0, {}, {
-              generationId: endedGen,
-              queueId: endedQid,
-            });
-          }, 600);
-          return;
-        }
-        {
-          const endedGen = e.generationId;
-          this.enqueueStart(0, {}, { generationId: endedGen, queueId: endedQid });
-        }
+        const hasSuccessor =
+          endedIdx >= 0 &&
+          QueueOps.nextIndexAfterEnd({ ...this.queue, currentIndex: endedIdx }) !== null;
+        this.boundary.send({
+          type: "engine.ended",
+          reportedQid: queueId,
+          generationId: e.generationId,
+          endedQid,
+          hasSuccessor,
+        });
         return;
       }
       case "stopped": {
         // Provider tore its playback down (sign-out) — drop the lease
         // without treating it as a track end: no advance, no guard window.
-        this.clearPromotionWait();
-        this.pendingPrefetch = null;
+        this.boundary.send({ type: "session.torndown" });
         this.status = "stopped";
         this.lease = null;
         this.activeAdapter = null;
@@ -1009,13 +965,6 @@ export class Coordinator {
     }
   }
 
-  private clearPromotionWait(): void {
-    if (this.promotionTimer !== null) {
-      clearTimeout(this.promotionTimer);
-      this.promotionTimer = null;
-    }
-  }
-
   /**
    * The engine promoted a successor itself. Advance queue intent to match —
    * same generation (the engine session never broke), new queueId, fresh
@@ -1023,18 +972,19 @@ export class Coordinator {
    * already running.
    */
   private promoteTrack(queueId: string | undefined, durationMs?: number): void {
-    this.clearPromotionWait();
+    const prefetchQid = this.boundary.getSnapshot().context.prefetchQid;
+    // Ends any promotion window and consumes the prefetch belief.
+    this.boundary.send({ type: "engine.promoted" });
     let idx = queueId !== undefined
       ? this.queue.items.findIndex((it) => it.queueId === queueId)
       : -1;
-    if (idx < 0 && this.pendingPrefetch !== null) {
-      idx = this.queue.items.findIndex((it) => it.queueId === this.pendingPrefetch);
+    if (idx < 0 && prefetchQid !== null) {
+      idx = this.queue.items.findIndex((it) => it.queueId === prefetchQid);
     }
     if (queueId !== undefined && idx < 0) {
       // The engine promoted a successor we no longer know (queue was edited
       // after the prefetch installed). Honest state: keep the lease on the
       // playing track's queueId, warn, and let the next end recover intent.
-      this.pendingPrefetch = null;
       this.emitError(
         this.lease?.route ?? "local",
         this.lease?.queueId ?? queueId,
@@ -1045,7 +995,6 @@ export class Coordinator {
       return;
     }
     if (idx < 0) idx = QueueOps.nextIndexAfterEnd(this.queue) ?? -1;
-    this.pendingPrefetch = null;
     const item = idx >= 0 ? this.queue.items[idx] : undefined;
     if (this.lease === null || item === undefined) return;
     this.lease = { ...this.lease, queueId: item.queueId, issuedAtMs: this.now() };
@@ -1063,6 +1012,38 @@ export class Coordinator {
     this.persistSoon();
     const adapter = this.activeAdapter;
     if (adapter !== null) void this.prefetchSuccessor(adapter);
+  }
+
+  /** React to the track-boundary machine's decisions. */
+  private wireTrackBoundary(): void {
+    const b = this.boundary;
+    b.on("track.ended", (e) => {
+      this.emit({ kind: "trackEnded", queueId: e.queueId, generationId: e.generationId });
+    });
+    b.on("session.end", () => {
+      this.status = "stopped";
+      this.lease = null;
+      this.activeAdapter = null;
+      this.positionMs = 0;
+      this.emitSnapshot();
+      this.persistSoon();
+    });
+    b.on("advance.now", (e) => {
+      this.enqueueStart(0, {}, { generationId: e.generationId, queueId: e.endedQid });
+    });
+    b.on("advance.afterWindow", (e) => {
+      // Same staleness rule as the immediate link: the lease must still
+      // name the item that ended. The link re-checks when it runs.
+      if (this.lease?.generationId !== e.generationId || this.lease.queueId !== e.endedQid) return;
+      this.enqueueStart(0, {}, { generationId: e.generationId, queueId: e.endedQid });
+    });
+    // A throwing transition stops the actor; without an observer XState
+    // rethrows it as an uncaught exception, which would crash Electron main.
+    b.subscribe({
+      error: (cause) => {
+        this.emitError(this.activeRouteValue ?? "local", this.lease?.queueId, `track boundary failed: ${msg(cause)}`, false);
+      },
+    });
   }
 
   private onGraphEvent(e: AudioRpcEvent): void {
