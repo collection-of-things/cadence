@@ -552,6 +552,13 @@ impl Drop for NullSink {
 
 fn cpal_device_name(device: &cpal::Device) -> String {
     use cpal::traits::DeviceTrait;
+    #[cfg(target_os = "linux")]
+    if let Ok(id) = device.id() {
+        if id.host() == cpal::HostId::Alsa {
+            // Keep using the PCM identifier exposed by CPAL 0.15, not its display label.
+            return id.id().to_owned();
+        }
+    }
     device
         .description()
         .map(|desc| desc.name().to_owned())
@@ -580,7 +587,7 @@ impl CpalCaps {
                 .ok_or_else(|| anyhow!("no default output device"))?,
             Some(n) => host
                 .output_devices()?
-                .find(|d| d.description().is_ok_and(|desc| desc.name() == n))
+                .find(|d| cpal_device_name(d) == n)
                 .ok_or_else(|| anyhow!("no output device named {n:?}"))?,
         };
         let default_cfg = device.default_output_config()?;
