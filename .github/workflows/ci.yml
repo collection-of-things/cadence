@@ -21,9 +21,8 @@ jobs:
         with:
           node-version: 26
           cache: pnpm
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+      - name: set up Rust
+        run: rustup update stable --no-self-update && rustup default stable
       - uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: ffmpeg libasound2-dev libpipewire-0.3-dev libspa-0.2-dev pkg-config
