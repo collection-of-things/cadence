@@ -6,7 +6,8 @@
 //! - Otherwise resample only when source rate != negotiated output rate.
 
 use anyhow::Result;
-use rubato::{FftFixedIn, Resampler};
+use audioadapter_buffers::direct::SequentialSliceOfVecs;
+use rubato::{Fft, FixedSync, Indexing, Resampler, WindowFunction};
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,7 @@ pub fn plan(
 /// Stateful streaming resampler over deinterleaved channels.
 /// Feed interleaved f32; drained output is interleaved at the target rate.
 pub struct StreamingResampler {
-    inner: FftFixedIn<f32>,
+    inner: Fft<f32>,
     channels: usize,
     in_q: Vec<VecDeque<f32>>,
     /// total input frames pushed so far
@@ -64,7 +65,15 @@ pub struct StreamingResampler {
 impl StreamingResampler {
     pub fn new(from: u32, to: u32, channels: usize) -> Result<Self> {
         // ~46ms chunks at 44.1k; sub_chunks=2 keeps FFT sizes modest
-        let inner = FftFixedIn::new(from as usize, to as usize, 2048, 2, channels)?;
+        let inner = Fft::new_custom(
+            from as usize,
+            to as usize,
+            2048,
+            2,
+            channels,
+            WindowFunction::BlackmanHarris2,
+            FixedSync::Input,
+        )?;
         let delay = inner.output_delay();
         Ok(StreamingResampler {
             inner,
@@ -95,19 +104,12 @@ impl StreamingResampler {
     /// Flush remaining input (zero-pads the final chunk and pushes the
     /// resampler's delay tail out). Call once at EOF.
     ///
-    /// `process_partial(None)` would produce (zero) output forever, so the
-    /// tail flush stops once we've emitted the frames the input implied.
+    /// The tail flush stops once we've emitted the frames the input implied.
     pub fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
         self.drain(out)?;
         let leftover = self.in_q[0].len();
         if leftover > 0 {
-            let chans: Vec<Vec<f32>> = self
-                .in_q
-                .iter_mut()
-                .map(|q| q.drain(..).collect())
-                .collect();
-            let res = self.inner.process_partial(Some(&chans), None)?;
-            self.emit(&res, out);
+            self.process_chunk(leftover, out)?;
         }
         // The full signal is `fed`-implied output frames, shifted out by the
         // group delay skipped at the front. Flush the tail until raw output
@@ -119,8 +121,7 @@ impl StreamingResampler {
                 break;
             }
             let before = self.produced;
-            let res = self.inner.process_partial::<Vec<f32>>(None, None)?;
-            self.emit(&res, out);
+            self.process_chunk(0, out)?;
             if self.produced == before {
                 break;
             }
@@ -143,29 +144,26 @@ impl StreamingResampler {
             if self.in_q[0].len() < need {
                 return Ok(());
             }
-            let chans: Vec<Vec<f32>> = self
-                .in_q
-                .iter_mut()
-                .map(|q| q.drain(..need).collect())
-                .collect();
-            let res = self.inner.process(&chans, None)?;
-            self.emit(&res, out);
+            self.process_chunk(need, out)?;
         }
     }
 
-    fn emit(&mut self, chans: &[Vec<f32>], out: &mut Vec<f32>) {
-        let n = chans.iter().map(|c| c.len()).max().unwrap_or(0);
-        self.produced += n as u64;
-        for f in 0..n {
-            // Drop leading group-delay frames so streams start on signal.
-            if self.skipped < self.delay {
-                self.skipped += 1;
-                continue;
-            }
-            for c in chans.iter() {
-                out.push(c.get(f).copied().unwrap_or(0.0));
-            }
-        }
+    fn process_chunk(&mut self, frames: usize, out: &mut Vec<f32>) -> Result<()> {
+        let chans: Vec<Vec<f32>> = self
+            .in_q
+            .iter_mut()
+            .map(|q| q.drain(..frames).collect())
+            .collect();
+        let input = SequentialSliceOfVecs::new(&chans, self.channels, frames)?;
+        let partial =
+            (frames < self.inner.input_frames_next()).then(|| Indexing::new().partial_len(frames));
+        let samples = self.inner.process(&input, partial.as_ref())?.take_data();
+        let produced = samples.len() / self.channels;
+        let skip = produced.min(self.delay - self.skipped);
+        self.produced += produced as u64;
+        self.skipped += skip;
+        out.extend_from_slice(&samples[skip * self.channels..]);
+        Ok(())
     }
 }
 
@@ -221,6 +219,50 @@ mod tests {
                 out.len()
             );
         }
+    }
+
+    #[test]
+    fn resampled_stereo_matches_each_mono_channel_through_eof() {
+        let (from, to) = (44100, 48000);
+        let mut stereo = StreamingResampler::new(from, to, 2).unwrap();
+        let mut left = StreamingResampler::new(from, to, 1).unwrap();
+        let mut right = StreamingResampler::new(from, to, 1).unwrap();
+        let mut offset = 0;
+        let mut emitted = 0;
+        let check = |interleaved: &[f32], l: &[f32], r: &[f32]| {
+            assert_eq!(l.len(), r.len());
+            assert_eq!(interleaved.len(), 2 * l.len());
+            for (frame, (l, r)) in interleaved.chunks_exact(2).zip(l.iter().zip(r)) {
+                assert!((frame[0] - l).abs() < 1e-6);
+                assert!((frame[1] - r).abs() < 1e-6);
+            }
+        };
+        for frames in [1301, 2307, 4573, 519] {
+            let l: Vec<_> = (offset..offset + frames)
+                .map(|i| (i as f32 * 0.07).sin())
+                .collect();
+            let r: Vec<_> = (offset..offset + frames)
+                .map(|i| (i as f32 * 0.17).cos() * 0.5)
+                .collect();
+            let interleaved: Vec<_> = l.iter().zip(&r).flat_map(|(&l, &r)| [l, r]).collect();
+            let (mut s_out, mut l_out, mut r_out) = (Vec::new(), Vec::new(), Vec::new());
+            stereo.push(&interleaved, &mut s_out).unwrap();
+            left.push(&l, &mut l_out).unwrap();
+            right.push(&r, &mut r_out).unwrap();
+            check(&s_out, &l_out, &r_out);
+            offset += frames;
+            emitted += l_out.len();
+        }
+        let (mut s_tail, mut l_tail, mut r_tail) = (Vec::new(), Vec::new(), Vec::new());
+        stereo.finish(&mut s_tail).unwrap();
+        left.finish(&mut l_tail).unwrap();
+        right.finish(&mut r_tail).unwrap();
+        assert!(emitted > 0 && !l_tail.is_empty());
+        check(&s_tail, &l_tail, &r_tail);
+        assert_eq!(
+            emitted + l_tail.len(),
+            stereo.expected_output_for(offset as u64) as usize
+        );
     }
 
     /// A clean tone through the resampler must stay a tone: no image or

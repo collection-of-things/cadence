@@ -4,3 +4,8 @@ packages:
   # The Expo phone app installs with npm on its own; React Native does not
   # fit pnpm's isolated layout alongside Electron.
   - "!apps/mobile"
+
+allowBuilds:
+  better-sqlite3: true
+  electron-winstaller: true
+  esbuild: true

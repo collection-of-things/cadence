@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
 interface Rail {
-  railRef: RefObject<HTMLDivElement>;
+  railRef: RefObject<HTMLDivElement | null>;
   /** True when the rail sits at that end, so its arrow has nowhere to go. */
   edges: { start: boolean; end: boolean };
   /** Attach to the rail's onScroll. */

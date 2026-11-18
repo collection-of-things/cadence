@@ -550,9 +550,25 @@ impl Drop for NullSink {
 
 // ------------------------------- cpal device -------------------------------
 
+fn cpal_device_name(device: &cpal::Device) -> String {
+    use cpal::traits::DeviceTrait;
+    #[cfg(target_os = "linux")]
+    if let Ok(id) = device.id() {
+        if id.host() == cpal::HostId::Alsa {
+            // Keep using the PCM identifier exposed by CPAL 0.15, not its display label.
+            return id.id().to_owned();
+        }
+    }
+    device
+        .description()
+        .map(|desc| desc.name().to_owned())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
 pub struct CpalCaps {
     device: cpal::Device,
     default_cfg: cpal::SupportedStreamConfig,
+    default_kind: PcmKind,
     error: Arc<Mutex<Option<String>>>,
     /// `supported_output_configs` can fail with EBUSY on a direct `hw:`
     /// device once a stream holds the PCM handle — query once per device
@@ -572,7 +588,7 @@ impl CpalCaps {
                 .ok_or_else(|| anyhow!("no default output device"))?,
             Some(n) => host
                 .output_devices()?
-                .find(|d| d.name().map(|dn| dn == n).unwrap_or(false))
+                .find(|d| cpal_device_name(d) == n)
                 .ok_or_else(|| anyhow!("no output device named {n:?}"))?,
         };
         let default_cfg = device.default_output_config()?;
@@ -588,20 +604,54 @@ impl CpalCaps {
                 let _ = cfgs.set(cfgs_vec);
             }
         }
+        let (default_cfg, default_kind) =
+            Self::usable_default(default_cfg, cfgs.get().map_or(&[], Vec::as_slice))
+                .ok_or_else(|| anyhow!("output device has no supported PCM format"))?;
         Ok(Arc::new(CpalCaps {
             device,
             default_cfg,
+            default_kind,
             error: Arc::new(Mutex::new(None)),
             cfgs,
         }))
     }
 
-    fn kind_of(fmt: cpal::SampleFormat) -> PcmKind {
+    fn kind_of(fmt: cpal::SampleFormat) -> Option<PcmKind> {
         match fmt {
-            cpal::SampleFormat::I32 => PcmKind::S32,
-            cpal::SampleFormat::I16 => PcmKind::S16,
-            _ => PcmKind::F32,
+            cpal::SampleFormat::F32 => Some(PcmKind::F32),
+            cpal::SampleFormat::I32 => Some(PcmKind::S32),
+            cpal::SampleFormat::I16 => Some(PcmKind::S16),
+            _ => None,
         }
+    }
+
+    fn usable_default(
+        default: cpal::SupportedStreamConfig,
+        supported: &[cpal::SupportedStreamConfigRange],
+    ) -> Option<(cpal::SupportedStreamConfig, PcmKind)> {
+        if let Some(kind) = Self::kind_of(default.sample_format()) {
+            return Some((default, kind));
+        }
+        supported
+            .iter()
+            .filter_map(|cfg| {
+                let kind = Self::kind_of(cfg.sample_format())?;
+                let rate = default
+                    .sample_rate()
+                    .clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
+                Some((cfg.with_sample_rate(rate), kind))
+            })
+            .min_by_key(|(cfg, kind)| {
+                (
+                    cfg.channels().abs_diff(default.channels()),
+                    cfg.sample_rate().abs_diff(default.sample_rate()),
+                    match kind {
+                        PcmKind::F32 => 0,
+                        PcmKind::S32 => 1,
+                        PcmKind::S16 => 2,
+                    },
+                )
+            })
     }
 }
 
@@ -628,9 +678,9 @@ impl CpalCaps {
         }
         let d = &self.default_cfg;
         Negotiated {
-            rate: d.sample_rate().0,
+            rate: d.sample_rate(),
             channels: d.channels() as u32,
-            kind: Self::kind_of(d.sample_format()),
+            kind: self.default_kind,
             device_name: self.name(),
             positions: resolve_positions(None, d.channels() as u32),
         }
@@ -640,17 +690,16 @@ impl CpalCaps {
 
 impl DeviceCaps for CpalCaps {
     fn name(&self) -> String {
-        use cpal::traits::DeviceTrait;
-        self.device.name().unwrap_or_else(|_| "unknown".into())
+        cpal_device_name(&self.device)
     }
     fn default_rate(&self) -> u32 {
-        self.default_cfg.sample_rate().0
+        self.default_cfg.sample_rate()
     }
     fn default_channels(&self) -> u32 {
         self.default_cfg.channels() as u32
     }
     fn default_kind(&self) -> PcmKind {
-        Self::kind_of(self.default_cfg.sample_format())
+        self.default_kind
     }
 
     fn accepts(&self, rate: u32, channels: u32, depth: BitDepth) -> Option<PcmKind> {
@@ -674,7 +723,7 @@ impl DeviceCaps for CpalCaps {
             if c.channels() as u32 != channels {
                 continue;
             }
-            if rate < c.min_sample_rate().0 || rate > c.max_sample_rate().0 {
+            if rate < c.min_sample_rate() || rate > c.max_sample_rate() {
                 continue;
             }
             match (depth, c.sample_format()) {
@@ -702,19 +751,21 @@ impl DeviceCaps for CpalCaps {
     fn list(&self) -> Vec<DeviceDesc> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
-        let default_name = host
-            .default_output_device()
-            .and_then(|d| d.name().ok());
+        let default_device = host.default_output_device();
+        let default_id = default_device.as_ref().and_then(|d| d.id().ok());
         let mut out = Vec::new();
         if let Ok(devs) = host.output_devices() {
             for d in devs {
-                let name = d.name().unwrap_or_else(|_| "unknown".into());
+                let name = cpal_device_name(&d);
                 let (rate, ch) = d
                     .default_output_config()
-                    .map(|c| (c.sample_rate().0, c.channels() as u32))
+                    .map(|c| (c.sample_rate(), c.channels() as u32))
                     .unwrap_or((0, 0));
                 out.push(DeviceDesc {
-                    is_default: Some(&name) == default_name.as_ref(),
+                    is_default: default_id
+                        .as_ref()
+                        .zip(d.id().ok())
+                        .map_or_else(|| Some(&d) == default_device.as_ref(), |(id, other)| *id == other),
                     name,
                     default_sample_rate_hz: rate,
                     channels: ch,
@@ -740,7 +791,7 @@ impl DeviceCaps for CpalCaps {
         use cpal::traits::DeviceTrait;
         let config = cpal::StreamConfig {
             channels: neg.channels as u16,
-            sample_rate: cpal::SampleRate(neg.rate),
+            sample_rate: neg.rate,
             buffer_size: cpal::BufferSize::Default,
         };
         let err_flag = Arc::clone(&self.error);
@@ -748,7 +799,10 @@ impl DeviceCaps for CpalCaps {
         let make_err_cb = |dead: &Arc<AtomicBool>| {
             let err_flag = Arc::clone(&err_flag);
             let dead = Arc::clone(dead);
-            move |e: cpal::StreamError| {
+            move |e: cpal::Error| {
+                if e.kind() == cpal::ErrorKind::Xrun {
+                    return;
+                }
                 // No unwrap: a poisoned mutex inside an FFI callback aborts.
                 if let Ok(mut cell) = err_flag.lock() {
                     *cell = Some(e.to_string());
@@ -777,7 +831,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<f32, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [f32], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -792,7 +846,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<i32, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [i32], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -807,7 +861,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<i16, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [i16], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -836,12 +890,6 @@ struct CpalSink {
     dead: Arc<AtomicBool>,
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
 }
-
-// cpal marks Stream !Send (portability across hosts), but the Cadence engine
-// only drops/stops it from the control thread while its callback runs on
-// cpal's own thread — moving the handle between threads is sound for the
-// ALSA/JACK/CoreAudio backends we target.
-unsafe impl Send for CpalSink {}
 
 impl Sink for CpalSink {
     fn stop(&mut self) {
@@ -898,17 +946,17 @@ impl DeviceCaps for UnavailableCaps {
     fn list(&self) -> Vec<DeviceDesc> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
-        let default_name = host.default_output_device().and_then(|d| d.name().ok());
+        let default_device = host.default_output_device();
         let mut out = Vec::new();
         if let Ok(devs) = host.output_devices() {
             for d in devs {
-                let name = d.name().unwrap_or_else(|_| "unknown".into());
+                let name = cpal_device_name(&d);
                 let (rate, ch) = d
                     .default_output_config()
-                    .map(|c| (c.sample_rate().0, c.channels() as u32))
+                    .map(|c| (c.sample_rate(), c.channels() as u32))
                     .unwrap_or((0, 0));
                 out.push(DeviceDesc {
-                    is_default: Some(&name) == default_name.as_ref(),
+                    is_default: Some(&d) == default_device.as_ref(),
                     name,
                     default_sample_rate_hz: rate,
                     channels: ch,
@@ -1037,6 +1085,25 @@ pub fn initial_caps(cfg: &EngineConfig) -> Result<Arc<dyn DeviceCaps>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpal_unsupported_default_uses_supported_pcm_at_same_rate() {
+        use cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+        let config = |rate, format| {
+            SupportedStreamConfigRange::new(2, rate, rate, SupportedBufferSize::Unknown, format)
+        };
+        let default = config(48000, SampleFormat::I24).with_sample_rate(48000);
+        let supported = [
+            config(48000, SampleFormat::I24),
+            config(44100, SampleFormat::F32),
+            config(48000, SampleFormat::I16),
+        ];
+        let (fallback, kind) = CpalCaps::usable_default(default.clone(), &supported).unwrap();
+        assert_eq!(fallback.sample_rate(), 48000);
+        assert_eq!(fallback.channels(), 2);
+        assert_eq!(kind, PcmKind::S16);
+        assert!(CpalCaps::usable_default(default, &supported[..1]).is_none());
+    }
     #[test]
     fn drain_zero_pads_underruns() {
         let (prod, cons) = ringbuf::channel::<i16>(8);
