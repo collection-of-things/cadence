@@ -221,6 +221,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resampled_stereo_matches_each_mono_channel_through_eof() {
+        let (from, to) = (44100, 48000);
+        let mut stereo = StreamingResampler::new(from, to, 2).unwrap();
+        let mut left = StreamingResampler::new(from, to, 1).unwrap();
+        let mut right = StreamingResampler::new(from, to, 1).unwrap();
+        let mut offset = 0;
+        let mut emitted = 0;
+        let check = |interleaved: &[f32], l: &[f32], r: &[f32]| {
+            assert_eq!(l.len(), r.len());
+            assert_eq!(interleaved.len(), 2 * l.len());
+            for (frame, (l, r)) in interleaved.chunks_exact(2).zip(l.iter().zip(r)) {
+                assert!((frame[0] - l).abs() < 1e-6);
+                assert!((frame[1] - r).abs() < 1e-6);
+            }
+        };
+        for frames in [1301, 2307, 4573, 519] {
+            let l: Vec<_> = (offset..offset + frames)
+                .map(|i| (i as f32 * 0.07).sin())
+                .collect();
+            let r: Vec<_> = (offset..offset + frames)
+                .map(|i| (i as f32 * 0.17).cos() * 0.5)
+                .collect();
+            let interleaved: Vec<_> = l.iter().zip(&r).flat_map(|(&l, &r)| [l, r]).collect();
+            let (mut s_out, mut l_out, mut r_out) = (Vec::new(), Vec::new(), Vec::new());
+            stereo.push(&interleaved, &mut s_out).unwrap();
+            left.push(&l, &mut l_out).unwrap();
+            right.push(&r, &mut r_out).unwrap();
+            check(&s_out, &l_out, &r_out);
+            offset += frames;
+            emitted += l_out.len();
+        }
+        let (mut s_tail, mut l_tail, mut r_tail) = (Vec::new(), Vec::new(), Vec::new());
+        stereo.finish(&mut s_tail).unwrap();
+        left.finish(&mut l_tail).unwrap();
+        right.finish(&mut r_tail).unwrap();
+        assert!(emitted > 0 && !l_tail.is_empty());
+        check(&s_tail, &l_tail, &r_tail);
+        assert_eq!(
+            emitted + l_tail.len(),
+            stereo.expected_output_for(offset as u64) as usize
+        );
+    }
+
     /// A clean tone through the resampler must stay a tone: no image or
     /// harmonic spur above -80 dBc in steady state. The tone is exactly
     /// bin-centered in the analysis window so leakage doesn't mask spurs.
