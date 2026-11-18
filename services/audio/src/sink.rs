@@ -752,6 +752,7 @@ impl DeviceCaps for CpalCaps {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
         let default_device = host.default_output_device();
+        let default_id = default_device.as_ref().and_then(|d| d.id().ok());
         let mut out = Vec::new();
         if let Ok(devs) = host.output_devices() {
             for d in devs {
@@ -761,7 +762,10 @@ impl DeviceCaps for CpalCaps {
                     .map(|c| (c.sample_rate(), c.channels() as u32))
                     .unwrap_or((0, 0));
                 out.push(DeviceDesc {
-                    is_default: Some(&d) == default_device.as_ref(),
+                    is_default: default_id
+                        .as_ref()
+                        .zip(d.id().ok())
+                        .map_or_else(|| Some(&d) == default_device.as_ref(), |(id, other)| *id == other),
                     name,
                     default_sample_rate_hz: rate,
                     channels: ch,
