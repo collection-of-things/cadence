@@ -568,6 +568,7 @@ fn cpal_device_name(device: &cpal::Device) -> String {
 pub struct CpalCaps {
     device: cpal::Device,
     default_cfg: cpal::SupportedStreamConfig,
+    default_kind: PcmKind,
     error: Arc<Mutex<Option<String>>>,
     /// `supported_output_configs` can fail with EBUSY on a direct `hw:`
     /// device once a stream holds the PCM handle — query once per device
@@ -603,20 +604,54 @@ impl CpalCaps {
                 let _ = cfgs.set(cfgs_vec);
             }
         }
+        let (default_cfg, default_kind) =
+            Self::usable_default(default_cfg, cfgs.get().map_or(&[], Vec::as_slice))
+                .ok_or_else(|| anyhow!("output device has no supported PCM format"))?;
         Ok(Arc::new(CpalCaps {
             device,
             default_cfg,
+            default_kind,
             error: Arc::new(Mutex::new(None)),
             cfgs,
         }))
     }
 
-    fn kind_of(fmt: cpal::SampleFormat) -> PcmKind {
+    fn kind_of(fmt: cpal::SampleFormat) -> Option<PcmKind> {
         match fmt {
-            cpal::SampleFormat::I32 => PcmKind::S32,
-            cpal::SampleFormat::I16 => PcmKind::S16,
-            _ => PcmKind::F32,
+            cpal::SampleFormat::F32 => Some(PcmKind::F32),
+            cpal::SampleFormat::I32 => Some(PcmKind::S32),
+            cpal::SampleFormat::I16 => Some(PcmKind::S16),
+            _ => None,
         }
+    }
+
+    fn usable_default(
+        default: cpal::SupportedStreamConfig,
+        supported: &[cpal::SupportedStreamConfigRange],
+    ) -> Option<(cpal::SupportedStreamConfig, PcmKind)> {
+        if let Some(kind) = Self::kind_of(default.sample_format()) {
+            return Some((default, kind));
+        }
+        supported
+            .iter()
+            .filter_map(|cfg| {
+                let kind = Self::kind_of(cfg.sample_format())?;
+                let rate = default
+                    .sample_rate()
+                    .clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
+                Some((cfg.with_sample_rate(rate), kind))
+            })
+            .min_by_key(|(cfg, kind)| {
+                (
+                    cfg.channels().abs_diff(default.channels()),
+                    cfg.sample_rate().abs_diff(default.sample_rate()),
+                    match kind {
+                        PcmKind::F32 => 0,
+                        PcmKind::S32 => 1,
+                        PcmKind::S16 => 2,
+                    },
+                )
+            })
     }
 }
 
@@ -645,7 +680,7 @@ impl CpalCaps {
         Negotiated {
             rate: d.sample_rate(),
             channels: d.channels() as u32,
-            kind: Self::kind_of(d.sample_format()),
+            kind: self.default_kind,
             device_name: self.name(),
             positions: resolve_positions(None, d.channels() as u32),
         }
@@ -664,7 +699,7 @@ impl DeviceCaps for CpalCaps {
         self.default_cfg.channels() as u32
     }
     fn default_kind(&self) -> PcmKind {
-        Self::kind_of(self.default_cfg.sample_format())
+        self.default_kind
     }
 
     fn accepts(&self, rate: u32, channels: u32, depth: BitDepth) -> Option<PcmKind> {
@@ -1046,6 +1081,25 @@ pub fn initial_caps(cfg: &EngineConfig) -> Result<Arc<dyn DeviceCaps>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpal_unsupported_default_uses_supported_pcm_at_same_rate() {
+        use cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+        let config = |rate, format| {
+            SupportedStreamConfigRange::new(2, rate, rate, SupportedBufferSize::Unknown, format)
+        };
+        let default = config(48000, SampleFormat::I24).with_sample_rate(48000);
+        let supported = [
+            config(48000, SampleFormat::I24),
+            config(44100, SampleFormat::F32),
+            config(48000, SampleFormat::I16),
+        ];
+        let (fallback, kind) = CpalCaps::usable_default(default.clone(), &supported).unwrap();
+        assert_eq!(fallback.sample_rate(), 48000);
+        assert_eq!(fallback.channels(), 2);
+        assert_eq!(kind, PcmKind::S16);
+        assert!(CpalCaps::usable_default(default, &supported[..1]).is_none());
+    }
     #[test]
     fn drain_zero_pads_underruns() {
         let (prod, cons) = ringbuf::channel::<i16>(8);
