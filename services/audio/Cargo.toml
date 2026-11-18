@@ -7,7 +7,7 @@ description = "Cadence audio service: FFmpeg decode, PCM graph, CPAL output, JSO
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 cpal = "0.15"
 rubato = "0.16"
