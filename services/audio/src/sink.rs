@@ -550,6 +550,14 @@ impl Drop for NullSink {
 
 // ------------------------------- cpal device -------------------------------
 
+fn cpal_device_name(device: &cpal::Device) -> String {
+    use cpal::traits::DeviceTrait;
+    device
+        .description()
+        .map(|desc| desc.name().to_owned())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
 pub struct CpalCaps {
     device: cpal::Device,
     default_cfg: cpal::SupportedStreamConfig,
@@ -572,7 +580,7 @@ impl CpalCaps {
                 .ok_or_else(|| anyhow!("no default output device"))?,
             Some(n) => host
                 .output_devices()?
-                .find(|d| d.name().map(|dn| dn == n).unwrap_or(false))
+                .find(|d| d.description().is_ok_and(|desc| desc.name() == n))
                 .ok_or_else(|| anyhow!("no output device named {n:?}"))?,
         };
         let default_cfg = device.default_output_config()?;
@@ -628,7 +636,7 @@ impl CpalCaps {
         }
         let d = &self.default_cfg;
         Negotiated {
-            rate: d.sample_rate().0,
+            rate: d.sample_rate(),
             channels: d.channels() as u32,
             kind: Self::kind_of(d.sample_format()),
             device_name: self.name(),
@@ -640,11 +648,10 @@ impl CpalCaps {
 
 impl DeviceCaps for CpalCaps {
     fn name(&self) -> String {
-        use cpal::traits::DeviceTrait;
-        self.device.name().unwrap_or_else(|_| "unknown".into())
+        cpal_device_name(&self.device)
     }
     fn default_rate(&self) -> u32 {
-        self.default_cfg.sample_rate().0
+        self.default_cfg.sample_rate()
     }
     fn default_channels(&self) -> u32 {
         self.default_cfg.channels() as u32
@@ -674,7 +681,7 @@ impl DeviceCaps for CpalCaps {
             if c.channels() as u32 != channels {
                 continue;
             }
-            if rate < c.min_sample_rate().0 || rate > c.max_sample_rate().0 {
+            if rate < c.min_sample_rate() || rate > c.max_sample_rate() {
                 continue;
             }
             match (depth, c.sample_format()) {
@@ -702,19 +709,17 @@ impl DeviceCaps for CpalCaps {
     fn list(&self) -> Vec<DeviceDesc> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
-        let default_name = host
-            .default_output_device()
-            .and_then(|d| d.name().ok());
+        let default_device = host.default_output_device();
         let mut out = Vec::new();
         if let Ok(devs) = host.output_devices() {
             for d in devs {
-                let name = d.name().unwrap_or_else(|_| "unknown".into());
+                let name = cpal_device_name(&d);
                 let (rate, ch) = d
                     .default_output_config()
-                    .map(|c| (c.sample_rate().0, c.channels() as u32))
+                    .map(|c| (c.sample_rate(), c.channels() as u32))
                     .unwrap_or((0, 0));
                 out.push(DeviceDesc {
-                    is_default: Some(&name) == default_name.as_ref(),
+                    is_default: Some(&d) == default_device.as_ref(),
                     name,
                     default_sample_rate_hz: rate,
                     channels: ch,
@@ -740,7 +745,7 @@ impl DeviceCaps for CpalCaps {
         use cpal::traits::DeviceTrait;
         let config = cpal::StreamConfig {
             channels: neg.channels as u16,
-            sample_rate: cpal::SampleRate(neg.rate),
+            sample_rate: neg.rate,
             buffer_size: cpal::BufferSize::Default,
         };
         let err_flag = Arc::clone(&self.error);
@@ -748,7 +753,10 @@ impl DeviceCaps for CpalCaps {
         let make_err_cb = |dead: &Arc<AtomicBool>| {
             let err_flag = Arc::clone(&err_flag);
             let dead = Arc::clone(dead);
-            move |e: cpal::StreamError| {
+            move |e: cpal::Error| {
+                if e.kind() == cpal::ErrorKind::Xrun {
+                    return;
+                }
                 // No unwrap: a poisoned mutex inside an FFI callback aborts.
                 if let Ok(mut cell) = err_flag.lock() {
                     *cell = Some(e.to_string());
@@ -777,7 +785,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<f32, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [f32], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -792,7 +800,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<i32, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [i32], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -807,7 +815,7 @@ impl DeviceCaps for CpalCaps {
                 let pa = Arc::clone(&paused);
                 (
                     self.device.build_output_stream::<i16, _, _>(
-                        &config,
+                        config,
                         move |data: &mut [i16], _| drain_paused(&cons, &pa, data),
                         make_err_cb(&dead),
                         None,
@@ -836,12 +844,6 @@ struct CpalSink {
     dead: Arc<AtomicBool>,
     staged: Box<dyn Fn() -> u64 + Send + Sync>,
 }
-
-// cpal marks Stream !Send (portability across hosts), but the Cadence engine
-// only drops/stops it from the control thread while its callback runs on
-// cpal's own thread — moving the handle between threads is sound for the
-// ALSA/JACK/CoreAudio backends we target.
-unsafe impl Send for CpalSink {}
 
 impl Sink for CpalSink {
     fn stop(&mut self) {
@@ -898,17 +900,17 @@ impl DeviceCaps for UnavailableCaps {
     fn list(&self) -> Vec<DeviceDesc> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
-        let default_name = host.default_output_device().and_then(|d| d.name().ok());
+        let default_device = host.default_output_device();
         let mut out = Vec::new();
         if let Ok(devs) = host.output_devices() {
             for d in devs {
-                let name = d.name().unwrap_or_else(|_| "unknown".into());
+                let name = cpal_device_name(&d);
                 let (rate, ch) = d
                     .default_output_config()
-                    .map(|c| (c.sample_rate().0, c.channels() as u32))
+                    .map(|c| (c.sample_rate(), c.channels() as u32))
                     .unwrap_or((0, 0));
                 out.push(DeviceDesc {
-                    is_default: Some(&name) == default_name.as_ref(),
+                    is_default: Some(&d) == default_device.as_ref(),
                     name,
                     default_sample_rate_hz: rate,
                     channels: ch,
