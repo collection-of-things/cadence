@@ -307,6 +307,8 @@ class EmitStartedCmd implements fc.AsyncCommand<Model, Real> {
     const gen = lease?.generationId;
     if (gen === undefined) return;
     const engine = lease?.route === "youtube-music" ? r.yt : r.local;
+    // A current-generation start requires a play that reached the engine.
+    if (this.genDelta === 0 && !engine.playedItems.some((play) => play.generationId === gen)) return;
     const items = r.coordinator.getQueue().items;
     const pick = items[this.pick % items.length];
     const queueId =
