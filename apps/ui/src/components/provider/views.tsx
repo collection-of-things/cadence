@@ -233,7 +233,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
         <section className="album-hero">
           <div className="album-art">
             {artworkUrl
-              ? <img src={artworkUrl} alt={`${container.title} artwork`} decoding="async" draggable={false} />
+              ? <img src={artworkUrl} alt={`${container.title} artwork`} draggable={false} />
               : <NoteIcon size={58} />}
           </div>
           <div className="album-info">
@@ -241,7 +241,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
             {byline && (
               <div className="album-byline">
                 <span className="album-avatar" aria-hidden="true">
-                  {artworkUrl ? <img src={artworkUrl} alt="" decoding="async" /> : byline.slice(0, 1)}
+                  {artworkUrl ? <img src={artworkUrl} alt="" /> : byline.slice(0, 1)}
                 </span>
                 <span>{byline}</span>
               </div>
