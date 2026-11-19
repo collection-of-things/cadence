@@ -151,6 +151,38 @@ describe("ytm-controller", () => {
     expect(page.video.volumeAtPlay).toBe(0);
   });
 
+  it("retries a media start interrupted while the requested song loads", async () => {
+    const page = fakePage();
+    const play = page.video.play.bind(page.video);
+    let attempts = 0;
+    page.video.play = async () => {
+      attempts++;
+      expect(page.video.volume).toBe(0);
+      if (attempts === 1) throw new DOMException("Media load interrupted play()", "AbortError");
+      await play();
+    };
+
+    expect(await page.ctl.play("B", 0, 1, 0)).toMatchObject({ state: "playing", videoId: "B" });
+    expect(attempts).toBe(2);
+  });
+
+  it("does not retry into another song if the provider changes tracks", async () => {
+    const page = fakePage();
+    const play = page.video.play.bind(page.video);
+    let attempts = 0;
+    page.video.play = async () => {
+      if (++attempts === 1) {
+        page.setId("RADIO");
+        throw new DOMException("Media load interrupted play()", "AbortError");
+      }
+      await play();
+    };
+
+    await expect(page.ctl.play("B", 199_950, 1, 1)).rejects.toThrow("changed tracks");
+    expect(attempts).toBe(1);
+    expect(page.video.paused).toBe(true);
+  });
+
   it("does not start a track whose pending navigation was stopped", async () => {
     const page = fakePage({ routerWorks: false });
     const switching = page.ctl.play("B", 0, 1, 1);

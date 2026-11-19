@@ -175,13 +175,26 @@ export const YTM_CONTROLLER_JS = String.raw`
           return 'reloading';
         }
       }
-      const v = await waitFor(video, 5000);
-      if (generationId !== generation) return 'superseded';
-      if (!v) throw new Error('no video element after navigation');
-      hookPlayer();
-      v.volume = Math.max(0, Math.min(1, volume));
-      if (positionMs) seekTo(positionMs);
-      await v.play();
+      for (let attempt = 0; ; attempt++) {
+        const v = await waitFor(video, attempt === 0 ? 5000 : 1000);
+        if (generationId !== generation) return 'superseded';
+        if (!v) throw new Error('no video element after navigation');
+        if (attempt > 0 && currentId() !== videoId) throw new Error('YouTube Music changed tracks during startup');
+        hookPlayer();
+        v.volume = Math.max(0, Math.min(1, volume));
+        if (positionMs) seekTo(positionMs);
+        try {
+          await v.play();
+          if (generationId !== generation) return 'superseded';
+          if (attempt > 0 && currentId() !== videoId) throw new Error('YouTube Music changed tracks during startup');
+          break;
+        } catch (e) {
+          if (generationId !== generation) return 'superseded';
+          // The site's player can interrupt play() as it finishes loading the song.
+          if (e?.name !== 'AbortError' || attempt === 2) throw e;
+          await sleep(150);
+        }
+      }
       if (generationId !== generation) return 'superseded';
       switching = false;
       return readState();
