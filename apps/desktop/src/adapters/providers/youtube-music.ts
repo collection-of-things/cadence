@@ -3,8 +3,9 @@
  *
  * Playback: a hidden, account-scoped ECS view running music.youtube.com with
  * the injected controller (see inject/ytm-controller.ts). We drive the real
- * player: navigate to the video and control the media element — the same
- * approach as Kaset/Pear. Correct-song-over-gapless on any doubt.
+ * player: navigate to the video through the site's SPA router and control the
+ * media element — the same approach as Kaset/Pear. Correct-song-over-gapless
+ * on any doubt.
  *
  * Catalog: youtubei.js (Innertube) reusing the session's cookies so browse and
  * playback stay tied to one account. Search is implemented; when the page or
@@ -18,7 +19,7 @@ import type {
   TrackRef,
 } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
-import { ProviderSession } from "./provider-session.js";
+import { ProviderEvalTimeout, ProviderSession } from "./provider-session.js";
 import { YouTubeMusicCatalog } from "./youtube-music-catalog.js";
 import { YTM_CONTROLLER_JS } from "./inject/ytm-controller.js";
 
@@ -40,14 +41,26 @@ interface YtmPlayerState {
   title: string;
   byline: string;
   url: string;
+  bootId: string;
+  generationId: number | null;
+  videoId: string | null;
+  expectedVideoId: string | null;
+  ad: boolean;
 }
+
+/** Google account cookies present only in a signed-in partition. */
+const YTM_AUTH_COOKIES = /^(SAPISID|__Secure-3PAPISID|LOGIN_INFO)$/;
 
 export class YouTubeMusicAdapter extends ProviderViewAdapter {
   readonly route = "youtube-music" as const;
   private session: ProviderSession;
   private catalogClient: YtmCatalogLike | null;
-  private generation = 0;
+  private generation: number | null = null;
+  private volume = 1;
+  private queueId: string | null = null;
+  private endedGeneration = -1;
   private signedIn: boolean | null = null;
+  private pageBootId: string | null = null;
   private destroyed = false;
 
   constructor(deps: YouTubeMusicAdapterDeps = {}) {
@@ -56,47 +69,63 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     this.session = new ProviderSession({
       partition: "persist:provider-youtube",
       url: "https://music.youtube.com",
+      // Re-installed after hard loads (reload fallback, sign-in round-trips).
+      injectScript: YTM_CONTROLLER_JS,
       onEvent: (e) => this.onPageEvent(e.name, e.data),
     });
   }
 
-  /** Ensure the injected controller exists, reinstalling after navigations. */
-  private async ensureController(timeoutMs = 10_000): Promise<void> {
+  /** Ensure the injected controller exists. With `notBootId`, wait for a
+   * controller from a fresh page load rather than the one being torn down. */
+  private async ensureController(timeoutMs = 10_000, notBootId?: string): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const ok = await this.session.eval<boolean>(
-          `typeof window.__cadenceCtl === "object" && window.__cadenceCtl !== null`,
+        const boot = await this.session.eval<string | null>(
+          `window.__cadenceCtl ? String(window.__cadenceCtl.bootId) : null`,
         );
-        if (ok) return;
-        await this.session.eval(YTM_CONTROLLER_JS);
-        return;
+        if (boot !== null && boot !== notBootId) return;
+        if (boot === null) {
+          await this.session.eval(YTM_CONTROLLER_JS);
+          continue;
+        }
       } catch {
-        await new Promise((r) => setTimeout(r, 400));
+        /* page mid-navigation */
       }
+      await new Promise((r) => setTimeout(r, 250));
     }
-    throw new Error("YouTube Music controller did not install within 10s");
+    throw new Error(`YouTube Music controller did not install within ${timeoutMs / 1000}s`);
   }
 
   async prepare(): Promise<void> {
     await this.session.prepare();
     await this.ensureController();
+    await this.refreshSignedIn();
+  }
+
+  /** Page config is authoritative once loaded; auth cookies otherwise. */
+  private async refreshSignedIn(): Promise<void> {
+    let next: boolean | null = null;
     try {
-      this.signedIn = await this.session.eval<boolean>(`window.__cadenceCtl.isSignedIn()`);
-      this.emit({ kind: "capabilitiesChanged" });
+      next = await this.session.eval<boolean | null>(`window.__cadenceCtl.isSignedIn()`);
     } catch {
-      /* controller may not be ready yet; state stays unknown */
+      /* controller may not be ready yet */
+    }
+    next ??= await this.session.hasSessionCookies(YTM_AUTH_COOKIES);
+    if (next !== this.signedIn) {
+      this.signedIn = next;
+      this.emit({ kind: "capabilitiesChanged" });
     }
   }
 
   async capabilities(): Promise<RouteCapabilities> {
+    // Auth cookies answer "likely signed in" without starting the view.
+    if (this.signedIn === null && (await this.session.hasSessionCookies(YTM_AUTH_COOKIES))) {
+      this.signedIn = true;
+    }
     const signedIn = this.signedIn;
     return this.baseCapabilities({
-      state: this.session.alive
-        ? signedIn === false
-          ? "unauthenticated"
-          : "ready"
-        : "unauthenticated",
+      state: signedIn === true || (signedIn === null && this.session.alive) ? "ready" : "unauthenticated",
       ...(signedIn === false
         ? { stateDetail: "Not signed in to YouTube Music — open the sign-in view." }
         : signedIn === null
@@ -128,24 +157,49 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
-    this.session.setAudioMuted(false);
-    this.generation = lease.generationId;
-    await this.prepare();
     if (item.track.source.kind !== "provider") throw new Error("not a provider track");
+    this.session.setAudioMuted(true);
+    this.generation = lease.generationId;
+    this.queueId = item.queueId;
     const id = item.track.source.providerItemId;
     try {
-      // Navigate from main (bounded): eval into a page that is being torn
-      // down by its own navigation races with the load. Then reinstall the
-      // controller and ask it to play — it stays put when already there.
-      await this.session.eval(
-        `location.assign('https://music.youtube.com/watch?v=${id.replace(/'/g, "")}')`,
-      ).catch(() => undefined);
-      await this.ensureController(20_000);
-      await this.session.eval(
-        `window.__cadenceCtl.play(${JSON.stringify(id)}, ${opts.positionMs ?? 0})`,
-      );
+      await this.session.prepare();
+      if (lease.generationId !== this.generation) return;
+      this.session.setAudioMuted(true);
+      await this.ensureController();
+      if (this.signedIn === null) await this.refreshSignedIn();
+      // The controller navigates through the site's SPA router; if that fails
+      // it starts a full page load and we re-issue play on the new page.
+      const play = () => {
+        const args = [id, Math.max(0, Math.round(opts.positionMs ?? 0)), lease.generationId, this.volume];
+        return this.session.eval<YtmPlayerState | "reloading" | "superseded">(
+          `window.__cadenceCtl.play(...${JSON.stringify(args)})`,
+          15_000,
+        );
+      };
+      const bootId = await this.session.eval<string>(`String(window.__cadenceCtl.bootId)`);
+      if (lease.generationId !== this.generation) return;
+      let result = await play().catch(async (e: unknown) => {
+        if (lease.generationId !== this.generation) return "superseded" as const;
+        if (e instanceof ProviderEvalTimeout) throw e;
+        // The page was torn down mid-eval by a hard load.
+        const currentBoot = await this.session.eval<string>(`String(window.__cadenceCtl.bootId)`).catch(() => null);
+        if (currentBoot === bootId) throw e;
+        return "reloading" as const;
+      });
+      if (result === "reloading") {
+        await this.ensureController(20_000, bootId);
+        if (lease.generationId !== this.generation) return;
+        result = await play();
+      }
+      if (lease.generationId !== this.generation) return;
+      if (typeof result === "string") throw new Error("YouTube Music did not start the requested track");
+      this.session.setAudioMuted(false);
       this.emit({ kind: "started", generationId: lease.generationId, durationMs: item.track.durationMs });
+      // A pre-roll can already be playing when the start resolves.
+      this.onPageEvent("playerState", result);
     } catch (e) {
+      if (lease.generationId !== this.generation) return;
       this.error(`YouTube Music play failed: ${(e as Error).message}`, true);
       throw e;
     }
@@ -161,13 +215,14 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     await this.session.eval(`window.__cadenceCtl.resume()`).catch(() => {});
   }
 
-  /** Confirmed silence: pause the media element. Session stays logged in. */
+  /** Confirmed silence: stop the page's current play attempt. */
   async stop(lease: PlaybackLease): Promise<void> {
-    this.session.setAudioMuted(true);
     if (lease.generationId !== this.generation) return;
+    this.generation = null;
+    this.session.setAudioMuted(true);
     // The coordinator's handoff counts on confirmed silence — propagate
     // failures instead of leaving a second source audible.
-    await this.session.eval(`window.__cadenceCtl.pause()`);
+    await this.session.eval(`window.__cadenceCtl.stop()`);
   }
 
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {
@@ -176,6 +231,7 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   }
 
   async setVolume(volume: number): Promise<void> {
+    this.volume = volume;
     await this.session.eval(`window.__cadenceCtl.setVolume(${volume})`).catch(() => {});
   }
 
@@ -209,6 +265,7 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   /** Sign-in flow: prepare the view, then always reveal — even a failed
    * controller install leaves the window for the user to authenticate in. */
   async signIn(): Promise<void> {
+    this.signedIn = null;
     try {
       await this.prepare();
     } finally {
@@ -224,9 +281,19 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     }
     if (name !== "playerState") return;
     const s = data as YtmPlayerState;
-    const generationId = this.generation;
+    // A fresh page load (e.g. after signing in) may change the account.
+    if (s.bootId !== this.pageBootId) {
+      this.pageBootId = s.bootId;
+      void this.refreshSignedIn();
+    }
+    const { generationId } = s;
+    if (generationId === null || generationId !== this.generation) return;
     if (s.state === "ended") {
-      this.emit({ kind: "ended", generationId });
+      // The controller keeps reporting `ended` while it holds the site's
+      // autoplay; the coordinator needs it once per track.
+      if (this.endedGeneration === generationId) return;
+      this.endedGeneration = generationId;
+      this.emit({ kind: "ended", generationId, ...(this.queueId ? { queueId: this.queueId } : {}) });
       return;
     }
     this.emit({

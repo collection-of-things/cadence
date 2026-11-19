@@ -19,6 +19,9 @@ import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persi
 import * as QueueOps from "./queue-ops.js";
 import type { SettingsStore } from "./settings-store.js";
 
+/** Position ticks arrive several times a second; persisting each rewrites the whole settings file. */
+const POSITION_PERSIST_INTERVAL_MS = 15_000;
+
 /**
  * Optional stream of raw audio-graph events (fft/output/position) shared by
  * every native-pcm route. In production this is the AudioServiceClient; the
@@ -79,6 +82,7 @@ export class Coordinator {
   private output: ActiveOutput | null = null;
   private lastError: PlaybackSnapshot["lastError"];
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPersistAtMs = 0;
   private disposed = false;
   /** Serializes commands and event-driven starts so handoffs can't overlap. */
   private chain: Promise<void> = Promise.resolve();
@@ -300,6 +304,7 @@ export class Coordinator {
           this.positionMs = 0;
           await this.guarded(() => adapter.seek(lease, 0), "seek");
           this.emitSnapshot();
+          this.persistSoon();
           return;
         }
         const idx = QueueOps.previousIndexManual(this.queue);
@@ -644,6 +649,8 @@ export class Coordinator {
     this.handledEnded.clear();
     this.lease = lease;
     this.leaseStartPositionMs = opts.positionMs ?? 0;
+    // The outgoing lease may have reported buffering during prepare.
+    if (route === "youtube-music") this.status = "loading";
     // A self-promotion on the outgoing engine may have moved queue intent
     // while the awaits above were in flight — re-assert the committed item.
     if (this.queue.currentIndex !== index) {
@@ -706,7 +713,7 @@ export class Coordinator {
     // Per-route conservative volume memory: the incoming engine gets back
     // whatever level the user last set on this route.
     this.volume = this.volumeByRoute.get(route) ?? this.volume;
-    this.status = "playing";
+    this.applyPlayingDefault(lease);
     this.lastError = undefined;
     this.setQueueOwner(this.ownerFor(route));
     await this.applyEffectiveVolume();
@@ -800,10 +807,17 @@ export class Coordinator {
     const lease = this.lease;
     if (adapter === null || lease === null) return;
     if (await this.guarded(() => adapter.resume(lease), "resume")) {
-      this.status = "playing";
+      this.applyPlayingDefault(lease);
     }
     this.emitSnapshot();
     this.persistSoon();
+  }
+
+  private applyPlayingDefault(lease: PlaybackLease): void {
+    if (this.lease?.generationId !== lease.generationId) return;
+    // A successful YouTube Music play or resume can start a pre-roll.
+    if (lease.route === "youtube-music" && this.status === "buffering") return;
+    this.status = "playing";
   }
 
   /**
@@ -883,7 +897,7 @@ export class Coordinator {
         if (e.positionMs <= this.durationMs || this.durationMs === 0) {
           this.emit({ kind: "position", positionMs: e.positionMs, atMs: e.atMs, generationId: e.generationId });
         }
-        this.persistSoon();
+        if (this.now() - this.lastPersistAtMs >= POSITION_PERSIST_INTERVAL_MS) this.persistSoon();
         return;
       }
       case "state": {
@@ -1132,6 +1146,7 @@ export class Coordinator {
   }
 
   private persistNow(): void {
+    this.lastPersistAtMs = this.now();
     const state: PersistedPlayback = {
       version: 1,
       queue: this.queue,

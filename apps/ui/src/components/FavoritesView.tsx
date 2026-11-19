@@ -1,3 +1,6 @@
+import { useLayoutEffect, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
 import { useCollection } from '../collection';
 import { PlayIcon, ShuffleIcon, SongIcon, StarIcon } from '../icons';
@@ -9,6 +12,54 @@ import './home.css';
 const origin = { kind: 'playlist' as const, id: 'favorites', name: 'Favourite Songs' };
 /** Favourite Songs has no cover: it wears a fixed rose. */
 const FAVORITES_THEME = pageTheme([[250, 45, 72], [140, 30, 60]]);
+
+const ROW_HEIGHT = 60; // 58px row + 2px gap
+
+/** Rows virtualised against the page's own scroller, which also holds the hero above. */
+function VirtualFavorites({ tracks }: { tracks: TrackRef[] }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollEl = useRef<HTMLElement | null>(null);
+  const [margin, setMargin] = useState(0);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const scroller = list?.closest<HTMLElement>('.stage-scroll') ?? null;
+    scrollEl.current = scroller;
+    if (!list || !scroller) return;
+    const measure = () =>
+      setMargin(list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
+
+  const virtualizer = useVirtualizer({
+    count: tracks.length,
+    getScrollElement: () => scrollEl.current,
+    estimateSize: () => ROW_HEIGHT,
+    scrollMargin: margin,
+    overscan: 10,
+  });
+
+  return (
+    <div className="track-list" ref={listRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+      {virtualizer.getVirtualItems().map((vi) => {
+        const track = tracks[vi.index]!;
+        return (
+          <div
+            key={track.id}
+            className={`fav-row ${vi.index % 2 === 1 ? 'is-even' : ''}`}
+            style={{ transform: `translateY(${vi.start - margin}px)` }}
+          >
+            <TrackRow track={track} index={vi.index} variant="list" onPlay={() => session.playTracks(tracks, vi.index, origin)} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /** Favourite Songs playlist, backed by the renderer collection store. */
 export function FavoritesView() {
@@ -39,11 +90,7 @@ export function FavoritesView() {
         </section>
         <section className="album-tracks" aria-label="Favourite songs">
           {ready ? (
-            <div className="track-list">
-              {favorites.map((track, i) => (
-                <TrackRow key={track.id} track={track} index={i} variant="list" onPlay={() => session.playTracks(favorites, i, origin)} />
-              ))}
-            </div>
+            <VirtualFavorites tracks={favorites} />
           ) : (
             <p className="list-empty">Star a song from the player or a track’s ⋯ menu to keep it here.</p>
           )}

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   CoordinatorEvent,
   PlaybackCommand,
@@ -120,11 +120,26 @@ describe('event -> state mapping', () => {
     expect(session.runtime.clock.positionMs).toBe(5000);
   });
 
-  it('applies position events to snapshot and runtime clock', () => {
+  it('applies position events to the runtime clock without notifying subscribers', () => {
+    const listener = vi.fn();
+    const unsub = session.store.subscribe(listener);
     session.dispatch({ kind: 'position', positionMs: 42_000, atMs: 2000, generationId: 1 });
-    expect(session.store.getState().snapshot.positionMs).toBe(42_000);
+    unsub();
+    expect(listener).not.toHaveBeenCalled();
     expect(session.runtime.clock.positionMs).toBe(42_000);
     expect(session.runtime.clock.atMs).toBe(2000);
+  });
+
+  it('keeps the latest position tick when the snapshot is rebuilt by another event', () => {
+    session.dispatch({ kind: 'position', positionMs: 42_000, atMs: 2000, generationId: 1 });
+    session.dispatch({ kind: 'queue', queue: queue([qItem('a'), qItem('b')]) });
+    expect(session.store.getState().snapshot.positionMs).toBe(42_000);
+    expect(session.runtime.clock.positionMs).toBe(42_000);
+  });
+
+  it('tolerates fft events', () => {
+    session.dispatch({ kind: 'fft', bands: [0.9], peak: 0.9, atMs: 7, generationId: 1 });
+    expect(session.store.getState().snapshot.status).toBe('playing');
   });
 
   it('applies output events', () => {
@@ -162,18 +177,13 @@ describe('stale generation handling', () => {
   it('ignores position events from older generations', () => {
     session.dispatch({ kind: 'snapshot', snapshot: snap({ lease: { generationId: 5, route: 'local', queueId: 'q-a', issuedAtMs: 0 }, positionMs: 100 }) });
     session.dispatch({ kind: 'position', positionMs: 99_999, atMs: 1, generationId: 4 });
-    expect(session.store.getState().snapshot.positionMs).toBe(100);
+    expect(session.runtime.clock.positionMs).toBe(100);
     session.dispatch({ kind: 'position', positionMs: 77_777, atMs: 1, generationId: 5 });
-    expect(session.store.getState().snapshot.positionMs).toBe(77_777);
+    expect(session.runtime.clock.positionMs).toBe(77_777);
   });
 
-  it('ignores stale fft and trackEnded events', () => {
+  it('ignores stale trackEnded events', () => {
     session.dispatch({ kind: 'snapshot', snapshot: snap({ lease: { generationId: 5, route: 'local', queueId: 'q-a', issuedAtMs: 0 } }) });
-    session.dispatch({ kind: 'fft', bands: [0.9], peak: 0.9, atMs: 1, generationId: 4 });
-    expect(session.runtime.fft.atMs).toBe(0);
-    session.dispatch({ kind: 'fft', bands: [0.9], peak: 0.9, atMs: 7, generationId: 5 });
-    expect(session.runtime.fft.atMs).toBe(7);
-
     session.dispatch({ kind: 'trackEnded', queueId: 'q-a', generationId: 4 });
     expect(session.store.getState().snapshot.current?.queueId).toBe('q-a');
   });
@@ -316,6 +326,20 @@ describe('commands', () => {
     });
     session.togglePlay();
     expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
+  });
+
+  it('pauses buffering YouTube Music with the song clock held', () => {
+    session.dispatch({
+      kind: 'snapshot',
+      snapshot: snap({
+        status: 'buffering',
+        lease: { generationId: 1, route: 'youtube-music', queueId: 'q-a', issuedAtMs: 0 },
+      }),
+    });
+
+    expect(session.runtime.clock.playing).toBe(false);
+    session.togglePlay();
+    expect(fake.sent.at(-1)).toEqual({ kind: 'pause' });
   });
 
   it('insertNext forwards a provider track with its provider source intact', () => {

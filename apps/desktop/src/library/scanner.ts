@@ -174,7 +174,8 @@ export class LibraryScanner {
     const resized = this.opts.resize
       ? await this.opts.resize(picture.data, picture.format).catch(() => null)
       : null;
-    const ext = resized !== null ? ".png" : (MIME_EXT[picture.format] ?? ".img");
+    // Resized art is JPEG; thumbnails cached by earlier versions stay .png.
+    const ext = resized !== null ? ".jpg" : (MIME_EXT[picture.format] ?? ".img");
     const out = join(this.thumbnailDir, `${hash}${ext}`);
     try {
       await stat(out);

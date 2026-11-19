@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -102,6 +102,30 @@ describe("coordinator: queue + leases", () => {
 });
 
 describe("coordinator: handoff", () => {
+  it("keeps the YouTube Music position frozen while a pre-roll plays or resumes", async () => {
+    const r = rig();
+    r.provider.play = async (_item, lease) => {
+      r.provider.emitAdapterEvent({ kind: "started", generationId: lease.generationId });
+      r.provider.emitAdapterEvent({ kind: "state", status: "buffering", generationId: lease.generationId });
+    };
+    r.provider.resume = async (lease) => {
+      r.provider.emitAdapterEvent({ kind: "state", status: "buffering", generationId: lease.generationId });
+    };
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a", "youtube-music")], startIndex: 0 });
+    const startStatus = r.coordinator.getSnapshot().status;
+    await r.coordinator.handleCommand({ kind: "pause" });
+    expect(r.coordinator.getSnapshot().status).toBe("paused");
+    await r.coordinator.handleCommand({ kind: "resume" });
+    expect([startStatus, r.coordinator.getSnapshot().status]).toEqual(["buffering", "buffering"]);
+    expect(r.coordinator.getSnapshot().positionMs).toBe(0);
+
+    const generationId = r.coordinator.getSnapshot().lease?.generationId;
+    if (generationId === undefined) throw new Error("Expected an active lease");
+    r.provider.emitAdapterEvent({ kind: "state", status: "playing", generationId });
+    expect(r.coordinator.getSnapshot().status).toBe("playing");
+  });
+
   it("runs prepare-incoming -> stop-outgoing -> start-incoming across routes", async () => {
     const r = rig();
     const order: string[] = [];
@@ -171,6 +195,22 @@ describe("coordinator: handoff", () => {
     expect(r.coordinator.getSnapshot().positionMs).toBe(5_000);
   });
 
+  it("persists position at most every 15s but flushes the latest on dispose", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a")] });
+    await r.coordinator.handleCommand({ kind: "play", queueId: r.coordinator.getQueue().items[0]?.queueId ?? "" });
+    expect(r.coordinator.getSnapshot().lease?.generationId).toBe(1);
+    const persisted = () =>
+      (JSON.parse(readFileSync(r.storePath, "utf8")) as { playback: { positionMs: number } }).playback.positionMs;
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 1_000, atMs: 1, generationId: 1 });
+    const first = persisted();
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 2_000, atMs: 2, generationId: 1 });
+    r.local.emitAdapterEvent({ kind: "position", positionMs: 3_000, atMs: 3, generationId: 1 });
+    expect(persisted()).toBe(first);
+    r.coordinator.dispose();
+    expect(persisted()).toBe(3_000);
+  });
+
   it("advances on trackEnded and honors repeat modes", async () => {
     const r = rig();
     const items = [fakeItem("a", "local"), fakeItem("b", "local")];
@@ -227,6 +267,16 @@ describe("coordinator: volume memory + mute", () => {
 });
 
 describe("coordinator: persistence", () => {
+  it("persists a restart of the current track while paused", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a")], startIndex: 0 });
+    await r.coordinator.handleCommand({ kind: "seek", positionMs: 5_000 });
+    await r.coordinator.handleCommand({ kind: "pause" });
+    await r.coordinator.handleCommand({ kind: "previous" });
+    const restored = new Coordinator({ registry: r.registry, store: new SettingsStore(r.storePath), persistDebounceMs: 0 });
+    expect(restored.getSnapshot().positionMs).toBe(0);
+  });
+
   it("restores queue + position paused, without autoplay", async () => {
     const r = rig();
     await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a"), fakeItem("b")] });
