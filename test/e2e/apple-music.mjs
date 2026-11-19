@@ -2,7 +2,8 @@
  * Cadence Apple Music e2e — the real app vs the real service.
  *
  * LEGACY: changes the host default audio sink and moves host sink-inputs.
- * For isolated verification, see .agents/skills/verify-cadence/SKILL.md.
+ * For agent verification, use .agents/skills/verify-cadence/SKILL.md and its
+ * isolated apple-music flow. Leave the user's app, profile and audio untouched.
  * The historical coverage list below describes this legacy script only.
  *
  * Proves, with a signed-in session (no mocks):

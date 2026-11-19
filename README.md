@@ -33,8 +33,8 @@ pnpm dev              # launches Electron dev (needs a display)
 
 ## Verification
 
-For real Electron UI, playback/audio, restore, and provider readiness, follow
-[verify-cadence](.agents/skills/verify-cadence/SKILL.md). It runs on
+For real Electron UI, playback/audio, restore, and authenticated Apple Music
+checks, follow [verify-cadence](.agents/skills/verify-cadence/SKILL.md). It runs on
 a private display and PipeWire core without closing the user's app or changing
 its audio. The guide distinguishes readiness, playback proof and mock captures.
 
@@ -42,7 +42,7 @@ its audio. The guide distinguishes readiness, playback proof and mock captures.
 smoke step can be skipped when the listed system tools are absent, so a final
 PASS alone does not prove Electron ran. Read the step output and run the skill's
 selected flows for end-to-end evidence. Harness regression tests are a separate
-`cadence-verify selftest` command.
+`cadence-verify selftest` command; authenticated provider flows are opt-in.
 
 Any development server must run through `portless`. The isolated verification
 helper uses the built UI and needs no server.

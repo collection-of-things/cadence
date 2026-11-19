@@ -15,4 +15,7 @@ state records a non-gating NOTE. A PASS can therefore include no streaming
 playback at all. See `state/capabilities.json` and transcript provider steps for
 which routes were skipped and why.
 
+For authenticated playback, read [Apple Music](apple-music.md) and run that flow
+explicitly. The providers flow does not invoke it, even when Apple reports ready.
+
 Evidence: `evidence/sources-capabilities.png`, `state/capabilities.json`.

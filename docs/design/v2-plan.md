@@ -400,7 +400,7 @@ Cross-owner changes use explicit handoffs: D gives A the mock dBFS formula and c
 
 ## Verification and acceptance
 
-For real UI, local playback/audio, restart and provider readiness,
+For real UI, local playback/audio, restart and authenticated Apple Music evidence,
 follow [verify-cadence](../../.agents/skills/verify-cadence/SKILL.md). Use its
 isolated flows while the user's app may be running. Mock captures below support
 visual acceptance only; they do not establish real playback or provider behavior.

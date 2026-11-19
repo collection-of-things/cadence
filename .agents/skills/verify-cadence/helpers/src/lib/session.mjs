@@ -25,7 +25,7 @@ import {
 import {
   prepareUserData, requireAudioBinary, sanitizedAppEnv, writePrivateAsound,
   freePort, cdpOccupied, verifyCdpEndpoint, verifyRecordedProcess,
-  procAlive, procStartTime, procIds, procComm, descendantPids, UD_MARKER, profileInUse,
+  procAlive, procStartTime, procIds, procComm, descendantPids, UD_MARKER, copyTestProfile, profileInUse,
 } from "./isolation.mjs";
 import { startXvfb } from "./xvfb.mjs";
 import { Pw } from "./pipewire.mjs";
@@ -180,7 +180,7 @@ function logLaunchFailure(runDir, e, context = {}) {
  *  - CDP port: free (ephemeral by default; explicit --cdp must be unused)
  * Returns {ud, asoundPath, cdpPort, audioBin}.
  */
-async function prepareLaunch({ userData, runDir, cdpPort }) {
+async function prepareLaunch({ userData, profileCopy, runDir, cdpPort }) {
   const audioBin = requireAudioBinary();
   // port sanity first — refuse before creating any owned state
   if (cdpPort == null) {
@@ -191,8 +191,10 @@ async function prepareLaunch({ userData, runDir, cdpPort }) {
         `silently connect to an unrelated browser. Pass --cdp <free port> or omit for ephemeral.`,
     );
   }
+  if (profileCopy && userData) throw new Error("--profile-copy cannot be combined with --user-data");
   const ud = prepareUserData(userData);
   try {
+    if (profileCopy) copyTestProfile(profileCopy, ud);
     const asoundPath = writePrivateAsound(join(runDir, "asound.conf"));
     writeFileSync(join(runDir, "pulse-client.conf"), "autospawn = no\n");
     return { ud, asoundPath, cdpPort, audioBin };
@@ -221,9 +223,9 @@ function appArgs({ flavor, ud, cdpPort }) {
 }
 
 /** Launch via playwright _electron (in-process control). Used by `run`. */
-export async function launchManaged({ flavor = "dev", userData = null, runDir } = {}) {
+export async function launchManaged({ flavor = "dev", userData = null, profileCopy = null, runDir } = {}) {
   const { ud, asoundPath, cdpPort, audioBin } = await prepareLaunch({
-    userData, runDir, cdpPort: null,
+    userData, profileCopy, runDir, cdpPort: null,
   });
   const r = tracked();
   r.ud = ud;
