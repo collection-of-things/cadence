@@ -103,7 +103,7 @@ export type RemoteServerMessage =
   | { kind: "event"; event: RemoteForwardedEvent; serverNowMs: number }
   | { kind: "error"; message: string; serverNowMs: number }
   /** Who owns playback now: a phone's device id, or null for the computer. */
-  | { kind: "session"; activeDeviceId: string | null; serverNowMs: number }
+  | { kind: "session"; activeDeviceId: string | null; activePhonePlaying?: boolean | null; serverNowMs: number }
   /** Transport for the phone that owns playback. */
   | { kind: "control"; command: RemotePhoneCommand; serverNowMs: number }
   /** The desktop asks this phone to take over at this queue item and position. */

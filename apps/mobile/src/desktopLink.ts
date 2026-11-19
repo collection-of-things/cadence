@@ -16,6 +16,7 @@ export interface LinkState {
   readonly base: string | null;
   readonly snapshot: PlaybackSnapshot | null;
   readonly queue: QueueState | null;
+  readonly activePhonePlaying: boolean | null;
   /** Phone clock when `snapshot.positionMs` was last reported. */
   readonly positionReceivedAt: number;
   readonly lastError: string | null;
@@ -26,11 +27,16 @@ const INITIAL: LinkState = {
   base: null,
   snapshot: null,
   queue: null,
+  activePhonePlaying: null,
   positionReceivedAt: 0,
   lastError: null,
 };
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 10000];
+
+export function remoteTransportPlaying(s: LinkState): boolean {
+  return s.activePhonePlaying ?? (s.snapshot?.status === 'playing');
+}
 
 /** Where the desktop is in the current track right now, by the phone's clock. */
 export function projectedPositionMs(s: LinkState, now = Date.now()): number {
@@ -103,6 +109,10 @@ export class DesktopLink {
 
   send(command: RemoteCommand): boolean {
     return this.sendMessage({ kind: 'command', command });
+  }
+
+  togglePlayback(): boolean {
+    return this.send({ kind: remoteTransportPlaying(this.state) ? 'pause' : 'resume' });
   }
 
   /** Send any phone message (commands, output reports, release). False when the socket is not open. */
@@ -188,6 +198,7 @@ export class DesktopLink {
         this.set({
           connection: 'online',
           snapshot: msg.snapshot,
+          activePhonePlaying: null,
           queue: msg.queue,
           positionReceivedAt: Date.now(),
           lastError: null,
@@ -227,6 +238,8 @@ export class DesktopLink {
         }
       }
       case 'session':
+        this.set({ activePhonePlaying: msg.activeDeviceId !== null && typeof msg.activePhonePlaying === 'boolean' ? msg.activePhonePlaying : null });
+        return;
       case 'control':
       case 'handoff':
         // Acted on by PhoneRemote through subscribeMessages.

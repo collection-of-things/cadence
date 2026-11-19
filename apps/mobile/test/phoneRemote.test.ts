@@ -16,7 +16,7 @@ const track: TrackRef = {
 };
 const item: QueueItem = { queueId: 'q1', track };
 
-function setup() {
+function setup(audioSetup: Promise<void> = Promise.resolve()) {
   const sent: RemoteClientMessage[] = [];
   const listeners = new Set<() => void>();
   let state = { active: false, playing: false, positionMs: 0, durationMs: 200_000 };
@@ -38,7 +38,10 @@ function setup() {
   const player = {
     getState: () => state,
     subscribe: (cb: () => void) => (listeners.add(cb), () => listeners.delete(cb)),
-    start: async () => set({ active: true, playing: false }),
+    start: async (_options: Parameters<OwnershipPlayer['start']>[0], signal: AbortSignal) => {
+      await audioSetup;
+      if (!signal.aborted) set({ active: true, playing: false });
+    },
     current: () => (state.active ? item : null),
     volume: () => 1,
     stop: () => set({ active: false, playing: false }),
@@ -77,5 +80,39 @@ test('a takeover that never plays gives up without telling the computer', async 
 test('a stop control from the computer is always acknowledged with a release', () => {
   const t = setup();
   t.remote.handle({ kind: 'control', command: { kind: 'stop' }, serverNowMs: 0 });
+  assert.deepEqual(t.sent, [{ kind: 'release' }]);
+});
+
+test('timeout cancels audio setup before it can start playback', async (test) => {
+  test.mock.timers.enable({ apis: ['setTimeout'] });
+  const audioSetup = Promise.withResolvers<void>();
+  const t = setup(audioSetup.promise);
+  const takeover = t.remote.takeOver({ queueId: 'q1', positionMs: 0 });
+  test.mock.timers.tick(20);
+  audioSetup.resolve();
+  assert.equal(await takeover, 'cancelled');
+  assert.equal(t.state().active, false);
+  assert.deepEqual(t.sent, []);
+  assert.equal(t.notes.length, 1);
+});
+
+test('Stop cancels audio setup and acknowledges release only once', async () => {
+  const audioSetup = Promise.withResolvers<void>();
+  const t = setup(audioSetup.promise);
+  const takeover = t.remote.takeOver({ queueId: 'q1', positionMs: 0 });
+  t.remote.handle({ kind: 'control', command: { kind: 'stop' }, serverNowMs: 0 });
+  audioSetup.resolve();
+  assert.equal(await takeover, 'cancelled');
+  assert.equal(t.state().active, false);
+  assert.deepEqual(t.sent, [{ kind: 'release' }]);
+  assert.deepEqual(t.notes, []);
+});
+
+test('Stop releases a player that is still waiting to report playback', async () => {
+  const t = setup();
+  assert.equal(await t.remote.takeOver({ queueId: 'q1', positionMs: 0 }), 'started');
+  assert.equal(t.state().active, true);
+  t.remote.handle({ kind: 'control', command: { kind: 'stop' }, serverNowMs: 0 });
+  assert.equal(t.state().active, false);
   assert.deepEqual(t.sent, [{ kind: 'release' }]);
 });

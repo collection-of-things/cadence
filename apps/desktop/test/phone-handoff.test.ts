@@ -15,6 +15,7 @@ import type {
   TrackRef,
 } from "@cadence/protocol";
 // The phone app's real ownership logic, driven against the real desktop service.
+import { DesktopLink, remoteTransportPlaying } from "../../mobile/src/desktopLink.ts";
 import { PhoneRemote, type OwnershipLink, type OwnershipPlayer } from "../../mobile/src/phoneRemote.ts";
 import { SettingsStore } from "../src/coordinator/settings-store.js";
 import { RemoteDevices } from "../src/remote/remote-devices.js";
@@ -167,6 +168,7 @@ class PhoneLink implements OwnershipLink {
   readonly notes: string[] = [];
   readonly remote: PhoneRemote;
   token = "";
+  deferReleases = false;
   private ws!: WebSocket;
   private snapshot: PlaybackSnapshot | null = null;
   private queue: QueueState | null = null;
@@ -187,7 +189,7 @@ class PhoneLink implements OwnershipLink {
   sendMessage(msg: RemoteClientMessage): boolean {
     if (this.ws.readyState !== WebSocket.OPEN) return false;
     this.sent.push(msg);
-    this.ws.send(JSON.stringify(msg));
+    if (msg.kind !== "release" || !this.deferReleases) this.ws.send(JSON.stringify(msg));
     return true;
   }
 
@@ -234,17 +236,17 @@ async function settle(): Promise<void> {
   await new Promise((r) => setTimeout(r, 80));
 }
 
-async function pairedPhone(player = new FakePlayer(), takeoverTimeoutMs?: number): Promise<{ phone: PhoneLink; deviceId: string; token: string }> {
+async function pairedPhone(player = new FakePlayer(), takeoverTimeoutMs?: number): Promise<{ phone: PhoneLink; deviceId: string; token: string; hostId: string }> {
   const status = await service.startPairing();
   const res = await fetch(`${base}/v1/pair`, {
     method: "POST",
     body: JSON.stringify({ code: status.pairing?.code ?? "", deviceName: "Test Phone" }),
   });
-  const { token, deviceId } = (await res.json()) as RemotePairResponse;
+  const { token, deviceId, host } = (await res.json()) as RemotePairResponse;
   const phone = new PhoneLink(base, player, takeoverTimeoutMs);
   phones.push(phone);
   await phone.connect(token);
-  return { phone, deviceId, token };
+  return { phone, deviceId, token, hostId: host.hostId };
 }
 
 beforeEach(async () => {
@@ -322,6 +324,23 @@ describe("desktop-initiated handoff", () => {
     expect(service.status().activeOutput).toBeNull();
   });
 
+  it("desktop Stop reaches a handoff that is still loading on the phone", async () => {
+    const { phone, deviceId } = await pairedPhone();
+    service.handoff(deviceId);
+    await until(() => phone.player.state.active);
+    expect(service.status().activeOutput).toBeNull();
+
+    const stop: PlaybackCommand = { kind: "stop" };
+    if (!service.routeCommand(stop)) await coordinator.handleCommand(stop);
+    await until(() => phone.received.some((m) => m.kind === "control" && m.command.kind === "stop"));
+    phone.player.finishLoading();
+
+    expect(coordinator.commands).toEqual([stop]);
+    expect(phone.player.state.active).toBe(false);
+    expect(phone.sent.some((m) => m.kind === "output")).toBe(false);
+    expect(service.status().activeOutput).toBeNull();
+  });
+
   it("a handoff whose track never loads times out without pausing the computer", async () => {
     const { phone, deviceId } = await pairedPhone(new FakePlayer(), 60);
     phone.player.failLoads = true;
@@ -369,6 +388,38 @@ describe("phone takeover and control", () => {
     expect(service.routeCommand({ kind: "play", queueId: "q1" })).toBe(true);
     await until(() => service.status().activeOutput?.queueId === "q1");
     expect(coordinator.commands.filter((c) => c.kind === "next" || c.kind === "seek")).toEqual([]);
+  });
+
+  it("routes transport from a second phone to the phone playing the queue", async () => {
+    const { phone } = await owned();
+    const other = await pairedPhone();
+    const observer = new DesktopLink({
+      hostId: other.hostId,
+      name: "test-host",
+      hosts: ["127.0.0.1"],
+      port: Number(new URL(base).port),
+      token: other.token,
+      deviceId: other.deviceId,
+    }, () => {});
+    observer.start();
+    try {
+      await until(() => observer.getState().activePhonePlaying === true);
+      expect(observer.getState().snapshot?.status).toBe("paused");
+      expect(remoteTransportPlaying(observer.getState())).toBe(true);
+      expect(observer.togglePlayback()).toBe(true);
+      await until(() => phone.player.calls.includes("pause") && !remoteTransportPlaying(observer.getState()));
+      expect(observer.send({ kind: "seek", positionMs: 90_000 })).toBe(true);
+      await until(() => phone.player.calls.includes("seek:90000"));
+      expect(observer.togglePlayback()).toBe(true);
+      await until(() => phone.player.calls.includes("resume") && remoteTransportPlaying(observer.getState()));
+      expect(observer.send({ kind: "next" })).toBe(true);
+      await until(() => phone.player.calls.includes("next"));
+    } finally {
+      observer.stop();
+    }
+    expect(coordinator.commands).toEqual([{ kind: "pause" }]);
+    expect(other.phone.player.calls).toEqual([]);
+    await until(() => service.status().activeOutput?.queueId === "q2");
   });
 
   it("a control for a song missing from the phone's queue is refused, not guessed", async () => {
@@ -428,6 +479,26 @@ describe("handback and competing owners", () => {
     expect(coordinator.status).toBe("playing");
     await until(() => !phone.player.getState().active);
     await until(() => phone.sent.some((m) => m.kind === "release"));
+  });
+
+  it("an old release cannot hide a newer pending handoff from Stop", async () => {
+    const { phone, deviceId } = await owned();
+    phone.deferReleases = true;
+    await service.reclaim();
+    await until(() => phone.sent.some((m) => m.kind === "release"));
+    service.handoff(deviceId);
+    await until(() => phone.player.state.active);
+    expect(service.status().activeOutput).toBeNull();
+
+    phone.deferReleases = false;
+    phone.raw({ kind: "release" });
+    await settle();
+    expect(service.routeCommand({ kind: "stop" })).toBe(false);
+    await until(() => !phone.player.state.active);
+    phone.player.finishLoading();
+
+    expect(service.status().activeOutput).toBeNull();
+    expect(phone.sent.filter((m) => m.kind === "output")).toHaveLength(1);
   });
 
   it("the phone can take over again after a reclaim", async () => {

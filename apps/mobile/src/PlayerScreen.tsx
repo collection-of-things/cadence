@@ -12,7 +12,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import type { QueueItem, TrackRef } from '@cadence/protocol';
-import { DesktopLink, projectedPositionMs, type LinkState } from './desktopLink';
+import { DesktopLink, projectedPositionMs, remoteTransportPlaying, type LinkState } from './desktopLink';
 import { PhoneRemote } from './phoneRemote';
 import { PhoneSession, type PhoneState } from './phoneSession';
 import type { SavedHost } from './savedHost';
@@ -113,7 +113,7 @@ export function PlayerScreen({
   const index = onPhone ? ps.index : desktopIndex;
   const positionMs = onPhone ? ps.positionMs : projectedPositionMs(ls);
   const durationMs = onPhone ? ps.durationMs : (ls.snapshot?.durationMs ?? current?.track.durationMs ?? 0);
-  const playing = onPhone ? ps.playing : ls.snapshot?.status === 'playing';
+  const playing = onPhone ? ps.playing : remoteTransportPlaying(ls);
 
   const takeOver = async () => {
     setNote(null);
@@ -147,7 +147,7 @@ export function PlayerScreen({
 
   const toggle = () => {
     if (onPhone) phone.toggle();
-    else link.send(playing ? { kind: 'pause' } : { kind: 'resume' });
+    else link.togglePlayback();
   };
   const next = () => (onPhone ? phone.next() : link.send({ kind: 'next' }));
   const previous = () => (onPhone ? phone.previous() : link.send({ kind: 'previous' }));
