@@ -71,7 +71,7 @@ export class Pw {
 
   /** Env for harness pw-tools AND the spawned app's base: sanitized parent
    * env plus the private core's coordinates. With this set, every PipeWire
-   * client (app, pw-cat, pactl) lands inside our core only. */
+   * client (app, pw-cat) lands inside our core only. */
   env(extra = {}) {
     return harnessEnv({
       ...extra,
@@ -103,6 +103,10 @@ export class Pw {
     const sock = join(this.runtimeDir, "pipewire-0");
     await waitFor(() => existsSync(sock) || null, {
       timeout: 10_000, what: `private pipewire socket ${sock}`, ...waitOpts,
+    });
+    const pulseSocket = join(this.runtimeDir, "pulse", "native");
+    await waitFor(() => existsSync(pulseSocket) || null, {
+      timeout: 10_000, what: `private PulseAudio socket ${pulseSocket}`, ...waitOpts,
     });
     chk(); // an abort during the socket wait must not reach the SM spawn
     await waitFor(() => {

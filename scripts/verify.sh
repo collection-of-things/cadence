@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Runs every check that does not need a display or real provider accounts.
+# Runs account-free checks, including isolated Electron smoke when tools exist.
+# Smoke may SKIP without failing the script; inspect output before claiming E2E.
+# Flow selection/evidence: .agents/skills/verify-cadence/SKILL.md.
+# Run harness self-tests separately with cadence-verify selftest.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 fail=0

@@ -1,7 +1,9 @@
 /**
  * Cadence Apple Music e2e — the real app vs the real service.
  *
- *   xvfb-run -a node test/e2e/apple-music.mjs
+ * LEGACY: changes the host default audio sink and moves host sink-inputs.
+ * For isolated verification, see .agents/skills/verify-cadence/SKILL.md.
+ * The historical coverage list below describes this legacy script only.
  *
  * Proves, with a signed-in session (no mocks):
  *   1. sign-in persists across launches (capability 'ready' without re-auth)

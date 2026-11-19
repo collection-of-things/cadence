@@ -18,7 +18,8 @@ implements (docs/prototype-v1.md links to it).
 - `apps/mobile`: Expo phone app: pairs over Wi-Fi, remote control, plays the queue on the phone (see its README).
 - `services/audio` — Rust binary: decode -> PCM graph -> FFT -> CPAL.
 - `scripts/` — fixtures + verify.
-- `test/fixtures` — generated local audio fixtures (not committed).
+- `test/fixtures/library` — checked-in chirps for isolated Electron verification.
+- `test/fixtures/generated` — generated Rust probe fixtures, gitignored.
 
 ## Quick start
 
@@ -29,3 +30,19 @@ cargo build           # Rust audio service
 pnpm verify           # all checks incl. Rust tests + headless playback probe
 pnpm dev              # launches Electron dev (needs a display)
 ```
+
+## Verification
+
+For real Electron UI, playback/audio, restore, and provider readiness, follow
+[verify-cadence](.agents/skills/verify-cadence/SKILL.md). It runs on
+a private display and PipeWire core without closing the user's app or changing
+its audio. The guide distinguishes readiness, playback proof and mock captures.
+
+`pnpm verify` runs the checks in [scripts/verify.sh](scripts/verify.sh). Its Electron
+smoke step can be skipped when the listed system tools are absent, so a final
+PASS alone does not prove Electron ran. Read the step output and run the skill's
+selected flows for end-to-end evidence. Harness regression tests are a separate
+`cadence-verify selftest` command.
+
+Any development server must run through `portless`. The isolated verification
+helper uses the built UI and needs no server.

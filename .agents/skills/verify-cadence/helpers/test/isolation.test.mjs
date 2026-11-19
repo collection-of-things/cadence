@@ -3,11 +3,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  prepareUserData, sanitizedAppEnv, harnessEnv, UD_MARKER,
+  prepareUserData, profileInUse, sanitizedAppEnv, harnessEnv, UD_MARKER,
   freePort, portListenerPids, procStartTime, procCmdline, procEnv,
   verifyRecordedProcess, isPrivateAudioProc, descendantPids,
 } from "../src/lib/isolation.mjs";
@@ -18,6 +19,37 @@ test("--pw session is refused at construction (fail closed)", () => {
   assert.throws(() => new Pw({ mode: "session" }), /not supported/);
 });
 
+test("Pulse client ignores a host-configured sentinel server", async (t) => {
+  const d = mkdtempSync(join(tmpdir(), "cadence-pulse-test-"));
+  let connections = 0;
+  const server = createServer((s) => { connections++; s.destroy(); });
+  try {
+    await new Promise((resolve, reject) => server.listen(0, "127.0.0.1", resolve).on("error", reject));
+    mkdirSync(join(d, ".config", "pulse"), { recursive: true });
+    writeFileSync(join(d, ".config", "pulse", "client.conf"), `default-server = tcp:127.0.0.1:${server.address().port}\nautospawn = no\n`);
+    writeFileSync(join(d, "pulse-client.conf"), "autospawn = no\n");
+    const env = sanitizedAppEnv({ extra: { HOME: d, XDG_CONFIG_HOME: join(d, ".config"), XDG_RUNTIME_DIR: d }, audioBin: process.execPath, asoundPath: join(d, "asound.conf") });
+    const runPactl = (clientEnv) => new Promise((resolve) => {
+      const child = spawn("pactl", ["info"], { env: clientEnv, stdio: "ignore" });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
+      child.on("error", (e) => { clearTimeout(timer); resolve(e.code); });
+      child.on("exit", (code) => { clearTimeout(timer); resolve(code); });
+    });
+    const isolated = await runPactl(env);
+    if (isolated === "ENOENT") return t.skip("pactl unavailable");
+    assert.equal(isolated, 1);
+    assert.equal(connections, 0);
+
+    // Prove this configuration is capable of contacting the sentinel.
+    const { PULSE_SERVER, PULSE_CLIENTCONFIG, ...hostEnv } = env;
+    assert.equal(await runPactl(hostEnv), 1);
+    assert.ok(connections > 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test("prepareUserData rejects the real profile", () => {
   const real = join(homedir(), ".config", "cadence");
   assert.throws(() => prepareUserData(real), /real Cadence profile/);
@@ -26,14 +58,14 @@ test("prepareUserData rejects the real profile", () => {
 
 test("prepareUserData rejects an existing unmarked dir", () => {
   const d = mkdtempSync(join(tmpdir(), "cadence-notours-"));
-  assert.throws(() => prepareUserData(d), /not harness-owned/);
+  assert.throws(() => prepareUserData(d), /already exists/);
   rmSync(d, { recursive: true, force: true });
 });
 
-test("prepareUserData accepts fresh + marker-owned dirs", () => {
+test("prepareUserData accepts fresh dirs and rejects reuse", () => {
   const a = prepareUserData(null);
   assert.ok(existsSync(join(a, UD_MARKER)));
-  assert.equal(prepareUserData(a), a); // reuse allowed once marked
+  assert.throws(() => prepareUserData(a), /already exists/);
   const fresh = join(tmpdir(), `cadence-verify-udtest-${Date.now()}`);
   assert.equal(prepareUserData(fresh), fresh);
   assert.ok(existsSync(join(fresh, UD_MARKER)));
@@ -41,11 +73,26 @@ test("prepareUserData accepts fresh + marker-owned dirs", () => {
   rmSync(fresh, { recursive: true, force: true });
 });
 
+test("profile use detects a live process with the exact profile argument", async () => {
+  const profile = join(tmpdir(), `cadence-profile-use-${process.pid}`);
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`], { stdio: "ignore" });
+  try {
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    assert.equal(profileInUse(profile), true);
+    assert.equal(profileInUse(`${profile}-other`), false);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+  }
+});
+
 test("harnessEnv drops display/session/audio overrides", () => {
   const dirty = {
     DISPLAY: ":0", XAUTHORITY: "/home/u/.Xauthority",
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
     PULSE_SERVER: "unix:/run/user/1000/pulse/native",
+    PULSE_RUNTIME_PATH: "/run/user/1000/pulse",
+    PULSE_CONFIG_PATH: "/host/pulse",
     ALSA_CONFIG_PATH: "/etc/asound.conf",
     PIPEWIRE_RUNTIME_DIR: "/run/user/1000",
     XDG_RUNTIME_DIR: "/run/user/1000",
@@ -70,9 +117,11 @@ test("harnessEnv drops display/session/audio overrides", () => {
 
 test("sanitizedAppEnv pins the resolved audio binary + private asound", () => {
   const bin = process.execPath; // any existing file works for the pin check
-  const env = sanitizedAppEnv({ audioBin: bin, asoundPath: "/tmp/x-asound.conf", extra: { DISPLAY: ":91" } });
+  const env = sanitizedAppEnv({ audioBin: bin, asoundPath: "/tmp/x-asound.conf", extra: { DISPLAY: ":91", XDG_RUNTIME_DIR: "/tmp/private-core" } });
   assert.equal(env.CADENCE_AUDIO_BIN, bin);
   assert.equal(env.ALSA_CONFIG_PATH, "/tmp/x-asound.conf");
+  assert.equal(env.PULSE_SERVER, "unix:/tmp/private-core/pulse/native");
+  assert.equal(env.PULSE_CLIENTCONFIG, "/tmp/pulse-client.conf");
   assert.throws(() => sanitizedAppEnv({ audioBin: null }), /CADENCE_AUDIO_BIN/);
   assert.throws(() => sanitizedAppEnv({ audioBin: "/nonexistent/nope" }), /missing/);
 });

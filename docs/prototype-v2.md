@@ -35,6 +35,13 @@ Report head: `main` @ `bd83c06`.
 
 ## How we verify visuals
 
+This section records the v2 implementation's historical capture method. For
+current real-app verification use [verify-cadence](../.agents/skills/verify-cadence/SKILL.md).
+Mock captures cover appearance only. The legacy `scripts/screenshot.sh` starts a
+raw Vite preview, may reuse the user's display and hardcodes an Electron version;
+use the isolated helper for current checks. Any development server must use
+`portless`.
+
 `apps/desktop/scripts/capture.cjs` + `scripts/screenshot.sh` — offscreen `BrowserWindow` under Electron 45, `webContents.capturePage` → PNG, x11 ozone, `disable-gpu`, unique `userData` per run. Mock API via `?cadence_mock=1`; state driven through `window.__cadenceSession` (setView/setQueueOpen/setNowPlayingExpanded/seek/playTracks + store inspection). No Chrome/Playwright/Puppeteer, no visible windows. Known capture artifact: rAF-starved hidden windows can show lyrics mid-fade — seats verified the same frames in a real-paint harness before counting them.
 
 ## Council scores (per round; every seat ran the app headlessly and cited its own screenshots)
@@ -79,5 +86,5 @@ cd ~/dev/work/music-player && pnpm install
 cargo build --manifest-path services/audio/Cargo.toml && pnpm -r build
 pnpm --filter @cadence/desktop start          # real app
 pnpm --filter @cadence/ui build
-CAPTURE_PORT=4517 bash scripts/screenshot.sh shot "" 3000   # headless capture
+.agents/skills/verify-cadence/helpers/cadence-verify run navigate # isolated real UI
 ```

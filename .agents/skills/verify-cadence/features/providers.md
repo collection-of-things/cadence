@@ -1,12 +1,18 @@
-# providers — pluggable, opt-in
+# Providers: readiness
 
-Run: `cadence-verify run providers`
+Run from the repo root: `.agents/skills/verify-cadence/helpers/cadence-verify run smoke,providers`.
 
-Reads `getCapabilities()` on the Sources page. `local` must be `ready`.
-Streaming routes report readiness only; this flow does not test their
-playback. Unavailable routes record a skip with the route's own reason
-(e.g. `unauthenticated`, `unavailable`, librespot missing, Widevine not
-signed). Apple Music's e2e lands on feat/apple-music; its flows can drop
-into this directory unchanged.
+The local audio service starts lazily. Standalone `run providers` on a fresh
+profile can fail `local route ready` with `cadence-audio is not running yet`.
+This flow does not start or wait for the service. Run smoke first in the same
+managed session as shown above, or attach to your own session after playback.
+Retain standalone failures as evidence; they are not proof of broken playback.
 
-Evidence: `sources-capabilities.png`, `state/capabilities.json`.
+Open Sources, dump `getCapabilities()`, and require the local route to be ready.
+For streaming routes, ready records the reported engine; unauthenticated,
+unavailable and degraded states record a clean skip. An unexpected non-ready
+state records a non-gating NOTE. A PASS can therefore include no streaming
+playback at all. See `state/capabilities.json` and transcript provider steps for
+which routes were skipped and why.
+
+Evidence: `evidence/sources-capabilities.png`, `state/capabilities.json`.

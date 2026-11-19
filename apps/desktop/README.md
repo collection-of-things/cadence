@@ -36,41 +36,31 @@ Fixtures for the library tests are generated from the worktree root with
 `bash scripts/gen-fixtures.sh` (needs ffmpeg); the test regenerates them if
 missing.
 
-## Electron runtime: stock vs Castlabs ECS
+## Runtime and verification
 
-`electron` is pinned to **45.1.0** (stock) for dev/typecheck. Castlabs ECS is
-not on npm; for the DRM build swap the dependency spec one line:
+Inspect `devDependencies.electron` in [package.json](package.json) and the lockfile
+for the runtime under test. This branch uses Castlabs ECS; `electron:ecs` is an
+informational script, not a dependency swap. DRM playback still depends on a
+working Widevine component, signing/runtime compatibility, an active subscription
+and a valid session.
 
-```bash
-pnpm electron:ecs   # one-line swap: devDependencies.electron -> the ECS git tag
-```
+For real UI, local audio, restore or provider readiness, follow
+[verify-cadence](../../.agents/skills/verify-cadence/SKILL.md). The dev flavor uses
+built files with a private profile, display and audio core. Use that helper while
+the user's instance may be running.
 
-which is equivalent to editing package.json to:
-
-```jsonc
-"electron": "github:castlabs/electron-releases#v44.10.0+wvcus"
-```
-
-Pick an ECS tag from https://github.com/castlabs/electron-releases/releases
-matching a supported release series (v45.x was still "in development" at pin
-time — v44.x is the newest fully supported series). The repo's `install.js`
-downloads the correct platform binary; `electron.d.ts` stays API-compatible.
-
-**EVS signing TODO (packaged builds):**
-- Dev builds are VMP-signed for development and work against Widevine UAT.
-- Production requires an EVS signup (https://castlabs.com) and running
-  `python3 vmp-resign.py` (or `evs-sign`) against the packaged app.
-- Linux ECS support is partial and lacks persistent licenses.
-
-`main.ts` already awaits `components.whenReady()` when the ECS-only
-`app.components` API exists — no main-process changes are needed for the swap.
+Always use `portless` for a development server. The root `pnpm dev` builds the UI
+and launches desktop Electron; it does not start a UI server. The verification
+helper also needs no server.
 
 ## Native module rebuilds
 
 `better-sqlite3` compiles for Node during `pnpm install`, which is what
 vitest uses. For the packaged Electron app the ABI differs — add
 `@electron/rebuild` and run `pnpm dlx @electron/rebuild -f -w better-sqlite3`
-in packaging CI (TODO: wire into electron-builder when packaging lands).
+for the intended Electron runtime. A rebuild can change which runtime the module
+works with; inspect ABI errors and rerun the affected tests. The helper doctor
+checks existence, not native-module compatibility.
 
 ## Environment
 
