@@ -263,6 +263,7 @@ export class RemoteService {
   private stopAdvertising: (() => void) | null = null;
   private addressTimer: ReturnType<typeof setInterval> | null = null;
   private activeOutput: RemoteActiveOutput | null = null;
+  private readonly pendingHandoffs = new Set<string>();
   /** True while playback moves back to the computer, so its own start is not read as a takeover. */
   private reclaiming = false;
   /** Phones told to stop, until when. Reports already in flight must not re-take ownership. */
@@ -292,6 +293,13 @@ export class RemoteService {
    */
   routeCommand(cmd: PlaybackCommand): boolean {
     const active = this.activeOutput;
+    if (cmd.kind === "stop") {
+      for (const deviceId of this.pendingHandoffs) {
+        if (deviceId !== active?.deviceId) this.stopPhone(deviceId);
+      }
+      this.pendingHandoffs.clear();
+      return active !== null && this.stopPhone(active.deviceId);
+    }
     if (active === null || !PHONE_ROUTED.has(cmd.kind)) return false;
     const phoneCmd = toPhoneCommand(cmd);
     if (phoneCmd === null || !this.sendToDevice(active.deviceId, { kind: "control", command: phoneCmd, serverNowMs: this.now() })) {
@@ -299,13 +307,12 @@ export class RemoteService {
     }
     // Reflect the obvious result at once; the phone's next report confirms it.
     if (phoneCmd.kind === "pause" || phoneCmd.kind === "resume") {
-      this.activeOutput = {
+      this.setActiveOutput({
         ...active,
         playing: phoneCmd.kind === "resume",
         positionMs: projectOutputPosition(active, this.now()),
         reportedAtMs: this.now(),
-      };
-      this.emitStatus();
+      });
     } else if (phoneCmd.kind === "seek") {
       this.activeOutput = { ...active, positionMs: phoneCmd.positionMs, reportedAtMs: this.now() };
       this.emitStatus();
@@ -318,8 +325,7 @@ export class RemoteService {
     if (!this.isOnline(deviceId)) throw new Error("That phone is not connected. Open Cadence on it first.");
     const active = this.activeOutput;
     if (active !== null) {
-      this.stopping.delete(deviceId);
-      this.sendToDevice(deviceId, { kind: "handoff", queueId: active.queueId, positionMs: projectOutputPosition(active, this.now()), serverNowMs: this.now() });
+      this.sendHandoff(deviceId, active.queueId, projectOutputPosition(active, this.now()));
       return this.status();
     }
     const snap = this.deps.coordinator.getSnapshot();
@@ -327,9 +333,15 @@ export class RemoteService {
     if (current === null) throw new Error("Nothing is playing to move to the phone.");
     const elapsed = snap.status === "playing" ? Math.max(0, this.now() - snap.positionAtMs) : 0;
     const positionMs = snap.durationMs > 0 ? Math.min(snap.positionMs + elapsed, snap.durationMs) : snap.positionMs + elapsed;
-    this.stopping.delete(deviceId);
-    this.sendToDevice(deviceId, { kind: "handoff", queueId: current.queueId, positionMs, serverNowMs: this.now() });
+    this.sendHandoff(deviceId, current.queueId, positionMs);
     return this.status();
+  }
+
+  private sendHandoff(deviceId: string, queueId: string, positionMs: number): void {
+    if (this.sendToDevice(deviceId, { kind: "handoff", queueId, positionMs, serverNowMs: this.now() })) {
+      this.stopping.delete(deviceId);
+      this.pendingHandoffs.add(deviceId);
+    }
   }
 
   /** Move playback from the phone back to the computer at the phone's position. */
@@ -479,6 +491,7 @@ export class RemoteService {
     this.stopAdvertising?.();
     this.stopAdvertising = null;
     this.activeOutput = null;
+    this.pendingHandoffs.clear();
     this.deps.devices.closePairing();
     this.clearPairing();
     for (const ws of this.sockets.keys()) ws.terminate();
@@ -672,7 +685,10 @@ export class RemoteService {
     ws.on("close", () => {
       this.sockets.delete(ws);
       this.deps.devices.touch(deviceId);
-      if (!this.isOnline(deviceId)) this.stopping.delete(deviceId);
+      if (!this.isOnline(deviceId)) {
+        this.stopping.delete(deviceId);
+        this.pendingHandoffs.delete(deviceId);
+      }
       // A phone that vanished mid-session no longer owns playback here.
       if (this.activeOutput?.deviceId === deviceId && !this.isOnline(deviceId)) this.setActiveOutput(null);
       this.emitStatus();
@@ -686,7 +702,7 @@ export class RemoteService {
       queue: shareQueue(this.deps.coordinator.getQueue()),
       serverNowMs: this.now(),
     });
-    this.send(ws, { kind: "session", activeDeviceId: this.activeOutput?.deviceId ?? null, serverNowMs: this.now() });
+    this.send(ws, this.sessionMessage());
     this.emitStatus();
   }
 
@@ -710,6 +726,8 @@ export class RemoteService {
       return;
     }
     if (m.kind === "release") {
+      // A Stop acknowledgement can arrive after a new handoff to this phone.
+      // Release ends current ownership. Stop or a new output settles the handoff.
       this.stopping.delete(deviceId);
       if (this.activeOutput?.deviceId === deviceId) this.setActiveOutput(null);
       return;
@@ -766,9 +784,10 @@ export class RemoteService {
     this.send(ws, { kind: "error", message, serverNowMs: this.now() });
   }
 
-  private stopPhone(deviceId: string): void {
+  private stopPhone(deviceId: string): boolean {
+    this.pendingHandoffs.delete(deviceId);
     this.stopping.set(deviceId, this.now() + STOPPING_GRACE_MS);
-    this.sendToDevice(deviceId, { kind: "control", command: { kind: "stop" }, serverNowMs: this.now() });
+    return this.sendToDevice(deviceId, { kind: "control", command: { kind: "stop" }, serverNowMs: this.now() });
   }
 
   private isStopping(deviceId: string): boolean {
@@ -781,6 +800,7 @@ export class RemoteService {
 
   private onOutputReport(deviceId: string, report: RemoteOutputReport): void {
     if (this.isStopping(deviceId)) return;
+    this.pendingHandoffs.delete(deviceId);
     const previous = this.activeOutput;
     if (previous !== null && previous.deviceId !== deviceId) {
       // Another phone took over; the old one steps back.
@@ -795,17 +815,23 @@ export class RemoteService {
   }
 
   private setActiveOutput(next: RemoteActiveOutput | null): void {
-    const changedOwner = (this.activeOutput?.deviceId ?? null) !== (next?.deviceId ?? null);
+    const sessionChanged =
+      this.activeOutput?.deviceId !== next?.deviceId || this.activeOutput?.playing !== next?.playing;
     this.activeOutput = next;
-    if (changedOwner) {
-      const text = JSON.stringify({
-        kind: "session",
-        activeDeviceId: next?.deviceId ?? null,
-        serverNowMs: this.now(),
-      } satisfies RemoteServerMessage);
+    if (sessionChanged) {
+      const text = JSON.stringify(this.sessionMessage());
       for (const ws of this.sockets.keys()) if (ws.readyState === ws.OPEN) ws.send(text);
     }
     this.emitStatus();
+  }
+
+  private sessionMessage(): Extract<RemoteServerMessage, { kind: "session" }> {
+    return {
+      kind: "session",
+      activeDeviceId: this.activeOutput?.deviceId ?? null,
+      activePhonePlaying: this.activeOutput?.playing ?? null,
+      serverNowMs: this.now(),
+    };
   }
 
   private isOnline(deviceId: string): boolean {

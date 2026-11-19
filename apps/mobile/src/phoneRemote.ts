@@ -65,6 +65,7 @@ export type TakeOverResult = 'started' | 'unavailable' | 'unsupported' | 'busy' 
  */
 export class PhoneRemote {
   private deviceId: string | null = null;
+  private sessionOwner: string | null | undefined;
   /** True once the computer has been told this phone owns playback. */
   private owning = false;
   private pending: { timer: ReturnType<typeof setTimeout>; abort: AbortController } | null = null;
@@ -138,9 +139,13 @@ export class PhoneRemote {
     switch (msg.kind) {
       case 'hello':
         this.deviceId = msg.deviceId;
+        this.sessionOwner = undefined;
         return;
       case 'session':
-        this.onSession(msg.activeDeviceId);
+        if (this.sessionOwner !== msg.activeDeviceId) {
+          this.sessionOwner = msg.activeDeviceId;
+          this.onSession(msg.activeDeviceId);
+        }
         return;
       case 'control':
         this.onControl(msg.command);
