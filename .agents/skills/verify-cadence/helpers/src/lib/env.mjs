@@ -66,10 +66,19 @@ export function newRunDir(slug = "run") {
   // millisecond precision + a collision suffix — two runs in the same
   // second must never share a dir (stale analysis/evidence poisoning)
   const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 23);
-  let dir = join(RUNS_ROOT, `${ts}-${slug}`);
-  for (let i = 1; existsSync(dir); i++) dir = join(RUNS_ROOT, `${ts}-${slug}-${i}`);
-  for (const sub of ["evidence", "logs", "audio", "state"]) mkdirSync(join(dir, sub), { recursive: true });
-  return dir;
+  mkdirSync(RUNS_ROOT, { recursive: true });
+  for (let i = 0; ; i++) {
+    const suffix = i === 0 ? "" : `-${i}`;
+    const dir = join(RUNS_ROOT, `${ts}-${slug}${suffix}`);
+    try {
+      mkdirSync(dir, { mode: 0o700 });
+    } catch (error) {
+      if (error.code === "EEXIST") continue;
+      throw error;
+    }
+    for (const sub of ["evidence", "logs", "audio", "state"]) mkdirSync(join(dir, sub));
+    return dir;
+  }
 }
 
 export function nowIso() {

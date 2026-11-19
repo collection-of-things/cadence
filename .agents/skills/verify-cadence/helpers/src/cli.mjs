@@ -288,6 +288,7 @@ async function main() {
 
     case "attach": {
       const names = (rest[0] ?? "").split(",").filter(Boolean);
+      if (names.includes("apple-music")) die("apple-music requires run with --profile-copy");
       const runDir = findRunDir(flags);
       const ev = new Evidence(runDir);
       ev.step("attach", `attaching flows [${names.join(", ")}] to ${runDir}`);

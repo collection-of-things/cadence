@@ -3,8 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, symlinkSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, symlinkSync, statSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,7 @@ import {
   verifyRecordedProcess, isPrivateAudioProc, descendantPids,
 } from "../src/lib/isolation.mjs";
 import { Pw } from "../src/lib/pipewire.mjs";
-import { newRunDir } from "../src/lib/env.mjs";
+import { HELPERS, newRunDir } from "../src/lib/env.mjs";
 
 test("--pw session is refused at construction (fail closed)", () => {
   assert.throws(() => new Pw({ mode: "session" }), /not supported/);
@@ -209,4 +209,27 @@ test("newRunDir produces unique dirs (no same-second collision)", () => {
   assert.notEqual(a, b);
   rmSync(a, { recursive: true, force: true });
   rmSync(b, { recursive: true, force: true });
+});
+
+test("Apple Music cannot attach to an interactive session", () => {
+  const result = spawnSync(process.execPath, [join(HELPERS, "src/cli.mjs"), "attach", "apple-music"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /apple-music requires run with --profile-copy/);
+});
+
+test("run evidence is private under a permissive umask", () => {
+  const umask = process.umask(0o022);
+  try {
+    const dir = newRunDir("selftest-permissions");
+    try {
+      assert.equal(statSync(dir).mode & 0o777, 0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } finally {
+    process.umask(umask);
+  }
 });

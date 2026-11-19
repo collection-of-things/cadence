@@ -1,6 +1,6 @@
 # Apple Music: authenticated playback
 
-Use the explicit `apple-music` flow for Apple Music playback evidence.
+Use the managed `run apple-music` flow for Apple Music playback evidence.
 `providers` checks readiness only. Commands below run from the repo root, with
 `VERIFY` set as in [the skill](../SKILL.md).
 
@@ -81,6 +81,7 @@ validate the control. Use a fresh managed run for each result.
 Normal teardown deletes the copied profile. SIGKILL or machine failure can leave
 `/tmp/cadence-verify-ud-*` containing credentials. Use the exact session metadata
 to establish ownership and that a leftover is unused before cleanup. Evidence
-remains in `verify-runs/`, including account information and captured music.
+remains in a private run directory under `verify-runs/`, including account
+information and captured music.
 Provider requests and playback can affect server-side account state despite the
 local profile copy. Keep evidence local and report any prerequisites not tested.
