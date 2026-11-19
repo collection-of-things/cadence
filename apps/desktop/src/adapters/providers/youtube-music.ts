@@ -42,6 +42,7 @@ interface YtmPlayerState {
   byline: string;
   url: string;
   bootId: string;
+  generationId: number | null;
   videoId: string | null;
   expectedVideoId: string | null;
   ad: boolean;
@@ -54,7 +55,8 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   readonly route = "youtube-music" as const;
   private session: ProviderSession;
   private catalogClient: YtmCatalogLike | null;
-  private generation = 0;
+  private generation: number | null = null;
+  private volume = 1;
   private queueId: string | null = null;
   private endedGeneration = -1;
   private signedIn: boolean | null = null;
@@ -155,31 +157,49 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   }
 
   async play(item: QueueItem, lease: PlaybackLease, opts: { positionMs?: number }): Promise<void> {
-    this.session.setAudioMuted(false);
+    if (item.track.source.kind !== "provider") throw new Error("not a provider track");
+    this.session.setAudioMuted(true);
     this.generation = lease.generationId;
     this.queueId = item.queueId;
-    if (item.track.source.kind !== "provider") throw new Error("not a provider track");
     const id = item.track.source.providerItemId;
     try {
       await this.session.prepare();
+      if (lease.generationId !== this.generation) return;
+      this.session.setAudioMuted(true);
       await this.ensureController();
       if (this.signedIn === null) await this.refreshSignedIn();
       // The controller navigates through the site's SPA router; if that fails
       // it starts a full page load and we re-issue play on the new page.
-      const call = `window.__cadenceCtl.play(${JSON.stringify(id)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`;
+      const play = () => {
+        const args = [id, Math.max(0, Math.round(opts.positionMs ?? 0)), lease.generationId, this.volume];
+        return this.session.eval<YtmPlayerState | "reloading" | "superseded">(
+          `window.__cadenceCtl.play(...${JSON.stringify(args)})`,
+          15_000,
+        );
+      };
       const bootId = await this.session.eval<string>(`String(window.__cadenceCtl.bootId)`);
-      const result = await this.session.eval<string>(call, 15_000).catch((e: unknown) => {
+      if (lease.generationId !== this.generation) return;
+      let result = await play().catch(async (e: unknown) => {
+        if (lease.generationId !== this.generation) return "superseded" as const;
         if (e instanceof ProviderEvalTimeout) throw e;
         // The page was torn down mid-eval by a hard load.
-        return "reloading";
+        const currentBoot = await this.session.eval<string>(`String(window.__cadenceCtl.bootId)`).catch(() => null);
+        if (currentBoot === bootId) throw e;
+        return "reloading" as const;
       });
       if (result === "reloading") {
         await this.ensureController(20_000, bootId);
-        await this.session.eval(call, 15_000);
+        if (lease.generationId !== this.generation) return;
+        result = await play();
       }
       if (lease.generationId !== this.generation) return;
+      if (typeof result === "string") throw new Error("YouTube Music did not start the requested track");
+      this.session.setAudioMuted(false);
       this.emit({ kind: "started", generationId: lease.generationId, durationMs: item.track.durationMs });
+      // A pre-roll can already be playing when the start resolves.
+      this.onPageEvent("playerState", result);
     } catch (e) {
+      if (lease.generationId !== this.generation) return;
       this.error(`YouTube Music play failed: ${(e as Error).message}`, true);
       throw e;
     }
@@ -195,13 +215,14 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
     await this.session.eval(`window.__cadenceCtl.resume()`).catch(() => {});
   }
 
-  /** Confirmed silence: pause the media element. Session stays logged in. */
+  /** Confirmed silence: stop the page's current play attempt. */
   async stop(lease: PlaybackLease): Promise<void> {
-    this.session.setAudioMuted(true);
     if (lease.generationId !== this.generation) return;
+    this.generation = null;
+    this.session.setAudioMuted(true);
     // The coordinator's handoff counts on confirmed silence — propagate
     // failures instead of leaving a second source audible.
-    await this.session.eval(`window.__cadenceCtl.pause()`);
+    await this.session.eval(`window.__cadenceCtl.stop()`);
   }
 
   async seek(lease: PlaybackLease, positionMs: number): Promise<void> {
@@ -210,6 +231,7 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
   }
 
   async setVolume(volume: number): Promise<void> {
+    this.volume = volume;
     await this.session.eval(`window.__cadenceCtl.setVolume(${volume})`).catch(() => {});
   }
 
@@ -264,7 +286,8 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
       this.pageBootId = s.bootId;
       void this.refreshSignedIn();
     }
-    const generationId = this.generation;
+    const { generationId } = s;
+    if (generationId === null || generationId !== this.generation) return;
     if (s.state === "ended") {
       // The controller keeps reporting `ended` while it holds the site's
       // autoplay; the coordinator needs it once per track.

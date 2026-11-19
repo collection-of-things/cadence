@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { TrackRef } from "@cadence/protocol";
+import type { AdapterEvent, TrackRef } from "@cadence/protocol";
 import { normalizeHit, bestThumb } from "../src/adapters/providers/youtube-music-catalog.js";
 import { YouTubeMusicAdapter } from "../src/adapters/providers/youtube-music.js";
 import { SpotifyLibrespotAdapter, type LibrespotGraph } from "../src/adapters/providers/spotify-librespot.js";
@@ -54,7 +54,7 @@ describe("youtube-music-catalog normalizeHit", () => {
   });
 });
 
-describe("youtube-music search", () => {
+describe("youtube-music adapter", () => {
   const hit: TrackRef = {
     id: "youtube-music:abc123",
     route: "youtube-music",
@@ -108,6 +108,85 @@ describe("youtube-music search", () => {
     });
     expect(await adapter.search("   ")).toEqual([]);
     expect(called).toBe(false);
+    await adapter.dispose();
+  });
+
+  it("starts the reloaded view at the saved volume and reports a pre-roll as buffering", async () => {
+    const adapter = new YouTubeMusicAdapter();
+    const events: AdapterEvent[] = [];
+    const attempts: { muted: boolean; command: string }[] = [];
+    let bootId = "first";
+    let muted = false;
+    Object.assign(adapter, {
+      session: {
+        prepare: async () => {},
+        dispose: async () => {},
+        setAudioMuted: (value: boolean) => { muted = value; },
+        eval: async (command: string) => {
+          if (command.includes("isSignedIn()")) return true;
+          if (command.includes("bootId")) return bootId;
+          if (!command.startsWith("window.__cadenceCtl.play(")) return undefined;
+          attempts.push({ muted, command });
+          if (bootId === "first") {
+            bootId = "reloaded";
+            return "reloading";
+          }
+          return { bootId, generationId: 2, state: "buffering", positionMs: 0 };
+        },
+      },
+    });
+    adapter.onEvent((event) => events.push(event));
+    await adapter.setVolume(0);
+    await adapter.play({ track: hit, queueId: "q" }, {
+      route: "youtube-music", queueId: "q", generationId: 2, issuedAtMs: 0,
+    }, {});
+
+    expect(attempts).toEqual(Array.from({ length: 2 }, () => ({
+      muted: true,
+      command: 'window.__cadenceCtl.play(...["abc123",0,2,0])',
+    })));
+    expect(muted).toBe(false);
+    expect(events.filter((event) => event.kind === "started" || event.kind === "state")).toEqual([
+      { kind: "started", generationId: 2, durationMs: 213_000 },
+      { kind: "state", generationId: 2, status: "buffering" },
+    ]);
+    await adapter.dispose();
+  });
+
+  it("does not report a playback error after stopping a pending play", async () => {
+    const adapter = new YouTubeMusicAdapter();
+    const events: AdapterEvent[] = [];
+    let signalPlay = () => {};
+    const playing = new Promise<void>((resolve) => { signalPlay = resolve; });
+    let rejectPlay = (_error: Error) => {};
+    Object.assign(adapter, {
+      session: {
+        prepare: async () => {},
+        dispose: async () => {},
+        setAudioMuted: () => {},
+        eval: async (command: string) => {
+          if (command.includes("isSignedIn()")) return true;
+          if (command.includes("bootId")) return "page";
+          if (command.startsWith("window.__cadenceCtl.play(")) {
+            return new Promise((_resolve, reject) => {
+              rejectPlay = reject;
+              signalPlay();
+            });
+          }
+          if (command.endsWith(".stop()")) rejectPlay(new DOMException("Playback interrupted", "AbortError"));
+          return undefined;
+        },
+      },
+    });
+    adapter.onEvent((event) => events.push(event));
+    const lease = { route: "youtube-music" as const, queueId: "q", generationId: 1, issuedAtMs: 0 };
+    const attempt = adapter.play({ track: hit, queueId: "q" }, lease, {});
+    await playing;
+    await adapter.stop(lease);
+
+    const outcome = await attempt.then(() => "stopped", () => "failed");
+    expect(outcome).toBe("stopped");
+    expect(events.some((event) => event.kind === "error" || event.kind === "started")).toBe(false);
     await adapter.dispose();
   });
 });

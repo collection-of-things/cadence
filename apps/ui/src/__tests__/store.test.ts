@@ -328,6 +328,20 @@ describe('commands', () => {
     expect(fake.sent.at(-1)).toEqual({ kind: 'resume' });
   });
 
+  it('pauses buffering YouTube Music with the song clock held', () => {
+    session.dispatch({
+      kind: 'snapshot',
+      snapshot: snap({
+        status: 'buffering',
+        lease: { generationId: 1, route: 'youtube-music', queueId: 'q-a', issuedAtMs: 0 },
+      }),
+    });
+
+    expect(session.runtime.clock.playing).toBe(false);
+    session.togglePlay();
+    expect(fake.sent.at(-1)).toEqual({ kind: 'pause' });
+  });
+
   it('insertNext forwards a provider track with its provider source intact', () => {
     const appleTrack: TrackRef = {
       ...track('am-1'),

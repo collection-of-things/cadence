@@ -1,5 +1,6 @@
 import { session } from '../session';
 import { useUi } from '../hooks';
+import { showsPauseControl } from '../store';
 import { activeCapabilities } from '../routes';
 import { MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, VolumeIcon } from '../icons';
 import './controls.css';
@@ -44,7 +45,7 @@ export function Transport() {
   const shuffle = useUi((s) => s.queue.shuffle);
   const hasTrack = useUi((s) => s.snapshot.current !== null || s.queue.items.length > 0);
   const cap = useUi(activeCapabilities);
-  const playing = status === 'playing';
+  const showPause = useUi((s) => showsPauseControl(s.snapshot));
   const busy = status === 'loading' || status === 'buffering';
   const canSkip = cap?.playback.canNextPrevious ?? true;
   const canPause = cap?.playback.canPause ?? true;
@@ -65,12 +66,12 @@ export function Transport() {
       </button>
       <button
         className={`ctl-btn ctl-play ${busy ? 'is-busy' : ''}`}
-        aria-label={playing ? 'Pause' : 'Play'}
-        disabled={(playing && !canPause) || !hasTrack}
+        aria-label={showPause ? 'Pause' : 'Play'}
+        disabled={(showPause && !canPause) || !hasTrack}
         onClick={() => session.togglePlay()}
       >
-        <span className={`icon-swap ${playing ? '' : 'is-play'}`}>
-          {playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
+        <span className={`icon-swap ${showPause ? '' : 'is-play'}`}>
+          {showPause ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
         </span>
       </button>
       <button className="ctl-btn" aria-label="Next track" title="Next" disabled={!canSkip || !hasTrack} onClick={() => session.next()}>

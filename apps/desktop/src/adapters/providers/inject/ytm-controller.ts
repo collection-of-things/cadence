@@ -37,6 +37,8 @@ export const YTM_CONTROLLER_JS = String.raw`
   const END_SLACK_MS = 4000;
   const bootId = Math.random().toString(36).slice(2);
   let expected = null;     // videoId Cadence asked for
+  let generationId = null;
+  let switching = false;
   let holdAfterEnd = false; // keep the site's autoplay silent until the next play()
   let endedEmitted = false;
   let lastGood = { positionMs: 0, durationMs: 0 };
@@ -52,7 +54,7 @@ export const YTM_CONTROLLER_JS = String.raw`
 
   function readState() {
     const v = video();
-    const base = { bootId, expectedVideoId: expected, url: location.href };
+    const base = { bootId, generationId, expectedVideoId: expected, url: location.href };
     if (!v) return { ...base, state: 'idle', positionMs: 0, durationMs: 0, volume: 1, title: '', byline: '', videoId: null, ad: false };
     const ad = isAd();
     const bar = playerBar();
@@ -83,7 +85,7 @@ export const YTM_CONTROLLER_JS = String.raw`
   }
 
   function markEnded() {
-    if (endedEmitted || !expected) return;
+    if (switching || endedEmitted || !expected) return;
     endedEmitted = true;
     holdAfterEnd = true;
     const v = video();
@@ -110,6 +112,7 @@ export const YTM_CONTROLLER_JS = String.raw`
   }
 
   function postState(force) {
+    if (switching) return;
     checkTrack();
     enforceHold();
     const s = readState();
@@ -129,10 +132,10 @@ export const YTM_CONTROLLER_JS = String.raw`
   // Media events don't bubble; a capturing listener on document also covers a
   // <video> element the site swaps out.
   for (const ev of ['play', 'playing', 'pause', 'waiting', 'seeked', 'durationchange', 'loadedmetadata', 'emptied']) {
-    document.addEventListener(ev, (e) => { if (e.target instanceof HTMLMediaElement) postState(true); }, true);
+    document.addEventListener(ev, (e) => { if (e.target === video()) postState(true); }, true);
   }
   document.addEventListener('ended', (e) => {
-    if (e.target instanceof HTMLMediaElement && !isAd()) markEnded();
+    if (e.target === video() && !isAd()) markEnded();
   }, true);
   document.addEventListener('yt-navigate-finish', () => postState(true));
   let playerHooked = null;
@@ -141,16 +144,17 @@ export const YTM_CONTROLLER_JS = String.raw`
     if (!p || p === playerHooked || typeof p.addEventListener !== 'function') return;
     playerHooked = p;
     // YT player state 0 = ENDED; more reliable than <video>.ended on MSE.
-    try { p.addEventListener('onStateChange', (st) => { if (st === 0 && !isAd()) markEnded(); }); } catch (e) {}
+    try { p.addEventListener('onStateChange', (st) => { if (p === player() && st === 0 && !isAd()) markEnded(); }); } catch (e) {}
   }
   // Position heartbeat; cheap when nothing changed (dedupe key).
   setInterval(() => { hookPlayer(); postState(false); }, 1000);
 
   const ctl = {
     bootId,
-    // Returns 'playing', or 'reloading' when SPA navigation failed and a full
-    // page load was started (the adapter re-issues play() on the new page).
-    async play(videoId, positionMs) {
+    // Return the first state for this play, or let the adapter retry after a full load.
+    async play(videoId, positionMs, generation, volume) {
+      generationId = generation;
+      switching = true;
       expected = videoId;
       holdAfterEnd = false;
       endedEmitted = false;
@@ -165,18 +169,22 @@ export const YTM_CONTROLLER_JS = String.raw`
           }));
           ok = !!(await waitFor(() => currentId() === videoId, 8000));
         }
+        if (generationId !== generation) return 'superseded';
         if (!ok) {
           location.assign('https://music.youtube.com/watch?v=' + encodeURIComponent(videoId));
           return 'reloading';
         }
       }
       const v = await waitFor(video, 5000);
+      if (generationId !== generation) return 'superseded';
       if (!v) throw new Error('no video element after navigation');
       hookPlayer();
+      v.volume = Math.max(0, Math.min(1, volume));
       if (positionMs) seekTo(positionMs);
-      await v.play().catch(() => {});
-      postState(true);
-      return 'playing';
+      await v.play();
+      if (generationId !== generation) return 'superseded';
+      switching = false;
+      return readState();
     },
     pause() { const v = video(); if (v) v.pause(); postState(true); return true; },
     resume() {
@@ -185,7 +193,16 @@ export const YTM_CONTROLLER_JS = String.raw`
       if (v) return v.play().then(() => (postState(true), true));
       return false;
     },
-    stop() { const v = video(); if (v) { v.pause(); v.currentTime = 0; } postState(true); return true; },
+    stop() {
+      generationId = null;
+      switching = false;
+      expected = null;
+      holdAfterEnd = false;
+      endedEmitted = false;
+      const v = video();
+      if (v) v.pause();
+      return true;
+    },
     seek(ms) { endedEmitted = false; holdAfterEnd = false; seekTo(ms); postState(true); return true; },
     next() { const b = playerBar()?.querySelector('.next-button, tp-yt-paper-icon-button[title*="Next"]'); if (b) b.click(); postState(true); return !!b; },
     previous() { const b = playerBar()?.querySelector('.previous-button, tp-yt-paper-icon-button[title*="Previous"]'); if (b) b.click(); postState(true); return !!b; },

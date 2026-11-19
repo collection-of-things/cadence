@@ -238,6 +238,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
         route: this.route,
         state: hasSession ? "ready" : "unauthenticated",
         stateDetail: "Session not loaded yet — it activates on first use.",
+        canSignOut: hasSession,
       });
     }
     return this.baseCapabilities({

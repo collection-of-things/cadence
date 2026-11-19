@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 import { useStore } from 'zustand/react';
 import { session } from './session';
-import type { UiState } from './store';
+import { showsPauseControl, type UiState } from './store';
 
 /** Subscribe to the UI store. */
 export function useUi<T>(selector: (s: UiState) => T): T {
@@ -40,11 +40,12 @@ export function positionNow(): number {
 export function useMediaSession(): void {
   const track = useUi((s) => s.snapshot.current?.track);
   const status = useUi((s) => s.snapshot.status);
+  const showPause = useUi((s) => showsPauseControl(s.snapshot));
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    ms.playbackState = status === 'playing' ? 'playing' : status === 'paused' ? 'paused' : 'none';
+    ms.playbackState = showPause ? 'playing' : status === 'paused' ? 'paused' : 'none';
     if (!track) {
       ms.metadata = null;
       return;
@@ -58,7 +59,7 @@ export function useMediaSession(): void {
         ? { artwork: [{ src: art.url, ...(art.width && art.height ? { sizes: `${art.width}x${art.height}` } : {}) }] }
         : {}),
     });
-  }, [track, status]);
+  }, [track, status, showPause]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
@@ -67,13 +68,13 @@ export function useMediaSession(): void {
       [
         'play',
         () => {
-          if (session.store.getState().snapshot.status !== 'playing') session.togglePlay();
+          if (!showsPauseControl(session.store.getState().snapshot)) session.togglePlay();
         },
       ],
       [
         'pause',
         () => {
-          if (session.store.getState().snapshot.status === 'playing') session.togglePlay();
+          if (showsPauseControl(session.store.getState().snapshot)) session.togglePlay();
         },
       ],
       ['previoustrack', () => session.previous()],
@@ -105,7 +106,7 @@ export function useMediaSession(): void {
 }
 
 /** Client width of an element, kept current by a ResizeObserver. */
-export function useElementWidth(ref: RefObject<HTMLElement>): number {
+export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;

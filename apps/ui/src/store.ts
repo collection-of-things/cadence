@@ -144,6 +144,12 @@ export function shownSnapshot(local: PlaybackSnapshot, remote: RemoteStatus | nu
   };
 }
 
+/** YouTube Music may be playing an ad while the song clock is buffering. */
+export function showsPauseControl(snapshot: PlaybackSnapshot): boolean {
+  return snapshot.status === 'playing'
+    || (snapshot.status === 'buffering' && snapshot.lease?.route === 'youtube-music');
+}
+
 /** Index of the item that plays next, honoring shuffle order and repeat. */
 export function nextQueueIndex(q: QueueState): number {
   const i = q.currentIndex;
@@ -428,7 +434,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     },
     togglePlay() {
       const { snapshot, queue } = get();
-      if (snapshot.status === 'playing') cmd({ kind: 'pause' });
+      if (showsPauseControl(snapshot)) cmd({ kind: 'pause' });
       else if (snapshot.status === 'paused' || snapshot.status === 'buffering') cmd({ kind: 'resume' });
       else if (snapshot.current) cmd({ kind: 'play', queueId: snapshot.current.queueId });
       else if (queue.items.length) cmd({ kind: 'play' });

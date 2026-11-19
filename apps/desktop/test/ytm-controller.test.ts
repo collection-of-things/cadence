@@ -5,6 +5,7 @@ import { accountKey } from "../src/adapters/providers/youtube-music-catalog.js";
 
 interface PlayerState {
   state: string;
+  generationId: number | null;
   positionMs: number;
   durationMs: number;
   videoId: string | null;
@@ -13,8 +14,9 @@ interface PlayerState {
 }
 interface Controller {
   bootId: string;
-  play(videoId: string, positionMs: number): Promise<string>;
+  play(videoId: string, positionMs: number, generationId: number, volume: number): Promise<string | PlayerState>;
   pause(): boolean;
+  stop(): boolean;
   seek(ms: number): boolean;
   isSignedIn(): boolean | null;
   getState(): PlayerState;
@@ -27,8 +29,10 @@ class FakeMedia {
   duration = 200;
   readyState = 4;
   volume = 1;
+  volumeAtPlay = 1;
   constructor(private fire: (type: string, target: unknown) => void) {}
   async play(): Promise<void> {
+    this.volumeAtPlay = this.volume;
     this.paused = false;
     this.ended = false;
     this.fire("play", this);
@@ -112,20 +116,53 @@ describe("ytm-controller", () => {
 
   it("navigates through the SPA router without reloading", async () => {
     const page = fakePage();
-    expect(await page.ctl.play("B", 0)).toBe("playing");
+    expect(await page.ctl.play("B", 0, 1, 1)).toMatchObject({ state: "playing" });
     expect(page.assigned).toEqual([]);
     expect(page.ctl.getState()).toMatchObject({ state: "playing", videoId: "B", expectedVideoId: "B" });
   });
 
   it("falls back to a full load when the router does not move", async () => {
     const page = fakePage({ routerWorks: false });
-    expect(await page.ctl.play("B", 0)).toBe("reloading");
+    expect(await page.ctl.play("B", 0, 1, 1)).toBe("reloading");
     expect(page.assigned).toEqual(["https://music.youtube.com/watch?v=B"]);
+  });
+
+  it("ignores the outgoing track ending during a delayed SPA switch", async () => {
+    const page = fakePage({ routerWorks: false });
+    await page.ctl.play("A", 0, 1, 1);
+    const switching = page.ctl.play("B", 0, 2, 1);
+    page.video.currentTime = 199.5;
+    page.tick();
+    page.video.ended = true;
+    page.fire("ended", page.video);
+    page.stateChange(0);
+    page.setId("B");
+    page.video.currentTime = 0;
+    await switching;
+
+    expect(page.video.paused).toBe(false);
+    expect(page.ctl.getState()).toMatchObject({ state: "playing", videoId: "B", generationId: 2 });
+    expect(page.endedCount()).toBe(0);
+  });
+
+  it("sets the requested volume before a fresh document starts playback", async () => {
+    const page = fakePage();
+    await page.ctl.play("A", 0, 1, 0);
+    expect(page.video.volumeAtPlay).toBe(0);
+  });
+
+  it("does not start a track whose pending navigation was stopped", async () => {
+    const page = fakePage({ routerWorks: false });
+    const switching = page.ctl.play("B", 0, 1, 1);
+    page.ctl.stop();
+    page.setId("B");
+    expect(await switching).toBe("superseded");
+    expect(page.video.paused).toBe(true);
   });
 
   it("reports a natural end once and holds the site's autoplay", async () => {
     const page = fakePage();
-    await page.ctl.play("A", 0);
+    await page.ctl.play("A", 0, 1, 1);
     page.video.currentTime = 199.5;
     page.tick();
     page.video.ended = true;
@@ -139,14 +176,14 @@ describe("ytm-controller", () => {
     expect(page.ctl.getState().state).toBe("ended");
     expect(page.endedCount()).toBe(1);
 
-    expect(await page.ctl.play("B", 0)).toBe("playing");
+    expect(await page.ctl.play("B", 0, 2, 1)).toMatchObject({ state: "playing" });
     expect(page.video.paused).toBe(false);
     expect(page.ctl.getState().state).toBe("playing");
   });
 
   it("treats a track change near the end as autoplay, mid-track as a redirect", async () => {
     const page = fakePage();
-    await page.ctl.play("A", 0);
+    await page.ctl.play("A", 0, 1, 1);
     page.video.currentTime = 60;
     page.tick();
     page.setId("A2");
@@ -164,7 +201,7 @@ describe("ytm-controller", () => {
 
   it("keeps ads out of the track's position and duration", async () => {
     const page = fakePage();
-    await page.ctl.play("A", 0);
+    await page.ctl.play("A", 0, 1, 1);
     page.video.currentTime = 42;
     page.tick();
     page.setAd(true);
@@ -175,7 +212,7 @@ describe("ytm-controller", () => {
 
   it("does not post while paused and unchanged", async () => {
     const page = fakePage();
-    await page.ctl.play("A", 0);
+    await page.ctl.play("A", 0, 1, 1);
     page.ctl.pause();
     const n = page.emits.length;
     page.tick();

@@ -97,6 +97,14 @@ describe("apple adapter page events", () => {
     events = m.events;
   });
 
+  it("offers sign-out for a saved session before the provider view opens", async () => {
+    Object.assign(adapter, { installed: false });
+    sess.alive = false;
+    sess.hasSessionCookies = async () => true;
+    expect(await adapter.capabilities()).toMatchObject({ state: "ready", canSignOut: true });
+    expect(sess.evals).toEqual([]);
+  });
+
   it("publishes ready after authorization arrives during controller installation", async () => {
     (adapter as any).installed = false;
     const states: string[] = [];
