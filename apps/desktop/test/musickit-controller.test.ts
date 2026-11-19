@@ -187,6 +187,23 @@ async function harness(options: {
 const song = { type: "song", id: "s1" } as const;
 
 describe("real injected MusicKit controller", () => {
+  it("throttles idle ticks but reports a terminal state on the first tick", async () => {
+    const { mk, events, lastState, tick } = await harness();
+    const stateCount = () => events.filter(event => event.name === "playerState").length;
+    const installed = stateCount();
+    tick();
+    tick();
+    tick();
+    expect(stateCount()).toBe(installed);
+    tick();
+    expect(stateCount()).toBe(installed + 1);
+
+    // MusicKit can end and move on before the next idle heartbeat.
+    mk.playbackState = 10;
+    tick();
+    expect(lastState()).toMatchObject({ state: "ended", ended: true });
+  });
+
   it("fades Apple Music around a seek and restores the requested volume", async () => {
     const { ctl, mk } = await harness();
     mk.playbackState = 2;
