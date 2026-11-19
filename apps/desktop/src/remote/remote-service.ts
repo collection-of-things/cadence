@@ -287,8 +287,7 @@ export class RemoteService {
   }
 
   /**
-   * While a phone owns playback, send desktop transport (player bar, media
-   * keys) to it instead of the local engine. Returns true when the command
+   * While a phone owns playback, send transport commands to the phone. Returns true when the command
    * was routed to the phone.
    */
   routeCommand(cmd: PlaybackCommand): boolean {
@@ -730,7 +729,7 @@ export class RemoteService {
     }
     this.deps.devices.touch(deviceId);
     try {
-      await this.deps.coordinator.handleCommand(parsed.value);
+      if (!this.routeCommand(parsed.value)) await this.deps.coordinator.handleCommand(parsed.value);
     } catch (e) {
       this.sendError(ws, e instanceof Error ? e.message : String(e));
     }

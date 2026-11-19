@@ -371,6 +371,23 @@ describe("phone takeover and control", () => {
     expect(coordinator.commands.filter((c) => c.kind === "next" || c.kind === "seek")).toEqual([]);
   });
 
+  it("routes transport from a second phone to the phone playing the queue", async () => {
+    const { phone } = await owned();
+    const other = await pairedPhone();
+    for (const [command, call] of [
+      [{ kind: "pause" }, "pause"],
+      [{ kind: "seek", positionMs: 90_000 }, "seek:90000"],
+      [{ kind: "resume" }, "resume"],
+      [{ kind: "next" }, "next"],
+    ] as const) {
+      other.phone.sendMessage({ kind: "command", command });
+      await until(() => phone.player.calls.includes(call));
+    }
+    expect(coordinator.commands).toEqual([{ kind: "pause" }]);
+    expect(other.phone.player.calls).toEqual([]);
+    await until(() => service.status().activeOutput?.queueId === "q2");
+  });
+
   it("a control for a song missing from the phone's queue is refused, not guessed", async () => {
     const { phone } = await owned();
     expect(service.routeCommand({ kind: "play", queueId: "gone" })).toBe(true);

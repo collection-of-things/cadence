@@ -63,11 +63,12 @@ export class PhoneSession {
     repeat: QueueState['repeat'];
     base: string;
     token: string;
-  }): Promise<void> {
+  }, signal: AbortSignal): Promise<void> {
+    await this.ensureAudioMode();
+    if (signal.aborted) return;
     this.repeat = p.repeat;
     this.base = p.base;
     this.token = p.token;
-    await this.ensureAudioMode();
     this.set({ ...IDLE, active: true, items: p.items });
     this.load(p.index, p.positionMs, true);
   }
@@ -133,6 +134,7 @@ export class PhoneSession {
       this.player.remove();
       this.player = null;
     }
+    this.pendingSeekMs = null;
     this.set(IDLE);
   }
 

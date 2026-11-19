@@ -41,7 +41,7 @@ export interface OwnershipPlayer {
     repeat: QueueState['repeat'];
     base: string;
     token: string;
-  }): Promise<void>;
+  }, signal: AbortSignal): Promise<void>;
   current(): QueueItem | null;
   volume(): number;
   resume(): void;
@@ -54,7 +54,7 @@ export interface OwnershipPlayer {
   stop(): void;
 }
 
-export type TakeOverResult = 'started' | 'unavailable' | 'unsupported' | 'busy';
+export type TakeOverResult = 'started' | 'unavailable' | 'unsupported' | 'busy' | 'cancelled';
 
 /**
  * Keeps the phone and the computer agreeing on who plays. The phone claims
@@ -67,7 +67,7 @@ export class PhoneRemote {
   private deviceId: string | null = null;
   /** True once the computer has been told this phone owns playback. */
   private owning = false;
-  private pending: { timer: ReturnType<typeof setTimeout> } | null = null;
+  private pending: { timer: ReturnType<typeof setTimeout>; abort: AbortController } | null = null;
   private lastKey = '';
   private lastReportAt = 0;
   private lastPositionMs = 0;
@@ -96,7 +96,7 @@ export class PhoneRemote {
 
   dispose(): void {
     this.unsubscribe();
-    this.clearPending();
+    this.cancelPending();
   }
 
   /** Move playback to the phone, at the computer's current spot unless the caller says otherwise. */
@@ -112,8 +112,9 @@ export class PhoneRemote {
     if (!isStreamable(item.track)) return 'unsupported';
     const positionMs = at?.positionMs ?? ls.snapshot?.positionMs ?? 0;
 
+    const abort = new AbortController();
     const timer = setTimeout(() => this.failTakeover(), this.takeoverTimeoutMs);
-    this.pending = { timer };
+    this.pending = { timer, abort };
     try {
       await this.player.start({
         items,
@@ -122,11 +123,13 @@ export class PhoneRemote {
         repeat: ls.queue.repeat,
         base: ls.base,
         token: this.link.token,
-      });
+      }, abort.signal);
     } catch (e) {
+      if (abort.signal.aborted) return 'cancelled';
       this.failTakeover(e instanceof Error ? e.message : undefined);
       return 'unavailable';
     }
+    if (abort.signal.aborted) return 'cancelled';
     this.onPlayerChange();
     return 'started';
   }
@@ -181,10 +184,10 @@ export class PhoneRemote {
   private onControl(cmd: RemotePhoneCommand): void {
     const state = this.player.getState();
     if (cmd.kind === 'stop') {
-      this.clearPending();
+      this.cancelPending();
+      this.owning = false;
       if (state.active) this.player.stop();
       // Always acknowledge: the computer ignores reports until it hears this.
-      this.owning = false;
       this.link.sendMessage({ kind: 'release' });
       return;
     }
@@ -222,7 +225,7 @@ export class PhoneRemote {
   private onPlayerChange(): void {
     const state = this.player.getState();
     if (!state.active) {
-      this.clearPending();
+      this.cancelPending();
       if (this.owning) {
         this.owning = false;
         this.link.sendMessage({ kind: 'release' });
@@ -240,9 +243,15 @@ export class PhoneRemote {
   }
 
   private failTakeover(reason?: string): void {
-    this.clearPending();
+    this.cancelPending();
     if (this.player.getState().active && !this.owning) this.player.stop();
     this.notify(reason ?? 'The phone could not start that song, so the computer keeps playing.');
+  }
+
+  private cancelPending(): void {
+    const pending = this.pending;
+    this.clearPending();
+    pending?.abort.abort();
   }
 
   private clearPending(): void {
