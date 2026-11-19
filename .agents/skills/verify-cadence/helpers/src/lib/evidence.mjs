@@ -82,6 +82,7 @@ export class Evidence {
       "",
       `run dir: ${this.dir}`,
       `checks: ${this.checks.length} (${this.checks.length - failed.length - noted.length} pass, ${failed.length} fail, ${noted.length} noted)`,
+      ...(extra.breaks?.length ? [`negative controls: ${extra.breaks.join(", ")}`] : []),
       "",
       "## checks",
       ...this.checks.map((c) =>

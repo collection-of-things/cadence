@@ -3,7 +3,7 @@
 //
 //   cadence-verify doctor                      environment + build + private-core report
 //   cadence-verify run <flow[,flow...]>        one-shot: launch -> flows -> evidence -> teardown
-//       [--flavor dev|packaged] [--user-data DIR] [--keep] [--slug NAME] [--break NAME]
+//       [--flavor dev|packaged] [--user-data DIR] [--slug NAME] [--break NAME]
 //   cadence-verify launch [--flavor ...]       interactive: leave app running, print session dir
 //       [--cdp PORT] [--user-data DIR]
 //   cadence-verify attach <flow[,...]>         run flows against a `launch`ed session (uses run dir)
@@ -138,6 +138,7 @@ async function main() {
       const ev = new Evidence(runDir);
       const names = String(rest[0] ?? "smoke").split(",").filter(Boolean);
       const breaks = parseBreaks(flags.break);
+      if (breaks.size) ev.step("negative-control", `deliberate break: ${[...breaks].join(", ")}`);
       let ctx = null;
       let failures = 0;
       let interrupted = false;
@@ -174,6 +175,9 @@ async function main() {
         for (const n of names) {
           if (!FLOWS[n]) ev.fail("flow selection", `unknown flow "${n}" — known: ${Object.keys(FLOWS).join(", ")}`);
         }
+        const breakFlows = { mute: ["smoke", "audio"], "no-restore": ["restart"] };
+        const unsupportedBreaks = [...breaks].filter((b) => !names.some((n) => breakFlows[b].includes(n)));
+        for (const b of unsupportedBreaks) ev.fail("negative control", `--break ${b} is not supported by the selected flows`);
         if (flags.pw && flags.pw !== "private") {
           // session mode is gone: it mutated the user's real audio session
           ev.fail("pw mode", `--pw ${flags.pw} is not supported — only a private PipeWire core is allowed`);
@@ -185,7 +189,7 @@ async function main() {
           ev.fail("flag --keep", "not supported for `run` — use `launch` + `attach`/`stop` for a persistent session");
         }
         const invalid = names.length === 0 || names.some((n) => !FLOWS[n])
-          || (flags.pw && flags.pw !== "private") || !!flags.keep;
+          || (flags.pw && flags.pw !== "private") || !!flags.keep || unsupportedBreaks.length > 0;
         if (!invalid) {
           ctx = await launchManaged({ flavor, userData: flags["user-data"], runDir });
           ctx.ev = ev;
@@ -212,7 +216,7 @@ async function main() {
       process.off("SIGINT", sigint);
       process.off("SIGTERM", sigterm);
       let verdict = "FAIL";
-      try { verdict = ev.summary({ flows: names, flavor }); }
+      try { verdict = ev.summary({ flows: names, flavor, breaks: [...breaks] }); }
       catch (e) { console.error(`summary failed: ${e.message}`); }
       console.log(`\n${verdict === "PASS" ? "VERIFY: PASS" : "VERIFY: FAIL"}  evidence: ${runDir}`);
       process.exit(verdict === "PASS" && failures === 0 ? 0 : 1);

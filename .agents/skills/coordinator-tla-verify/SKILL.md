@@ -19,12 +19,19 @@ node apps/desktop/scripts/check-specs.mjs
 node apps/desktop/scripts/check-specs.mjs --mutants
 ```
 
-Also run `npx vitest run test/coordinator-verify.test.ts` (replay of every
-checker-found bug) and `npx vitest run test/coordinator-model.test.ts`
-(fast-check random trace replay of the same invariants).
+Run these from the repository root to replay checker findings and random traces:
 
-tla-ts always exits 0 — the runner parses stdout for `^Error` /
-`No error`. Do not trust exit codes.
+```sh
+pnpm --filter @cadence/desktop exec vitest run test/coordinator-verify.test.ts test/coordinator-model.test.ts
+```
+
+For real playback, audio routing and restart evidence after implementation
+changes, also follow [verify-cadence](../verify-cadence/SKILL.md). Formal checks
+alone do not verify Electron UI, PCM delivery or authenticated providers.
+
+The underlying tla-ts checker can exit 0 on violations. The wrapper parses
+stdout and returns failure for unexpected results; require the wrapper command
+to exit 0 and inspect its per-config results.
 
 ## What is verified, in plain words
 
@@ -125,8 +132,8 @@ see "extending" below.
 
 ## Triage: model bug vs drift vs product bug
 
-1. Read the counterexample with the `statechart` skill — TLA+ traces are
-  state sequences; translate each transition to coordinator.ts lines.
+1. Read the counterexample as a sequence of states; translate each transition
+  to coordinator.ts lines. Record the violated property and replayable ordering.
 2. Replay it against the real code: `test/coordinator-verify.test.ts` is
   the catalog — each checker finding has a named test. If the real code
   cannot produce the interleaving (e.g. an env action the code's
@@ -169,8 +176,9 @@ it with your invariant's name.
 - After editing a spec, run the pass config, then `--mutants`, then the
   fast-check harness — it must still hold the invariants on real code.
 
-## Rust audio service (Kani)
+## Rust audio boundary
 
-Out of scope for now. Worth revisiting only if the service gains logic
-with invariants that matter (state machines, lock-free buffers); today it
-is mostly IO plumbing where a model adds little. Note this if asked.
+These specs model the desktop coordinator, not the Rust implementation.
+`scripts/verify.sh` separately runs Rust tests, the Loom ring model and null-sink
+probes. Use the audio flow in verify-cadence for real private monitor delivery.
+No result here establishes Rust or provider-engine correctness.

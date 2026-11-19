@@ -1,6 +1,6 @@
-// doctor.mjs — the read-only "is this worth driving" check.
+// doctor.mjs — prerequisites and private-core startup check.
 // Run this first whenever anything looks off: tools, builds, PipeWire,
-// fixtures, isolation guards. Zero side effects.
+// fixtures and isolation policy. Starts and tears down its own private graph.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -64,7 +64,7 @@ export async function doctor({ flavor = "dev" } = {}) {
     await pwv.start();
     const ports = pwv.tapPorts();
     ok("pipewire:private-core", true,
-      `private core up — ${TAP_NAME} exposes ${ports.inPorts.length} playback + ${ports.monitorPorts.length} monitor port(s)`);
+      `native and Pulse sockets ready, ${TAP_NAME} exposes ${ports.inPorts.length} playback + ${ports.monitorPorts.length} monitor port(s)`);
   } catch (e) {
     ok("pipewire:private-core", false, `private core failed: ${String(e).slice(0, 160)}`);
   } finally {
@@ -98,8 +98,8 @@ export async function doctor({ flavor = "dev" } = {}) {
     name: "providers:opt-in",
     ok: true,
     detail: present.length
-      ? `provider env present: ${present.join(", ")} — streaming routes may report ready`
-      : "no provider env — streaming routes will report unauthenticated and be skipped (expected)",
+      ? `provider env present: ${present.join(", ")} — informational only; stripped from spawned app`
+      : "no provider env — readiness depends on the isolated profile; doctor does not test sign-in",
   });
 
   return checks;

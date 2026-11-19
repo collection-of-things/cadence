@@ -5,11 +5,10 @@
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { audioBinary } from "./env.mjs";
 
-/** Marker written into every --user-data-dir the harness creates. Reuse is
- * only allowed for dirs carrying it — never a real user profile. */
+/** Marker used to identify profiles created by the harness during cleanup. */
 export const UD_MARKER = ".cadence-verify-owned";
 
 /** Env vars that could route the app outside the harness's private world:
@@ -45,6 +44,7 @@ const DROP_ENV = [
   // The app talks cpal -> ALSA; without sanitation it could open the real
   // default device or the user's Pulse/PipeWire server.
   "PULSE_SERVER", "PULSE_SINK", "PULSE_SOURCE", "PULSE_COOKIE", "PULSE_CLIENTCONFIG",
+  "PULSE_RUNTIME_PATH", "PULSE_CONFIG_PATH",
   "ALSA_CONFIG_PATH", "ALSA_CARD", "ALSA_PCM_CARD", "ALSA_DEVICE",
   "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_CORE", "PIPEWIRE_DEBUG",
   "SNAP", "FLATPAK_ID",
@@ -76,6 +76,8 @@ export function harnessEnv(extra = {}) {
  *  - asoundPath: private ALSA config; makes the ALSA default device the
  *    pipewire plugin (which honors PIPEWIRE_RUNTIME_DIR → the private core).
  *    Without it ALSA's compiled-in default could resolve to real hardware.
+ *  - Pulse clients use the same private core via its Pulse protocol socket.
+ *    A private client config prevents autospawn if the socket is unavailable.
  */
 export function sanitizedAppEnv({ extra = {}, audioBin, asoundPath } = {}) {
   if (!audioBin) throw new Error("no resolved cadence-audio binary — refusing to spawn without CADENCE_AUDIO_BIN pinned");
@@ -83,6 +85,10 @@ export function sanitizedAppEnv({ extra = {}, audioBin, asoundPath } = {}) {
   const env = harnessEnv(extra);
   env.CADENCE_AUDIO_BIN = audioBin;
   if (asoundPath) env.ALSA_CONFIG_PATH = asoundPath;
+  if (extra.XDG_RUNTIME_DIR && asoundPath) {
+    env.PULSE_SERVER = `unix:${join(extra.XDG_RUNTIME_DIR, "pulse", "native")}`;
+    env.PULSE_CLIENTCONFIG = join(dirname(asoundPath), "pulse-client.conf");
+  }
   return env;
 }
 
@@ -123,7 +129,7 @@ export function requireAudioBinary() {
  * Resolve --user-data. Only harness-owned dirs are allowed:
  *  - no flag: fresh mkdtemp (owned by definition)
  *  - flag pointing at a nonexistent path: created + marked
- *  - flag pointing at a dir carrying UD_MARKER: reuse (a kept session's profile)
+ *  - existing dirs: refused, including another session's owned profile
  *  - anything else (incl. an existing unmarked dir or the real
  *    ~/.config/cadence): refused — a real profile could leak the user's
  *    library/credentials into the run or collide with a running instance.
@@ -141,11 +147,24 @@ export function prepareUserData(userData) {
   if (real === realProfile || real.startsWith(realProfile + sep)) {
     throw new Error(`--user-data ${real} is the real Cadence profile — refused`);
   }
-  if (!existsSync(real)) return mark(real);
-  if (existsSync(join(real, UD_MARKER))) return real;
-  throw new Error(
-    `--user-data ${real} is not harness-owned (no ${UD_MARKER} marker) — refusing to reuse an unmanaged profile`,
-  );
+  mkdirSync(dirname(real), { recursive: true });
+  try { mkdirSync(real); } catch (e) {
+    if (e.code === "EEXIST") throw new Error(`--user-data ${real} already exists — refusing profile reuse`);
+    throw e;
+  }
+  return mark(real);
+}
+
+/** Conservatively identify processes that still carry a profile argument. */
+export function profileInUse(userData) {
+  if (!userData) return true;
+  try {
+    return readdirSync("/proc").filter((p) => /^\d+$/.test(p)).some((p) => {
+      const args = procCmdline(Number(p));
+      return args.some((arg, i) => arg === `--user-data-dir=${userData}`
+        || (arg === "--user-data-dir" && args[i + 1] === userData));
+    });
+  } catch { return true; }
 }
 
 // ---------------------------------------------------------------------------

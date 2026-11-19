@@ -1,7 +1,6 @@
 // providers.mjs — route health the honest way: read each route's own
-// capability record. `local` must be ready. Streaming routes are opt-in:
-// when a signed-in profile exists they report ready and get a small smoke;
-// otherwise the flow records a clean skip — never a failure, never a fake.
+// capability record. `local` must be ready. Streaming routes report readiness
+// or a skip here.
 import * as api from "../lib/api.mjs";
 import { shot, navTo } from "../lib/flow.mjs";
 
@@ -20,10 +19,8 @@ export async function run(ctx) {
 
   for (const cap of caps.filter((c) => c.route !== "local")) {
     if (cap.state === "ready") {
-      // Plug point: once feat/apple-music lands its e2e hooks, provider
-      // flows attach here — a signed-in profile makes the route ready and
-      // this branch exercises it. Until then record readiness honestly.
-      ev.step("provider", `${cap.route} ready — provider flow slot (no provider flow shipped yet)`);
+      // Readiness alone does not establish playback, even for Apple Music.
+      ev.step("provider", `${cap.route} ready — readiness only`);
       ev.check(`${cap.route} reported ready`, true, cap.playback.engine);
     } else {
       ev.step("provider", `${cap.route} skipped: ${cap.state}${cap.stateDetail ? ` (${cap.stateDetail})` : ""}`);

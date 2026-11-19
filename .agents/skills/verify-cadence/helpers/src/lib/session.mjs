@@ -16,7 +16,7 @@
 // display before it is trusted — a fixed port could otherwise be an
 // unrelated running Chromium.
 import { spawn } from "node:child_process";
-import { appendFileSync, createWriteStream, existsSync, openSync, closeSync, rmSync } from "node:fs";
+import { appendFileSync, createWriteStream, existsSync, openSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { _electron, chromium } from "playwright-core";
 import {
@@ -25,7 +25,7 @@ import {
 import {
   prepareUserData, requireAudioBinary, sanitizedAppEnv, writePrivateAsound,
   freePort, cdpOccupied, verifyCdpEndpoint, verifyRecordedProcess,
-  procAlive, procStartTime, procIds, procComm, descendantPids, UD_MARKER,
+  procAlive, procStartTime, procIds, procComm, descendantPids, UD_MARKER, profileInUse,
 } from "./isolation.mjs";
 import { startXvfb } from "./xvfb.mjs";
 import { Pw } from "./pipewire.mjs";
@@ -121,7 +121,7 @@ export async function teardownActiveLaunches() {
 /** Remove a harness-owned profile dir (marker present). Never called on
  * paths without the marker. */
 function removeOwnedUserData(ud) {
-  if (ud && existsSync(join(ud, UD_MARKER))) {
+  if (ud && existsSync(join(ud, UD_MARKER)) && !profileInUse(ud)) {
     try { rmSync(ud, { recursive: true, force: true }); } catch {}
   }
 }
@@ -192,8 +192,14 @@ async function prepareLaunch({ userData, runDir, cdpPort }) {
     );
   }
   const ud = prepareUserData(userData);
-  const asoundPath = writePrivateAsound(join(runDir, "asound.conf"));
-  return { ud, asoundPath, cdpPort, audioBin };
+  try {
+    const asoundPath = writePrivateAsound(join(runDir, "asound.conf"));
+    writeFileSync(join(runDir, "pulse-client.conf"), "autospawn = no\n");
+    return { ud, asoundPath, cdpPort, audioBin };
+  } catch (error) {
+    removeOwnedUserData(ud);
+    throw error;
+  }
 }
 
 function appEnvFor({ pw, display, asoundPath, audioBin }) {
@@ -503,7 +509,11 @@ export async function teardownRecorded(runDir) {
   // user's to remove; this tool never sends pactl to a real daemon.
 
   // owned temp dirs go away after a normal stop; evidence under runDir never does
-  removeOwnedUserData(meta.userData);
+  if (appStop === "already dead" || (appStop === "terminated" && !procAlive(meta.pid))) {
+    removeOwnedUserData(meta.userData);
+  } else {
+    notes.push("profile retained: app termination could not be confirmed");
+  }
 
   meta.stoppedAt = new Date().toISOString();
   meta.teardownNotes = notes;

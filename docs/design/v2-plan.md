@@ -400,6 +400,11 @@ Cross-owner changes use explicit handoffs: D gives A the mock dBFS formula and c
 
 ## Verification and acceptance
 
+For real UI, local playback/audio, restart and provider readiness,
+follow [verify-cadence](../../.agents/skills/verify-cadence/SKILL.md). Use its
+isolated flows while the user's app may be running. Mock captures below support
+visual acceptance only; they do not establish real playback or provider behavior.
+
 This planning pass does not claim rendered verification. Implementation must produce proof using the existing headless Electron capture path. Any app development server must run through `portless`, per the workspace instruction. Do not copy the raw Vite-server launch from the existing screenshot script; update the wrapper to accept the Portless URL, pass it through to `capture.cjs`, and forward width/height arguments. A built static UI may also be loaded through an appropriate file/custom-scheme capture path with relative assets; keep mock opt-in explicit.
 
 Run `pnpm --filter @cadence/ui typecheck`, `pnpm --filter @cadence/ui test`, and `pnpm --filter @cadence/ui build` after implementation. Add meaningful unit coverage for LRC timing/offsets/backward seeks, palette failure/monochrome art, dBFS normalization and stale generations, collection persistence and duplicate playlist occurrences. Preserve the existing queue/store tests. Do not write tests that merely assert token strings or copy stylesheet values.
