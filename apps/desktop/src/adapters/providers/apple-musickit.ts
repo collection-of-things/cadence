@@ -230,10 +230,11 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     // launch and most launches never touch Apple Music. Cookies alone decide
     // the reported state; the view starts on first use, and its real auth
     // state then arrives via capabilitiesChanged.
-    const hasSession =
+    const savedSession =
       !this.installed && !this.signedOut && (await this.session.hasSessionCookies().catch(() => false));
-    // Re-check: the view can finish installing while the cookie read is pending.
+    // The view can install or sign out while the cookie read is pending.
     if (!this.installed) {
+      const hasSession = savedSession && !this.signedOut;
       return this.baseCapabilities({
         route: this.route,
         state: hasSession ? "ready" : "unauthenticated",

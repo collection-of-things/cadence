@@ -105,6 +105,18 @@ describe("apple adapter page events", () => {
     expect(sess.evals).toEqual([]);
   });
 
+  it("discards a cold cookie read that finishes after sign-out", async () => {
+    Object.assign(adapter, { installed: false });
+    sess.alive = false;
+    let finishCookieRead = (_present: boolean) => {};
+    sess.hasSessionCookies = () => new Promise(resolve => { finishCookieRead = resolve; });
+    const pending = adapter.capabilities();
+
+    await adapter.signOut();
+    finishCookieRead(true);
+    expect(await pending).toMatchObject({ state: "unauthenticated", canSignOut: false });
+  });
+
   it("publishes ready after authorization arrives during controller installation", async () => {
     (adapter as any).installed = false;
     const states: string[] = [];

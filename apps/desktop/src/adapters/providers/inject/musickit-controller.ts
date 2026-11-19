@@ -730,18 +730,16 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   };
   ensureGraph();
   post(true);
-  // While active, always post on the tick — a frozen boundary state must keep reaching the
-  // adapter (position-at-tail detection depends on periodic samples, and a
-  // deduped silence looks identical to healthy idle playback).
-  // While paused or idle only every 4th tick forces a post; volume is cheap
-  // and still enforced each tick.
+  // Keep reporting playback and terminal states on every tick so the adapter
+  // can detect the end of a track even if MusicKit doesn't dispatch an event.
+  // While idle or paused report every fourth tick, but still enforce volume.
   let idleTicks = 0;
   setInterval(() => {
     applyOutputVolume();
     const st = mk.playbackState;
-    const active = changingQueue || st === STATES.playing || st === STATES.loading ||
-      st === STATES.waiting || st === STATES.stalled || st === STATES.seeking;
-    if (!active && ++idleTicks % 4 !== 0) return;
+    const idle = !changingQueue &&
+      (st === STATES.none || st === STATES.paused || st === STATES.stopped);
+    if (idle && ++idleTicks % 4 !== 0) return;
     watchGraph();
     post(true);
   }, 750);
