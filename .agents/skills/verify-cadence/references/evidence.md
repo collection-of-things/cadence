@@ -27,7 +27,7 @@ overwritten by later flows or attach calls; use separate runs for independent pr
 | `evidence/transcript.jsonl` | Ordered actions, checks, timing steps and artifact paths. |
 | `evidence/*.png` | Flow screenshots, best-effort `fail-<flow>.png` and managed teardown state. |
 | `state/*.json` | Flow-specific snapshots, queues, capabilities, routing and persisted settings. |
-| `audio/*` | Local flow captures and analyzer JSON. |
+| `audio/*` | Local flow captures and analyzer JSON; Apple Music writes `apple-monitor.f32le`. |
 | `logs/electron.log`, `logs/pipewire.log` | App/private-core output and launch diagnostics. |
 | `session.json`, `asound.conf` | Recorded resource identities and private ALSA configuration. |
 
@@ -45,6 +45,8 @@ sign-in failure does not validate an audio negative control.
 "$VERIFY" run smoke --break mute
 "$VERIFY" run audio --break mute
 "$VERIFY" run restart --break no-restore
+# With the prerequisites in features/apple-music.md satisfied:
+"$VERIFY" run apple-music --profile-copy /path/to/closed-test-profile --break mute
 ```
 
 Mute acts inside the private app session. For local captures, a rejected analyzer

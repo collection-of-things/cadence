@@ -3,13 +3,43 @@
 // harness created, CDP ports we verified free, and process kills that only
 // land on the exact recorded process (never a reused pid).
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { audioBinary } from "./env.mjs";
 
 /** Marker used to identify profiles created by the harness during cleanup. */
 export const UD_MARKER = ".cadence-verify-owned";
+
+/** Copy a signed-in profile into an already owned temporary profile. */
+export function copyTestProfile(source, destination) {
+  if (typeof source !== "string" || !lstatSync(source, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error("profile source must be a directory");
+  }
+  if (lstatSync(join(source, "SingletonLock"), { throwIfNoEntry: false }) || profileInUse(resolve(source))) {
+    throw new Error("profile source is in use or locked; supply a closed test profile");
+  }
+  if (!existsSync(join(destination, UD_MARKER))) throw new Error("destination must be harness-owned");
+  if (!lstatSync(join(source, "Partitions"), { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error("profile partitions must be a directory");
+  }
+  const partition = join(source, "Partitions", "provider-apple");
+  if (!lstatSync(partition, { throwIfNoEntry: false })?.isDirectory()) throw new Error("Apple Music partition missing");
+  mkdirSync(join(destination, "Partitions"), { recursive: true, mode: 0o700 });
+  const copy = (src, dst) => cpSync(src, dst, { recursive: true, filter: (p) =>
+    !["SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile", "Crashpad", UD_MARKER,
+      "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"].includes(basename(p))
+      && !lstatSync(p).isSymbolicLink() });
+  copy(partition, join(destination, "Partitions", "provider-apple"));
+  const localState = join(source, "Local State");
+  if (lstatSync(localState, { throwIfNoEntry: false })?.isFile()) {
+    copy(localState, join(destination, "Local State"));
+  }
+  const widevine = join(source, "WidevineCdm");
+  if (lstatSync(widevine, { throwIfNoEntry: false })?.isDirectory()) {
+    copy(widevine, join(destination, "WidevineCdm"));
+  }
+}
 
 /** Env vars that could route the app outside the harness's private world:
  * real display/session bus, real audio servers, dev-server URLs, stale

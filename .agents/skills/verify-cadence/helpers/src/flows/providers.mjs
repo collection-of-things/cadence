@@ -1,6 +1,6 @@
 // providers.mjs — route health the honest way: read each route's own
 // capability record. `local` must be ready. Streaming routes report readiness
-// or a skip here.
+// or a skip here; authenticated playback is a separate explicit flow.
 import * as api from "../lib/api.mjs";
 import { shot, navTo } from "../lib/flow.mjs";
 
@@ -20,7 +20,7 @@ export async function run(ctx) {
   for (const cap of caps.filter((c) => c.route !== "local")) {
     if (cap.state === "ready") {
       // Readiness alone does not establish playback, even for Apple Music.
-      ev.step("provider", `${cap.route} ready — readiness only`);
+      ev.step("provider", `${cap.route} ready — readiness only; run a provider playback flow explicitly`);
       ev.check(`${cap.route} reported ready`, true, cap.playback.engine);
     } else {
       ev.step("provider", `${cap.route} skipped: ${cap.state}${cap.stateDetail ? ` (${cap.stateDetail})` : ""}`);

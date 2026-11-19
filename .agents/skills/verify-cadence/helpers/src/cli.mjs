@@ -3,7 +3,7 @@
 //
 //   cadence-verify doctor                      environment + build + private-core report
 //   cadence-verify run <flow[,flow...]>        one-shot: launch -> flows -> evidence -> teardown
-//       [--flavor dev|packaged] [--user-data DIR] [--slug NAME] [--break NAME]
+//       [--flavor dev|packaged] [--user-data DIR | --profile-copy DIR] [--slug NAME] [--break NAME]
 //   cadence-verify launch [--flavor ...]       interactive: leave app running, print session dir
 //       [--cdp PORT] [--user-data DIR]
 //   cadence-verify attach <flow[,...]>         run flows against a `launch`ed session (uses run dir)
@@ -38,6 +38,7 @@ const FLOWS = {
   restart: () => import("./flows/restart.mjs"),
   library: () => import("./flows/library.mjs"),
   providers: () => import("./flows/providers.mjs"),
+  "apple-music": () => import("./flows/apple-music.mjs"),
 };
 
 // Deliberate breakage hooks for negative controls — each is implemented
@@ -101,6 +102,7 @@ async function runFlow(ctx, n) {
 async function main() {
   const { cmd, rest, flags } = args();
   const flavor = flags.flavor ?? "dev";
+  if (cmd !== "run" && flags["profile-copy"]) die("--profile-copy is supported by run only");
 
   switch (cmd) {
     case "doctor": {
@@ -175,7 +177,7 @@ async function main() {
         for (const n of names) {
           if (!FLOWS[n]) ev.fail("flow selection", `unknown flow "${n}" — known: ${Object.keys(FLOWS).join(", ")}`);
         }
-        const breakFlows = { mute: ["smoke", "audio"], "no-restore": ["restart"] };
+        const breakFlows = { mute: ["smoke", "audio", "apple-music"], "no-restore": ["restart"] };
         const unsupportedBreaks = [...breaks].filter((b) => !names.some((n) => breakFlows[b].includes(n)));
         for (const b of unsupportedBreaks) ev.fail("negative control", `--break ${b} is not supported by the selected flows`);
         if (flags.pw && flags.pw !== "private") {
@@ -188,10 +190,14 @@ async function main() {
           // honest persistent path
           ev.fail("flag --keep", "not supported for `run` — use `launch` + `attach`/`stop` for a persistent session");
         }
-        const invalid = names.length === 0 || names.some((n) => !FLOWS[n])
+        const missingAppleProfile = names.includes("apple-music") && typeof flags["profile-copy"] !== "string";
+        if (missingAppleProfile) {
+          ev.fail("Apple Music profile", "run apple-music needs --profile-copy with a closed signed-in test profile");
+        }
+        const invalid = missingAppleProfile || names.length === 0 || names.some((n) => !FLOWS[n])
           || (flags.pw && flags.pw !== "private") || !!flags.keep || unsupportedBreaks.length > 0;
         if (!invalid) {
-          ctx = await launchManaged({ flavor, userData: flags["user-data"], runDir });
+          ctx = await launchManaged({ flavor, userData: flags["user-data"], profileCopy: flags["profile-copy"], runDir });
           ctx.ev = ev;
           ctx.breaks = breaks;
           ev.check("app launches and bridge ready", true, `flavor=${flavor}`);

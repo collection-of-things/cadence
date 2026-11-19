@@ -1,6 +1,6 @@
 ---
 name: verify-cadence
-description: Verify Cadence's real Electron UI, local playback and audio, restart restore, and provider readiness. Use for end-to-end evidence, harness failures, and negative controls on a private display and PipeWire core.
+description: Verify Cadence's real Electron UI, local playback and audio, restart restore, or authenticated Apple Music playback. Use for end-to-end evidence, harness failures, and negative controls on a private display and PipeWire core.
 ---
 
 # Verify Cadence
@@ -48,6 +48,7 @@ stop a failing flow at its first required assertion, and then attempt later flow
 | [library](features/library.md) | Fixture identities, albums/artists, artwork URLs, DB text filter, artist play and track-count chip. |
 | [restart](features/restart.md) | Managed quit/relaunch, persisted queue/track/position, paused restore and routed resume. Requires `run`. |
 | [providers](features/providers.md) | Capability readiness after local service startup; use `smoke,providers`. Unavailable streaming routes can pass as skipped. |
+| [apple-music](features/apple-music.md) | Authenticated search, selected song, audio, pause and resume. Read profile prerequisites first. |
 
 ```bash
 "$VERIFY" run smoke

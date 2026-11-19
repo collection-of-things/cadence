@@ -57,7 +57,8 @@ that a distributed package contains a working bundled audio service.
 | `stop --run-dir <dir>` | Tears down recorded resources and removes owned temporary directories, retaining evidence. |
 | `tracks` | Prints fixture paths. |
 
-`run` accepts `--flavor`, `--slug`, `--break`, and `--user-data`.
+`run` accepts `--flavor`, `--slug`, `--break`, and either `--user-data` or
+`--profile-copy`. The latter is managed-run only; see [Apple Music](../features/apple-music.md).
 `launch` accepts `--flavor`, `--slug`, `--user-data` and `--cdp <unused-port>`.
 Omit `--cdp` for ephemeral allocation. `run --keep` is rejected. Use command names
 and space-separated values as shown; the parser is not a general `--flag=value`

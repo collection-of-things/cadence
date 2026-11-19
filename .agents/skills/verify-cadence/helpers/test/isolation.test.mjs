@@ -4,11 +4,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, symlinkSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  prepareUserData, profileInUse, sanitizedAppEnv, harnessEnv, UD_MARKER,
+  prepareUserData, copyTestProfile, profileInUse, sanitizedAppEnv, harnessEnv, UD_MARKER,
   freePort, portListenerPids, procStartTime, procCmdline, procEnv,
   verifyRecordedProcess, isPrivateAudioProc, descendantPids,
 } from "../src/lib/isolation.mjs";
@@ -84,6 +84,37 @@ test("profile use detects a live process with the exact profile argument", async
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
   }
+});
+
+test("profile copy keeps source intact and excludes links, locks and source marker", () => {
+  const root = mkdtempSync(join(tmpdir(), "cadence-profile-test-"));
+  const source = join(root, "source");
+  const destination = join(root, "destination");
+  try {
+    mkdirSync(source);
+    const partition = join(source, "Partitions", "provider-apple");
+    mkdirSync(partition, { recursive: true });
+    writeFileSync(join(partition, "session"), "session");
+    writeFileSync(join(partition, "SingletonLock"), "lock");
+    writeFileSync(join(source, "library.db"), "private library");
+    writeFileSync(join(source, UD_MARKER), "source marker");
+    symlinkSync(join(partition, "session"), join(partition, "link"));
+    mkdirSync(destination);
+    assert.throws(() => copyTestProfile(source, destination), /harness-owned/);
+    writeFileSync(join(destination, UD_MARKER), "destination marker");
+    const lock = join(source, "SingletonLock");
+    symlinkSync("test-host-12345", lock);
+    assert.throws(() => copyTestProfile(source, destination), /in use or locked/);
+    assert.equal(existsSync(join(destination, "Partitions")), false);
+    rmSync(lock);
+    copyTestProfile(source, destination);
+    assert.equal(readFileSync(join(destination, "Partitions", "provider-apple", "session"), "utf8"), "session");
+    assert.equal(readFileSync(join(destination, UD_MARKER), "utf8"), "destination marker");
+    assert.equal(existsSync(join(destination, "Partitions", "provider-apple", "link")), false);
+    assert.equal(existsSync(join(destination, "Partitions", "provider-apple", "SingletonLock")), false);
+    assert.equal(existsSync(join(destination, "library.db")), false);
+    assert.equal(readFileSync(join(partition, "SingletonLock"), "utf8"), "lock");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("harnessEnv drops display/session/audio overrides", () => {

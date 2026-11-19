@@ -44,10 +44,11 @@ informational script, not a dependency swap. DRM playback still depends on a
 working Widevine component, signing/runtime compatibility, an active subscription
 and a valid session.
 
-For real UI, local audio, restore or provider readiness, follow
+For real UI, local audio, restore or Apple Music playback evidence, follow
 [verify-cadence](../../.agents/skills/verify-cadence/SKILL.md). The dev flavor uses
 built files with a private profile, display and audio core. Use that helper while
-the user's instance may be running.
+the user's instance may be running. Authenticated checks require a closed test
+profile; leave an active source alone.
 
 Always use `portless` for a development server. The root `pnpm dev` builds the UI
 and launches desktop Electron; it does not start a UI server. The verification
