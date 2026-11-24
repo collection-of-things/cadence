@@ -58,9 +58,9 @@
 }
 .lyrics-tools:hover, .lyrics-tools:focus-within { opacity: 1; }
 /* with the tools showing, the lines end (and fade) above them, never under */
-:is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > :is(.lyrics-scroll, .lyrics-plain, .lyrics-empty) { bottom: 52px; }
+:is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > :is(.lyrics-scroll, .lyrics-plain, .lyrics-empty) { bottom: 60px; }
 .lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
-.lyrics-tools button:disabled { color: oklch(1 0 0 / 0.6); }
+.lyrics-tools button:disabled { color: oklch(1 0 0 / 0.6); cursor: default; }
 .lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-tools button:hover:not(:disabled) { background: oklch(1 0 0 / 0.16); }
@@ -80,6 +80,8 @@
 .side-panel:not(.is-open) { transform: translateX(20px); opacity: 0; }
 /* its top strip sits under the window buttons and drags the window */
 .side-panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 54px 10px 8px 12px; -webkit-app-region: drag; }
+/* macOS keeps its window buttons on the left, so the tabs line up with the top bar */
+:root[data-platform='mac'] .side-panel-head { padding-top: calc(var(--gap) + 5px); padding-bottom: 12px; }
 .side-panel-head button { -webkit-app-region: no-drag; }
 .side-panel-head .panel-tabs { flex: 1; margin-top: 0; }
 .side-panel-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -117,14 +119,18 @@
   line-height: 1.2;
   color: oklch(1 0 0 / 0.36);
   transform-origin: left center;
+  /* the sung line grows 4%; wrapping 6% short keeps it inside the column */
+  padding-right: 6%;
+  overflow-wrap: anywhere;
 }
 /* depth of field: lines blur with distance from the one being sung */
-.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.26); filter: blur(1.4px); }
-.npf-lyrics .lyrics-scroll p.d1 { filter: blur(1.2px); }
-.npf-lyrics .lyrics-scroll p.d2 { filter: blur(2.2px); }
-.npf-lyrics .lyrics-scroll p.d3 { filter: blur(3.2px); opacity: 0.8; }
+.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.3); filter: blur(1px); }
+/* depth of field starts two lines out: the neighbours of the sung line stay sharp */
+.npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.5); filter: none; }
+.npf-lyrics .lyrics-scroll p.d2 { filter: blur(1.2px); }
+.npf-lyrics .lyrics-scroll p.d3 { filter: blur(2.2px); opacity: 0.8; }
 /* the sung line: brighter, a touch larger, tinted by the cover */
-.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 22%, #fff); filter: none; opacity: 1; transform: scale(1.05); }
+.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 22%, #fff); filter: none; opacity: 1; transform: scale(1.04); }
 /* reading ahead: pointing at the lyrics, or tabbing to them, brings every line into focus */
 .npf-lyrics .lyrics-scroll:hover p, :root[data-input='keyboard'] .npf-lyrics .lyrics-scroll:focus-visible p { filter: none; }
 @media (hover: hover) and (pointer: fine) {

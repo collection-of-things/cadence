@@ -184,7 +184,8 @@ export function App() {
   // Closing the queue flips panelTab; the panel keeps its tab while it slides away.
   const [shownPanelTab, setShownPanelTab] = useState<PanelTab>(panelTab);
   if (panelOpen && shownPanelTab !== panelTab) setShownPanelTab(panelTab);
-  const shellMoving = useShellMoving(`${sidebar.open}:${panelShown}`);
+  // Opening Now Playing moves the colour field's edges too (it grows out of the card).
+  const shellMoving = useShellMoving(`${sidebar.open}:${panelShown}:${expanded}`);
   const showTab = (tab: PanelTab) => {
     setRailOpen(tab === 'lyrics');
     session.setQueueOpen(tab === 'queue');

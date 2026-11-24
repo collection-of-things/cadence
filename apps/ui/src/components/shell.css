@@ -8,10 +8,10 @@
   /* the panels' surface carries about a tenth of the current theme: the open
      page's colour when App sets one, otherwise the playing song's */
   --shell-tint: var(--acc);
-  --shell-surface: color-mix(in oklab, var(--shell-tint) 6%, oklch(0.135 0.004 285 / 0.78));
+  --shell-surface: color-mix(in oklab, var(--shell-tint) 9%, oklch(0.135 0.004 285 / 0.78));
   /* the stage card: its inset from the window edges and its corner */
   --gap: 8px;
-  --stage-radius: 14px;
+  --stage-radius: 18px;
   --stage-l: max(var(--sidebar-w), var(--gap));
 }
 
@@ -35,6 +35,7 @@
 }
 .app.has-rail { --rail: var(--rail-w); }
 /* the strip of window above the card still drags the window */
+.app.is-immersive::before { display: none; }
 .app::before {
   content: '';
   position: absolute;
@@ -82,7 +83,15 @@
   border-radius: var(--stage-radius);
   box-shadow: 0 0 0 1px oklch(1 0 0 / 0.07), 0 1px 0 0 oklch(1 0 0 / 0.04) inset, 0 2px 6px -2px oklch(0 0 0 / 0.5), 0 18px 48px -12px oklch(0 0 0 / 0.55);
 }
-.stage-main { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; }
+.stage-main {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  /* the strip under the docked player stays clear: pages fade out before
+     the card's bottom edge instead of peeking out beneath the bar */
+  mask-image: linear-gradient(to top, transparent var(--pb-inset), #000 calc(var(--pb-inset) + 8px));
+}
 
 /* Every page scrolls here; content fades out under the top bar. */
 .stage-scroll {
@@ -232,6 +241,7 @@
   .side-section-head:hover .side-chevron { opacity: 1; }
 }
 .side-section-rows { display: grid; gap: 1px; }
+.side-section-rows.is-closed { display: none; }
 
 .side-row {
   position: relative;
@@ -511,10 +521,13 @@
   /* --sb is 64px here (styles.css) */
   .side-top { padding: 12px 8px 4px; }
   .side-brand { justify-content: center; padding: 0; }
-  .side-brand-name, .side-switch-label, .side-section-head, .side-row-label, .side-count { display: none; }
-  .side-switch { grid-template-columns: 1fr; grid-auto-flow: row; }
-  .side-switch-ind { width: auto; right: 3px; height: calc((100% - 6px) / var(--n)); bottom: auto; transform: translateY(calc(var(--i, 0) * 100%)); }
-  .side-switch button { padding: 0; }
+  /* scoped to the sidebar: the side panel's tabs reuse the switch and keep their labels */
+  .sidebar :is(.side-brand-name, .side-switch-label, .side-section-head, .side-row-label, .side-count) { display: none; }
+  .sidebar .side-switch { grid-template-columns: 1fr; grid-auto-flow: row; }
+  .sidebar .side-switch-ind { width: auto; right: 3px; height: calc((100% - 6px) / var(--n)); bottom: auto; transform: translateY(calc(var(--i, 0) * 100%)); }
+  .sidebar .side-switch button { padding: 0; }
+  /* the rail has no section heads to reopen, so every section shows */
+  .sidebar .side-section-rows.is-closed { display: grid; }
   .side-scroll { padding: 8px 8px 14px; }
   .side-section + .side-section { margin-top: 8px; padding-top: 8px; }
   .side-row { justify-content: center; padding: 0; height: 40px; }
@@ -525,10 +538,22 @@
   .topbar-keys { display: none; }
 }
 
-/* too narrow for both panels: the lyrics rail steps aside */
+/* too narrow for a third column: the panel floats over the stage's right
+   edge as a glass card, below the top bar and clear of the player */
 @media (max-width: 1000px) {
   .app.has-rail { --rail: 0px; }
-  .app.has-rail .lyrics-rail { display: none; }
+  .app .lyrics-rail {
+    z-index: 3;
+    top: calc(var(--gap) + 52px);
+    right: calc(var(--gap) + 10px);
+    bottom: calc(var(--gap) + var(--pb-clear) - 2px);
+    width: min(var(--rail-w), calc(100vw - var(--sb) - 2 * var(--gap) - 40px));
+    border-radius: 16px;
+    background: linear-gradient(180deg, oklch(1 0 0 / 0.05), oklch(1 0 0 / 0) 120px), oklch(0.17 0.006 285 / 0.86);
+    backdrop-filter: blur(40px) saturate(1.6);
+    box-shadow: var(--pb-shadow);
+  }
+  .app .lyrics-rail .side-panel-head { padding-top: 10px; -webkit-app-region: no-drag; }
 }
 
 /* the side panel sits under the window buttons, so the top bar needs no room for them */

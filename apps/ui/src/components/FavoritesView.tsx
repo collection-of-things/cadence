@@ -7,6 +7,7 @@ import { PlayIcon, ShuffleIcon, SongIcon, StarIcon } from '../icons';
 import { TrackRow } from './TrackRow';
 import { pageTheme } from '../theme';
 import { usePublishPageTint } from '../pageTint';
+import { EmptyState } from './Shelf';
 import './home.css';
 
 const origin = { kind: 'playlist' as const, id: 'favorites', name: 'Favourite Songs' };
@@ -74,25 +75,32 @@ export function FavoritesView() {
           <div className="album-art playlist-art"><StarIcon size={96} filled /></div>
           <div className="album-info">
             <h1>Favourite Songs</h1>
-            <div className="album-chips">
-              <span className="chip"><SongIcon size={13} />{favorites.length} {favorites.length === 1 ? 'track' : 'tracks'}</span>
-            </div>
-            <div className="album-actions">
-              <button className="round-btn album-round" aria-label="Shuffle favourites" title="Shuffle" disabled={!ready}
-                onClick={() => session.playShuffled(favorites, origin)}>
-                <ShuffleIcon size={18} />
-              </button>
-              <button className="play-pill album-play-pill" disabled={!ready} onClick={() => session.playTracks(favorites, 0, origin)}>
-                <PlayIcon size={17} /> Play
-              </button>
-            </div>
+            {/* Empty, the page explains itself below instead of offering dead controls. */}
+            {ready ? (
+              <>
+                <div className="album-chips">
+                  <span className="chip"><SongIcon size={13} />{favorites.length} {favorites.length === 1 ? 'track' : 'tracks'}</span>
+                </div>
+                <div className="album-actions">
+                  <button className="round-btn album-round" aria-label="Shuffle favourites" title="Shuffle"
+                    onClick={() => session.playShuffled(favorites, origin)}>
+                    <ShuffleIcon size={18} />
+                  </button>
+                  <button className="play-pill album-play-pill" onClick={() => session.playTracks(favorites, 0, origin)}>
+                    <PlayIcon size={17} /> Play
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="album-lede">Your starred songs, in one place.</p>
+            )}
           </div>
         </section>
         <section className="album-tracks" aria-label="Favourite songs">
           {ready ? (
             <VirtualFavorites tracks={favorites} />
           ) : (
-            <p className="list-empty">Star a song from the player or a track’s ⋯ menu to keep it here.</p>
+            <EmptyState title="No favourites yet" body="Star a song in the player or from a track’s ⋯ menu and it will appear here." icon={<StarIcon size={28} />} />
           )}
         </section>
       </div>

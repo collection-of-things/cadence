@@ -73,10 +73,18 @@
 
 /* a new page arrives as one piece: the page carries everything on it, so no
    row or card staggers in after it (pages change tens of times a day) */
-.page { transition: opacity 200ms ease-out; }
+.page { transition: opacity 160ms ease-out; }
 @starting-style {
   .page { opacity: 0; }
 }
+
+/* an album's colour eases into the window frame instead of snapping */
+@property --shell-tint {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgb(132 150 236);
+}
+:root { transition: --shell-tint 280ms ease; }
 
 /* the card play disc and row actions fade in where the pointer is */
 .card-play, .row-more, .q-acts .icon-btn { transition: opacity 120ms ease-out, background-color 110ms ease, color 110ms ease; }
@@ -86,7 +94,7 @@
 .menu { transition: opacity 120ms ease-out; }
 .add-glyph.is-added { transition: opacity 140ms ease-out; }
 @starting-style {
-  .platform-fade, .npf-nav, .toast, .menu, .add-glyph.is-added { opacity: 0; }
+  .side-scroll.platform-fade, .npf-nav, .toast, .menu, .add-glyph.is-added { opacity: 0; }
 }
 
 /* ---- movement, only for people who are fine with it ---- */
@@ -98,9 +106,9 @@
   :is(.poster-open, .square-open, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
 
   /* the page rises the last few pixels as it fades in */
-  .page { transition: opacity 200ms ease-out, translate 260ms var(--ease-out); }
+  .page { transition: opacity 160ms ease-out, translate 220ms var(--ease-out); }
   @starting-style {
-    .page { translate: 0 6px; }
+    .page { translate: 0 4px; }
   }
 
   /* the playing marker: four bars breathing at different rates, so the
@@ -128,7 +136,7 @@
     box-shadow: 0 0 0 1px oklch(1 0 0 / 0.08);
     transition: left var(--shell-move), right var(--shell-move);
   }
-  .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move); }
+  .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move), top var(--shell-move), bottom var(--shell-move), border-radius var(--shell-move); }
   .side-panel, .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease; }
   :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease, visibility 0s linear 260ms; }
   @starting-style {
@@ -140,9 +148,9 @@
   .npf-art img:not(.is-swap) { transition: transform var(--t-spring) var(--spring-ui); }
   .npf-corner { transition: opacity 220ms ease-out, transform var(--shell-move); }
   .npf-lyrics .lyrics-scroll p { transition: color 240ms ease-out, transform var(--t-spring) var(--spring-ui); }
+  /* the docked and floating bars share one resting place, so the bar
+     itself stays still while Now Playing comes up around it */
   @starting-style {
-    .playerbar.is-floating { transform: translateY(14px); }
-    .playerbar.is-docked { transform: translateY(-14px); }
     .npf-art img:not(.is-swap) { transform: scale(1.03); }
   }
 

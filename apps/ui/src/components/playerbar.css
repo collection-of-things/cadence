@@ -7,7 +7,8 @@
 
 :root {
   --pb-inset: 10px;
-  --pb-radius: 16px;
+  /* concentric with the stage card's corner, 10px further in */
+  --pb-radius: 12px;
   --pb-shadow: 0 0 0 1px oklch(1 0 0 / 0.09), inset 0 1px 0 oklch(1 0 0 / 0.07), 0 2px 6px -1px oklch(0 0 0 / 0.35), 0 22px 50px -16px oklch(0 0 0 / 0.65);
 }
 
@@ -117,7 +118,12 @@
 /* compact: the seek line runs the bar's full width on top, and one row of
    now playing | transport | panels sits under it */
 /* The bar can't query its own width, so its grid follows the stage's
-   (the bar is the stage's width less its 10px insets). */
+   (the bar is the stage's width less its 10px insets). Mid widths: the
+   panel buttons keep their size and the title takes the rest, so the
+   transport sits between them rather than dead centre. */
+@container stage (max-width: 1000px) {
+  .playerbar { grid-template-columns: minmax(0, 1fr) minmax(220px, 320px) auto; column-gap: 16px; }
+}
 @container stage (max-width: 720px) {
   .playerbar {
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -130,7 +136,7 @@
   }
 }
 @container pill (max-width: 700px) {
-  .pb-seek .time-readout, .playerbar .transport .ctl-side, .pb-now .pb-fav, .pb-now .route-badge, .playerbar .pb-right .dev-picker { display: none; }
+  .pb-seek .time-readout, .playerbar .transport .ctl-side, .pb-now .pb-fav, .pb-now .route-badge { display: none; }
   .pb-art { width: 46px; height: 46px; }
   .pb-open { gap: 11px; }
 }
@@ -146,7 +152,7 @@
 .playerbar .pb-right .dev-trigger.is-remote { color: var(--acc); background: var(--accent-soft); }
 /* the player sits on the bottom edge, so this menu opens upward */
 /* it clears the bar's top edge instead of covering the seek line */
-.menu.menu-up { top: auto; bottom: calc(100% + 36px); transform-origin: bottom right; }
+.menu.menu-up { top: auto; right: -8px; bottom: calc(100% + 44px); transform-origin: bottom right; }
 @container pill (max-width: 700px) { .menu.menu-up { bottom: calc(100% + 20px); } }
 .dev-menu { min-width: 260px; }
 .dev-head { padding: 7px 10px 5px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--t4); }

@@ -19,9 +19,14 @@
   padding-bottom: 4px;
   margin: 0 -32px 0 -10px;
   padding-right: 32px;
-  /* cards that run past the stage's edge fade instead of being cut */
-  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  /* cards cut by either edge fade instead of being sliced; an edge the
+     rail has reached is sharp */
+  --fade-l: 24px;
+  --fade-r: 36px;
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
 }
+.shelf-rail.at-start { --fade-l: 0px; }
+.shelf-rail.at-end { --fade-r: 0px; }
 .shelf-rail::-webkit-scrollbar { display: none; }
 .shelf-rail > * { scroll-snap-align: start; }
 
@@ -59,7 +64,7 @@
 .poster-art { position: absolute; inset: 0; }
 .poster-art img { width: 100%; height: 100%; object-fit: cover; }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
-  .poster-art img, .square-art img { transition: transform 500ms var(--ease-out); }
+  .poster-art img, .square-art img { transition: transform 300ms var(--ease-out); }
   .poster-card:hover .poster-art img, .square-card:hover .square-art img { transform: scale(1.035); }
 }
 .poster-open::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); pointer-events: none; }
@@ -112,7 +117,9 @@
 .album { position: absolute; inset: 0; --row-pill: transparent; --row-pill-hi: oklch(1 0 0 / 0.07); }
 /* quiet alternating bands; the playing row is the only solid one */
 .album .track-list > .track-row:nth-child(even) { --row-pill: oklch(1 0 0 / 0.028); }
-.album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: none; }
+/* scrolled content fades out under the top bar like every page; the colour
+   wash sits outside the scroller, so it stays put behind the bar */
+.album-scroll { padding-top: calc(var(--topbar-h) + 14px); }
 .album-corner { position: absolute; top: calc(var(--topbar-h) + 14px); right: 24px; display: flex; gap: 8px; }
 .album-corner .round-btn { width: 36px; height: 36px; border-radius: 50%; color: oklch(0.93 0 0); background: var(--capsule); }
 
@@ -130,6 +137,8 @@
 .album-art img { width: 100%; height: 100%; object-fit: cover; }
 .playlist-art { color: var(--acc-ink); background: linear-gradient(135deg, color-mix(in oklab, var(--acc) 70%, #fff), var(--acc) 50%, color-mix(in oklab, var(--acc) 60%, #000)); }
 .album-info { min-width: 0; }
+.album-lede { margin: 12px 0 0; font-size: 15px; color: oklch(1 0 0 / 0.7); }
+.album-tracks .empty-state { padding: 56px 24px 72px; }
 .album-info h1 { margin: 0; font-size: clamp(28px, 3vw, 46px); font-weight: 760; letter-spacing: -0.028em; line-height: 1.06; overflow-wrap: anywhere; text-wrap: balance; }
 /* who made it: a round avatar and the name, one step under the title */
 .album-byline { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 17px; font-weight: 600; letter-spacing: -0.013em; }
@@ -198,7 +207,8 @@
 /* ============ Track list ============ */
 
 .list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 4px 10px; }
-.list-filter { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 9px; background: oklch(0 0 0 / 0.28); color: var(--t4); }
+.list-filter { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: var(--r-pill); background: var(--capsule); box-shadow: var(--capsule-ring); color: oklch(1 0 0 / 0.55); transition: background-color 160ms ease, box-shadow 160ms ease; }
+.list-filter:focus-within { background: var(--capsule-hi); box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.16), 0 0 0 3px color-mix(in oklab, var(--acc) 22%, transparent); }
 .list-filter input { width: 220px; border: 0; outline: 0; background: none; color: var(--text); font: inherit; font-size: 13.5px; }
 .list-empty { padding: 32px 16px; color: var(--text-dim); }
 
@@ -258,7 +268,9 @@
 .tr-time { justify-self: end; font-size: 12.5px; color: var(--t3); font-variant-numeric: tabular-nums; }
 
 .row-menu { position: relative; justify-self: end; }
-.row-more { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--t2); opacity: 0; }
+/* near the bottom it opens upward, growing from the button's top edge */
+.row-menu .menu.is-up { top: auto; bottom: calc(100% + 6px); transform-origin: bottom right; }
+.row-more { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--t2); opacity: 0.35; }
 @media (hover: none) { .row-more { opacity: 0.8; } }
 .row-more:hover, .row-more[aria-expanded='true'] { opacity: 1; color: var(--t1); background: var(--well-hi); }
 
@@ -276,6 +288,7 @@
   font-weight: 550;
 }
 .track-head span:nth-child(6) { justify-self: end; }
+.track-head span:first-child { justify-self: end; padding-right: 4px; }
 
 /* playing marker: four bars, moving only while audio plays (motion.css) */
 .now-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
@@ -305,6 +318,8 @@
 .fav-row:has(.row-menu [aria-expanded='true']) { z-index: 5; }
 @container stage (max-width: 820px) {
   .stage-scroll { padding-left: 24px; padding-right: 24px; }
+  /* long titles wrap clear of the corner pin button */
+  .album-info h1 { padding-right: 44px; }
   .album-hero { grid-template-columns: 160px minmax(0, 1fr); gap: 20px; }
   .album-actions { flex-wrap: wrap; }
   .track-row-list, .track-head { grid-template-columns: 36px 42px minmax(0, 1fr) minmax(0, 0.8fr) 56px 40px; }

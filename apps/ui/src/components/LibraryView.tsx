@@ -76,6 +76,13 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
 
 function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(name: string): void }) {
   const artists = useLibraryRead(() => api.library.artists({}), [], []);
+  // Each artist wears the cover of one of their albums, like the artist page.
+  const albums = useLibraryRead(() => api.library.albums({}), [], []);
+  const covers = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const album of albums ?? []) if (album.artwork && !map.has(album.artist)) map.set(album.artist, album.artwork.url);
+    return map;
+  }, [albums]);
   // `query` is already debounced by LibraryView.
   const shown = useMemo(() => {
     if (!artists || !query) return artists ?? [];
@@ -101,7 +108,9 @@ function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(
           return (
             <div key={a.name} className="artist-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
               <button className="artist-row" onClick={() => onSelectArtist(a.name)}>
-                <span className="artist-avatar">{a.name.slice(0, 1).toUpperCase()}</span>
+                <span className="artist-avatar">
+                  {covers.get(a.name) ? <img src={covers.get(a.name)} alt="" loading="lazy" decoding="async" /> : a.name.slice(0, 1).toUpperCase()}
+                </span>
                 <span className="artist-name">{a.name}</span>
                 <span className="artist-counts">
                   {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}

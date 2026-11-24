@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
 import { catalogSongId, openSongLink, targetForTrack, useLibrarySave } from '../catalogActions';
@@ -33,8 +33,23 @@ function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) 
  */
 export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | undefined }) {
   const [open, setOpen] = useState(false);
+  // Opens upward when there is no room above the docked player (or the window edge).
+  const [up, setUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const favorite = useCollection((s) => s.favorites.some((t) => t.id === track.id));
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setUp(false);
+      return;
+    }
+    const menu = menuRef.current?.getBoundingClientRect();
+    if (!menu) return;
+    const player = document.querySelector('.playerbar.is-docked')?.getBoundingClientRect();
+    const floor = Math.min(player?.top ?? Infinity, window.innerHeight) - 8;
+    if (menu.bottom > floor) setUp(true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +89,7 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
         <MoreIcon size={18} />
       </button>
       {open && (
-        <div className="menu" role="menu">
+        <div ref={menuRef} className={`menu ${up ? 'is-up' : ''}`} role="menu">
           <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
           <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>
           <AddToLibraryItem track={track} act={act} />
