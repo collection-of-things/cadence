@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { LibraryAlbum } from '@cadence/protocol';
 import { api, session } from '../session';
-import { useElementWidth, useUi } from '../hooks';
+import { prefersReducedMotion, useElementWidth, useUi } from '../hooks';
 import { FolderIcon, NoteIcon, SearchIcon } from '../icons';
 import { useLibraryRead } from '../library';
 import type { LibraryTab } from '../navigation';
 import { SkeletonRows } from './Shelf';
 import { TrackRow } from './TrackRow';
-import { SHELL_MOVE_MS } from './SidePanel';
 
 const TITLES: Record<LibraryTab, string> = { albums: 'Albums', artists: 'Artists', songs: 'Songs' };
 
@@ -40,16 +39,46 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
   const width = useElementWidth(scrollRef);
   const fit = (w: number) => Math.max(1, Math.floor((w + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
   // While a side panel or the sidebar slides, the cards stretch in place and
-  // the column count changes once, after the stage settles.
+  // the column count changes once, after the stage settles, each card
+  // gliding from where it was to where it lands (FLIP).
   const [columns, setColumns] = useState(() => fit(width));
+  const before = useRef<Map<string, DOMRect> | null>(null);
+  const settleColumns = (next: number) => {
+    const rects = new Map<string, DOMRect>();
+    scrollRef.current?.querySelectorAll<HTMLElement>('.album-card[data-id]').forEach((el) => rects.set(el.dataset.id!, el.getBoundingClientRect()));
+    before.current = rects;
+    setColumns(next);
+  };
+  useLayoutEffect(() => {
+    const rects = before.current;
+    before.current = null;
+    if (!rects || prefersReducedMotion()) return;
+    scrollRef.current?.querySelectorAll<HTMLElement>('.album-card[data-id]').forEach((el) => {
+      const from = rects.get(el.dataset.id!);
+      if (!from) return;
+      const to = el.getBoundingClientRect();
+      const dx = from.left - to.left;
+      const dy = from.top - to.top;
+      const s = to.width ? from.width / to.width : 1;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(s - 1) < 0.01) return;
+      el.animate(
+        [{ transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${s})` }, { transformOrigin: 'top left', transform: 'none' }],
+        { duration: 260, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' },
+      );
+    });
+  }, [columns]);
   useEffect(() => {
     if (fit(width) === columns) return;
-    if (!document.querySelector('.app.is-moving')) {
+    if (prefersReducedMotion() || !document.querySelector('.app.is-moving')) {
       setColumns(fit(width));
       return;
     }
-    const timer = setTimeout(() => setColumns(fit(scrollRef.current?.clientWidth ?? width)), SHELL_MOVE_MS + 60);
-    return () => clearTimeout(timer);
+    // Commit on the frame the stage settles (it drops .is-moving), not on a guess.
+    let frame = requestAnimationFrame(function settle() {
+      if (document.querySelector('.app.is-moving')) frame = requestAnimationFrame(settle);
+      else settleColumns(fit(scrollRef.current?.clientWidth ?? width));
+    });
+    return () => cancelAnimationFrame(frame);
   }, [width, columns]);
   const cardWidth = Math.max(0, (width - ALBUM_GAP * (columns - 1)) / columns);
   const virtualizer = useVirtualizer({
@@ -71,7 +100,7 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
             style={{ transform: `translateY(${vi.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
           >
             {albums.slice(vi.index * columns, (vi.index + 1) * columns).map((a) => (
-              <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+              <button key={a.id} data-id={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
                 {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" decoding="async" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
                 <span className="album-title">{a.title}</span>
                 <span className="album-artist">
@@ -193,6 +222,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
   const [query, setQuery] = useState(submitted ?? '');
   const scan = useUi((s) => s.scan);
   const counts = useLibraryRead(() => api.library.counts(), [], null);
+  const artistCount = useLibraryRead(() => api.library.artists({}).then((a) => a.length), [], null);
 
   // Each top-bar submission replaces what is in the field.
   useEffect(() => {
@@ -241,6 +271,8 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
         {/* while filtering, the header says what the list is showing */}
         {query ? (
           <span className="lib-count">Results for “{query}”</span>
+        ) : tab === 'artists' && artistCount !== null ? (
+          <span className="lib-count">{artistCount} {artistCount === 1 ? 'artist' : 'artists'}</span>
         ) : counts && (
           <span className="lib-count">
             {counts.albums} {counts.albums === 1 ? 'album' : 'albums'} · {counts.tracks} {counts.tracks === 1 ? 'song' : 'songs'}

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
@@ -85,9 +85,16 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
     const close = () => setOpen(false);
     scroller?.addEventListener('scroll', close, { passive: true });
     window.addEventListener('resize', close);
+    // ...and when its row slides away (a panel or the sidebar toggles) or Now Playing covers it
+    const app = document.querySelector('.app');
+    const watch = new MutationObserver(() => {
+      if (app?.classList.contains('is-moving') || app?.classList.contains('is-immersive')) close();
+    });
+    if (app) watch.observe(app, { attributes: true, attributeFilter: ['class'] });
     return () => {
       scroller?.removeEventListener('scroll', close);
       window.removeEventListener('resize', close);
+      watch.disconnect();
     };
   }, [open]);
 
@@ -106,6 +113,25 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
     setOpen(false);
     ref.current?.querySelector<HTMLElement>('.row-more')?.focus();
   });
+
+  // Roving focus inside the menu; Tab leaves it from the row's own button,
+  // so focus continues in the list's order rather than the portal's.
+  const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const go = (i: number) => {
+      e.preventDefault();
+      items[(i + items.length) % items.length]?.focus();
+    };
+    if (e.key === 'ArrowDown') go(at + 1);
+    else if (e.key === 'ArrowUp') go(at - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(items.length - 1);
+    else if (e.key === 'Tab') {
+      setOpen(false);
+      ref.current?.querySelector<HTMLElement>('.row-more')?.focus();
+    }
+  };
 
   const act: MenuAction = (fn) => () => {
     fn();
@@ -137,6 +163,7 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
           // first frame: measured off-screen, then placed before paint
           style={place ? { top: place.top ?? 'auto', bottom: place.bottom ?? 'auto', right: place.right, maxHeight: place.maxHeight, overflowY: place.maxHeight ? 'auto' : undefined } : { top: 0, bottom: 'auto', right: 0, visibility: 'hidden' }}
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={onMenuKey}
         >
           <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
           <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>

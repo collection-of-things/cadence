@@ -111,13 +111,13 @@ export function EmptyState({ title, body, alert = false, icon, children }: {
   title: string;
   body: string;
   alert?: boolean;
-  /** Defaults to a note. */
-  icon?: ReactNode;
+  /** Defaults to a note; `false` shows none. */
+  icon?: ReactNode | false;
   children?: ReactNode;
 }) {
   return (
     <div className="empty-state" role={alert ? 'alert' : 'status'}>
-      <span className="empty-icon">{icon ?? <NoteIcon size={30} />}</span>
+      {icon !== false && <span className="empty-icon">{icon ?? <NoteIcon size={30} />}</span>}
       <h2>{title}</h2>
       <p>{body}</p>
       {children}

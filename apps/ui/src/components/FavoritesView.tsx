@@ -100,7 +100,7 @@ export function FavoritesView() {
           {ready ? (
             <VirtualFavorites tracks={favorites} />
           ) : (
-            <EmptyState title="No favourites yet" body="Star a song in the player or from a song’s ⋯ menu and it will appear here." icon={<StarIcon size={28} />} />
+            <EmptyState title="No favourites yet" body="Star a song in the player or from a song’s ⋯ menu and it will appear here." icon={false} />
           )}
         </section>
       </div>

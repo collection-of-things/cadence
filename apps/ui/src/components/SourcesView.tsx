@@ -50,13 +50,6 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
         </ul>
       )}
       {unconfirmed.length > 0 && <p className="src-unconfirmed">Not confirmed: {unconfirmed.join(', ')}</p>}
-      <details className="src-details">
-        <summary>Details</summary>
-        <ul className="src-notes">
-          <li>{ENGINE_LABELS[cap.playback.engine]} · {visuals}</li>
-          {cap.notes.map((n) => <li key={n}>{n}</li>)}
-        </ul>
-      </details>
       {cap.state === 'unauthenticated' && (
         <button className="btn btn-primary src-signin" onClick={() => session.signInRoute(cap.route)}>
           Sign in
@@ -67,6 +60,13 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
           Sign out
         </button>
       )}
+      <details className="src-details">
+        <summary>Details</summary>
+        <ul className="src-notes">
+          <li>{ENGINE_LABELS[cap.playback.engine]} · {visuals}</li>
+          {cap.notes.map((n) => <li key={n}>{n}</li>)}
+        </ul>
+      </details>
     </section>
   );
 }

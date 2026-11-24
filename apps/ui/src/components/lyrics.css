@@ -90,7 +90,7 @@
 .side-panel-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lyrics-rail .lyrics-scroll, .lyrics-rail .lyrics-plain {
   padding: 0 22px 0 24px;
-  mask-image: linear-gradient(transparent, #000 12%, #000 86%, transparent);
+  mask-image: linear-gradient(transparent, transparent 8px, #000 48px, #000 86%, transparent);
 }
 .lyrics-rail .lyrics-scroll::before { height: 30%; }
 /* The viewport's edge mask would fade an outline on it, so the unmasked
