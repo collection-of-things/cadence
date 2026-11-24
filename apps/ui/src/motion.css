@@ -51,8 +51,10 @@
   .side-panel { opacity: 0; }
 }
 
-/* opening Now Playing: the shell recedes as the room comes up */
-.app.is-immersive, .app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
+/* opening Now Playing: the shell leaves quickly (exits beat entrances) so
+   the page never ghosts through the cover as the room comes up */
+.app.is-immersive { transition: opacity 120ms ease-out; }
+.app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
 .npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out; }
 @starting-style {
   .npf-art, .npf-lyrics, .npf-corner { opacity: 0; }
