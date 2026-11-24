@@ -62,7 +62,8 @@
 /* Follow sits above the tools rather than over their right end */
 :is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > .lyrics-follow { bottom: 62px; }
 .lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
-.lyrics-tools button:disabled { color: oklch(1 0 0 / 0.72); cursor: default; }
+/* disabled reads as quiet text, not the app's 35% disabled fade on top of the pill's */
+.lyrics-tools button:disabled { opacity: 1; color: oklch(1 0 0 / 0.55); cursor: default; }
 .lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-tools button:hover:not(:disabled) { background: oklch(1 0 0 / 0.16); }

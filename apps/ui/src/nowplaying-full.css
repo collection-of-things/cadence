@@ -56,7 +56,6 @@
   .npf.has-rail { --rail: 0px; }
 }
 .npf.has-nav .playerbar.is-floating { left: calc(var(--sb) + var(--pb-inset)); }
-/* the art fills the left: the bar's start keeps clear of the corner buttons' column only */
 
 /* ---- lyrics: no card, just type on the field ---- */
 .npf-lyrics {

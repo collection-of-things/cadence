@@ -278,7 +278,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
           {!loading && error && <p className="list-empty" role="alert">{error}</p>}
           {!loading && !error && tracks.length === 0 && <p className="list-empty">No tracks on this {container.kind}.</p>}
           {!loading && !error && tracks.length > 0 && <TrackListToolbar {...controls} />}
-          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No tracks match.</p>}
+          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No songs match.</p>}
           {!loading && !error && (
             <SongList
               tracks={shown}

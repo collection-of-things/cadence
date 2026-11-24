@@ -44,7 +44,7 @@ export function TrackListToolbar({ filter, onFilter, sort, onSort }: ToolbarProp
   return (
     <div className="list-toolbar">
       {filter === null ? (
-        <button className="ghost-btn" aria-label="Filter tracks" title="Filter tracks" onClick={() => onFilter('')}>
+        <button className="ghost-btn" aria-label="Filter songs" title="Filter songs" onClick={() => onFilter('')}>
           <SearchIcon size={17} />
         </button>
       ) : (
@@ -52,8 +52,8 @@ export function TrackListToolbar({ filter, onFilter, sort, onSort }: ToolbarProp
           <SearchIcon size={16} />
           <input
             ref={inputRef}
-            aria-label="Filter tracks"
-            placeholder="Filter tracks"
+            aria-label="Filter songs"
+            placeholder="Filter songs"
             value={filter}
             onChange={(e) => onFilter(e.currentTarget.value)}
             onBlur={(e) => !e.currentTarget.value && onFilter(null)}

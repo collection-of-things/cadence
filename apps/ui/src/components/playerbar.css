@@ -125,6 +125,10 @@
 @container stage (max-width: 1000px) {
   .playerbar { grid-template-columns: minmax(0, 1fr) minmax(220px, 320px) auto; column-gap: 16px; }
 }
+/* narrow pages have a 24px gutter; the bar steps in to meet it halfway */
+@container stage (max-width: 820px) {
+  .playerbar.is-docked { --pb-inset: 14px; }
+}
 @container stage (max-width: 720px) {
   .playerbar {
     grid-template-columns: minmax(0, 1fr) auto auto;

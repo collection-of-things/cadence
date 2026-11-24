@@ -546,10 +546,10 @@
   .app .lyrics-rail {
     z-index: 3;
     top: calc(var(--gap) + 52px);
-    right: calc(var(--gap) + 10px);
+    right: var(--gap);
     bottom: calc(var(--gap) + var(--pb-clear) - 2px);
     width: min(var(--rail-w), calc(100vw - var(--sb) - 2 * var(--gap) - 40px));
-    border-radius: 16px;
+    border-radius: 16px 0 0 16px;
     background: linear-gradient(180deg, oklch(1 0 0 / 0.05), oklch(1 0 0 / 0) 120px), oklch(0.17 0.006 285 / 0.86);
     backdrop-filter: blur(40px) saturate(1.6);
     box-shadow: var(--pb-shadow);

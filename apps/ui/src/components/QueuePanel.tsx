@@ -125,7 +125,7 @@ export function QueuePanel() {
 
   return (
     <aside className="queue open" aria-label="Queue">
-      <span className="q-owner">{queue.owner === 'provider' ? 'Playing from the provider queue' : `${order.length} ${order.length === 1 ? 'track' : 'tracks'}`}</span>
+      <span className="q-owner">{queue.owner === 'provider' ? 'Playing from the provider queue' : `${order.length} ${order.length === 1 ? 'song' : 'songs'}`}</span>
       {order.length === 0 ? (
         <div className="q-empty">Queue is empty.</div>
       ) : (

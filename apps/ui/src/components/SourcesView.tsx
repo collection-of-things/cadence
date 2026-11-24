@@ -16,6 +16,9 @@ const ENGINE_LABELS: Record<RouteCapabilities['playback']['engine'], string> = {
   none: 'No engine',
 };
 
+/** "up to 32-bit…" reads as a sentence: capital first letter. */
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function RouteCard({ cap }: { cap: RouteCapabilities }) {
   const meta = ROUTE_STATE_META[cap.state];
   // What the route is confirmed to do leads as chips; what it might do is
@@ -39,7 +42,7 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
           {meta.label}
         </span>
       </header>
-      {cap.audio.qualityCeiling && <p className="src-quality">{cap.audio.qualityCeiling}</p>}
+      {cap.audio.qualityCeiling && <p className="src-quality">{sentence(cap.audio.qualityCeiling)}</p>}
       {cap.stateDetail && <p className="src-route-detail">{cap.stateDetail}</p>}
       {confirmed.length > 0 && (
         <ul className="cap-chips" aria-label="Capabilities">

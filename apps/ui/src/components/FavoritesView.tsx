@@ -72,7 +72,7 @@ export function FavoritesView() {
     <div className="album" style={FAVORITES_THEME}>
       <div className="stage-scroll album-scroll">
         <section className="album-hero">
-          <div className="album-art playlist-art"><StarIcon size={96} filled /></div>
+          <div className={`album-art playlist-art ${ready ? '' : 'is-empty'}`}><StarIcon size={96} filled /></div>
           <div className="album-info">
             <h1>Favourite Songs</h1>
             {/* Empty, the page explains itself below instead of offering dead controls. */}
@@ -100,7 +100,7 @@ export function FavoritesView() {
           {ready ? (
             <VirtualFavorites tracks={favorites} />
           ) : (
-            <EmptyState title="No favourites yet" body="Star a song in the player or from a track’s ⋯ menu and it will appear here." icon={<StarIcon size={28} />} />
+            <EmptyState title="No favourites yet" body="Star a song in the player or from a song’s ⋯ menu and it will appear here." icon={<StarIcon size={28} />} />
           )}
         </section>
       </div>

@@ -122,7 +122,7 @@
 .album .track-list > .track-row:nth-child(even) { --row-pill: oklch(1 0 0 / 0.028); }
 /* scrolled content fades out under the top bar like every page; the colour
    wash sits outside the scroller, so it stays put behind the bar */
-.album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 30px), #000 calc(var(--topbar-h) + 12px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset))); }
+.album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 14px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset))); }
 .album-corner { position: absolute; top: calc(var(--topbar-h) + 14px); right: 24px; display: flex; gap: 8px; }
 .album-corner .round-btn { width: 36px; height: 36px; border-radius: 50%; color: oklch(0.93 0 0); background: var(--capsule); }
 
@@ -138,6 +138,7 @@
   box-shadow: 0 24px 60px -18px oklch(0 0 0 / 0.7), 0 0 0 1px oklch(1 0 0 / 0.1);
 }
 .album-art img { width: 100%; height: 100%; object-fit: cover; }
+.playlist-art.is-empty { color: oklch(1 0 0 / 0.5); background: linear-gradient(145deg, oklch(1 0 0 / 0.1), oklch(1 0 0 / 0.03)); }
 .playlist-art { color: var(--acc-ink); background: linear-gradient(135deg, color-mix(in oklab, var(--acc) 70%, #fff), var(--acc) 50%, color-mix(in oklab, var(--acc) 60%, #000)); }
 /* long titles wrap clear of the corner pin button */
 .album-info { min-width: 0; padding-right: 48px; }
@@ -272,8 +273,9 @@
 .tr-time { justify-self: end; font-size: 12.5px; color: var(--t3); font-variant-numeric: tabular-nums; }
 
 .row-menu { position: relative; justify-self: end; }
-/* near the bottom it opens upward, growing from the button's top edge */
-.row-menu .menu.is-up { top: auto; bottom: calc(100% + 6px); transform-origin: bottom right; }
+/* row menus live in a portal, placed by TrackRow against the stage's bounds */
+.menu.is-portal { position: fixed; z-index: 70; }
+.menu.is-portal.is-up { transform-origin: bottom right; }
 .row-more { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--t2); opacity: 0.2; }
 @media (hover: none) { .row-more { opacity: 0.8; } }
 .row-more:hover, .row-more[aria-expanded='true'] { opacity: 1; color: var(--t1); background: var(--well-hi); }
@@ -322,7 +324,6 @@
 .fav-row:has(.row-menu [aria-expanded='true']) { z-index: 5; }
 @container stage (max-width: 820px) {
   .stage-scroll { padding-left: 24px; padding-right: 24px; }
-
   .album-hero { grid-template-columns: 160px minmax(0, 1fr); gap: 20px; }
   .album-actions { flex-wrap: wrap; }
   .track-row-list, .track-head { grid-template-columns: 36px 42px minmax(0, 1fr) minmax(0, 0.8fr) 56px 40px; }

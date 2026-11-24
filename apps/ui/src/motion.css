@@ -53,9 +53,11 @@
 
 /* opening Now Playing: the shell leaves quickly (exits beat entrances) so
    the page never ghosts through the cover as the room comes up */
-.app.is-immersive { transition: opacity 120ms ease-out; }
+.app.is-immersive { transition: opacity 90ms ease-out; }
 .app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
-.npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out; }
+/* the room comes up 70ms after the shell starts leaving (90ms), so the page
+   never shows through the cover or under the lyrics */
+.npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out 70ms; }
 @starting-style {
   .npf-art, .npf-lyrics, .npf-corner { opacity: 0; }
 }
@@ -149,7 +151,7 @@
   /* the player lifts off the bottom edge into Now Playing and settles back */
   .playerbar { transition: transform var(--t-spring) var(--spring-ui); }
   .npf-art img:not(.is-swap) { transition: transform var(--t-spring) var(--spring-ui); }
-  .npf-corner { transition: opacity 220ms ease-out, transform var(--shell-move); }
+  .npf-corner { transition: opacity 220ms ease-out 70ms, transform var(--shell-move); }
   .npf-lyrics .lyrics-scroll p { transition: color 240ms ease-out, transform var(--t-spring) var(--spring-ui); }
   /* the floating bar appears exactly where the docked one sat (.npf keeps
      the shell's --rail from the moment it opened) and widens to span the

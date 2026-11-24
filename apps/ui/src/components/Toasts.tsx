@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { prefersReducedMotion, useUi } from '../hooks';
 import { session } from '../session';
+import { TOAST_MS } from '../store';
 import { CloseIcon } from '../icons';
 import { RouteBadge } from './RouteBadge';
 import './controls.css';
 
 /** How long a dismissed toast takes to leave; matches `.toast.is-leaving`. */
 const EXIT_MS = 180;
-/** A toast starts leaving here, just before the store drops it at 6.5s, so a
+/** A toast starts leaving here, just before the store drops it, so a
  *  timed-out toast sinks away like a dismissed one instead of vanishing. */
-const AUTO_LEAVE_MS = 6500 - EXIT_MS - 40;
+const AUTO_LEAVE_MS = TOAST_MS - EXIT_MS - 40;
 
 /**
  * Route notices, bottom-left over the stage. They rise in from the bottom

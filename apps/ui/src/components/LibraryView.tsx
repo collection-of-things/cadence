@@ -8,6 +8,7 @@ import { useLibraryRead } from '../library';
 import type { LibraryTab } from '../navigation';
 import { SkeletonRows } from './Shelf';
 import { TrackRow } from './TrackRow';
+import { SHELL_MOVE_MS } from './SidePanel';
 
 const TITLES: Record<LibraryTab, string> = { albums: 'Albums', artists: 'Artists', songs: 'Songs' };
 
@@ -37,7 +38,19 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
 function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; onSelectAlbum(album: LibraryAlbum): void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const width = useElementWidth(scrollRef);
-  const columns = Math.max(1, Math.floor((width + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
+  const fit = (w: number) => Math.max(1, Math.floor((w + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
+  // While a side panel or the sidebar slides, the cards stretch in place and
+  // the column count changes once, after the stage settles.
+  const [columns, setColumns] = useState(() => fit(width));
+  useEffect(() => {
+    if (fit(width) === columns) return;
+    if (!document.querySelector('.app.is-moving')) {
+      setColumns(fit(width));
+      return;
+    }
+    const timer = setTimeout(() => setColumns(fit(scrollRef.current?.clientWidth ?? width)), SHELL_MOVE_MS + 60);
+    return () => clearTimeout(timer);
+  }, [width, columns]);
   const cardWidth = Math.max(0, (width - ALBUM_GAP * (columns - 1)) / columns);
   const virtualizer = useVirtualizer({
     count: Math.ceil(albums.length / columns),
@@ -137,7 +150,7 @@ function TracksTable({ query }: { query: string }) {
   });
 
   if (!tracks) return <SkeletonRows />;
-  if (!list.length) return <div className="lib-status">No tracks match.</div>;
+  if (!list.length) return <div className="lib-status">No songs match.</div>;
 
   return (
     <div className="tr-scroll" ref={scrollRef}>
@@ -225,7 +238,10 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
     <div className="lib">
       <header className="lib-head">
         <h1>{TITLES[tab]}</h1>
-        {counts && (
+        {/* while filtering, the header says what the list is showing */}
+        {query ? (
+          <span className="lib-count">Results for “{query}”</span>
+        ) : counts && (
           <span className="lib-count">
             {counts.albums} {counts.albums === 1 ? 'album' : 'albums'} · {counts.tracks} {counts.tracks === 1 ? 'song' : 'songs'}
           </span>
@@ -236,7 +252,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
           <SearchIcon size={16} />
           <input
             type="search"
-            placeholder={tab === 'artists' ? 'Filter artists' : tab === 'albums' ? 'Filter albums or artists' : 'Filter songs, artists, albums'}
+            placeholder="Search songs, artists, albums"
             aria-label="Search library"
             value={text}
             onChange={(e) => setText(e.currentTarget.value)}

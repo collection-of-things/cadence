@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { TrackRef } from '@cadence/protocol';
 import { session } from '../session';
 import { catalogSongId, openSongLink, targetForTrack, useLibrarySave } from '../catalogActions';
@@ -20,6 +21,28 @@ export function NowBars({ playing }: { playing: boolean }) {
 
 type MenuAction = (fn: () => void) => () => void;
 
+interface MenuPlace { up: boolean; right: number; top?: number; bottom?: number; maxHeight?: number }
+
+/**
+ * Where a row menu of `height` goes for its trigger: below if it fits above
+ * the docked player, else above if it fits under the top bar, else the
+ * roomier side with a capped, scrolling height.
+ */
+function placeMenu(trigger: DOMRect, height: number): MenuPlace {
+  const player = document.querySelector('.playerbar.is-docked')?.getBoundingClientRect();
+  const topbar = document.querySelector('.topbar')?.getBoundingClientRect();
+  const floor = Math.min(player?.top ?? Infinity, window.innerHeight) - 8;
+  const ceiling = (topbar?.bottom ?? 0) + 8;
+  const below = floor - trigger.bottom - 6;
+  const above = trigger.top - ceiling - 6;
+  const right = window.innerWidth - trigger.right;
+  const down = { up: false, right, top: trigger.bottom + 6 };
+  const up = { up: true, right, bottom: window.innerHeight - trigger.top + 6 };
+  if (height <= below) return down;
+  if (height <= above) return up;
+  return above > below ? { ...up, maxHeight: Math.max(120, above) } : { ...down, maxHeight: Math.max(120, below) };
+}
+
 /** Menu row for saving a streaming song; absent once saved or when signed out. */
 function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) {
   const { state, add } = useLibrarySave(targetForTrack(track));
@@ -33,31 +56,24 @@ function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) 
  */
 export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | undefined }) {
   const [open, setOpen] = useState(false);
-  // Opens on whichever side of the button has room between the top bar and
-  // the docked player; when neither fits it takes the roomier side and scrolls.
-  const [place, setPlace] = useState<{ up: boolean; maxHeight?: number }>({ up: false });
+  // Rendered in a portal (fixed, outside the masked, clipping list scrollers,
+  // so its glass blurs the rows) on whichever side of the button has room
+  // between the top bar and the docked player; when neither fits it takes
+  // the roomier side and scrolls.
+  const [place, setPlace] = useState<MenuPlace | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const favorite = useCollection((s) => s.favorites.some((t) => t.id === track.id));
 
   useLayoutEffect(() => {
     if (!open) {
-      setPlace({ up: false });
+      setPlace(null);
       return;
     }
     const menu = menuRef.current;
     const trigger = ref.current?.querySelector('.row-more')?.getBoundingClientRect();
     if (!menu || !trigger) return;
-    const height = menu.scrollHeight;
-    const player = document.querySelector('.playerbar.is-docked')?.getBoundingClientRect();
-    const topbar = document.querySelector('.topbar')?.getBoundingClientRect();
-    const floor = Math.min(player?.top ?? Infinity, window.innerHeight) - 8;
-    const ceiling = (topbar?.bottom ?? 0) + 8;
-    const below = floor - trigger.bottom - 6;
-    const above = trigger.top - ceiling - 6;
-    if (height <= below) return;
-    if (height <= above) setPlace({ up: true });
-    else setPlace(above > below ? { up: true, maxHeight: above } : { up: false, maxHeight: below });
+    setPlace(placeMenu(trigger, menu.scrollHeight));
   }, [open]);
 
   // The menu is anchored to its row: scrolling the row's own list or
@@ -78,10 +94,11 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
   useEffect(() => {
     if (!open) return;
     const away = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener('pointerdown', away);
-    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     return () => document.removeEventListener('pointerdown', away);
   }, [open]);
 
@@ -112,12 +129,14 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
       >
         <MoreIcon size={18} />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={menuRef}
-          className={`menu ${place.up ? 'is-up' : ''}`}
+          className={`menu is-portal ${place?.up ? 'is-up' : ''}`}
           role="menu"
-          style={place.maxHeight ? { maxHeight: place.maxHeight, overflowY: 'auto' } : undefined}
+          // first frame: measured off-screen, then placed before paint
+          style={place ? { top: place.top ?? 'auto', bottom: place.bottom ?? 'auto', right: place.right, maxHeight: place.maxHeight, overflowY: place.maxHeight ? 'auto' : undefined } : { top: 0, bottom: 'auto', right: 0, visibility: 'hidden' }}
+          onClick={(e) => e.stopPropagation()}
         >
           <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
           <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>
@@ -127,7 +146,8 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
           </button>
           {songId && nav && <button role="menuitem" onClick={goTo('album')}>Go to Album</button>}
           {songId && nav && <button role="menuitem" onClick={goTo('artist')}>Go to Artist</button>}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
