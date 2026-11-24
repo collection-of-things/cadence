@@ -71,6 +71,15 @@ export function App() {
   }, []);
   useMediaSession();
 
+  // An open album's colour tints the window's own surface (sidebar, side
+  // panel and the frame around the stage), which lives on the root.
+  const shellTint = pageTint.active ? String(pageTint.style?.['--acc'] ?? '') : '';
+  useLayoutEffect(() => {
+    const root = document.documentElement.style;
+    if (shellTint) root.setProperty('--shell-tint', shellTint);
+    else root.removeProperty('--shell-tint');
+  }, [shellTint]);
+
   useEffect(() => {
     if (track) recordPlayed(track);
   }, [track]);
@@ -190,7 +199,6 @@ export function App() {
     <div
       className={`app ${expanded ? 'is-immersive' : ''} ${panelShown ? 'has-rail' : ''} ${shellMoving ? 'is-moving' : ''}`}
       data-svc={isApple ? 'apple' : 'local'}
-      style={pageTint.active ? { '--shell-tint': pageTint.style?.['--acc'] } : undefined}
     >
       <Sidebar location={location} onNavigate={navigate} />
       <div className="stage">

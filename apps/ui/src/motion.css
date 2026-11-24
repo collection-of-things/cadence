@@ -70,6 +70,17 @@
 
 /* switching service swaps the whole library */
 .platform-fade { transition: opacity var(--t-fade) ease-out; }
+
+/* a new page arrives as one piece: the page carries everything on it, so no
+   row or card staggers in after it (pages change tens of times a day) */
+.page { transition: opacity 200ms ease-out; }
+@starting-style {
+  .page { opacity: 0; }
+}
+
+/* the card play disc and row actions fade in where the pointer is */
+.card-play, .row-more, .q-acts .icon-btn { transition: opacity 120ms ease-out, background-color 110ms ease, color 110ms ease; }
+.track-row, .q-row, .artist-row, .src-hit, .album-card, .square-card { transition: background-color 90ms ease; }
 .npf-nav { transition: opacity 200ms ease-out; }
 .toast { transition: opacity 180ms ease-out; }
 .menu { transition: opacity 120ms ease-out; }
@@ -85,6 +96,28 @@
     transition: color 110ms ease, background-color 110ms ease, transform var(--t-press) var(--ease-out);
   }
   :is(.poster-open, .square-open, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
+
+  /* the page rises the last few pixels as it fades in */
+  .page { transition: opacity 200ms ease-out, translate 260ms var(--ease-out); }
+  @starting-style {
+    .page { translate: 0 6px; }
+  }
+
+  /* the playing marker: four bars breathing at different rates, so the
+     row reads as playing from across the room */
+  .now-bars.is-playing i, .q-eq.on i { animation: now-bar 820ms ease-in-out infinite alternate both; }
+  .now-bars.is-playing i:nth-child(2), .q-eq.on i:nth-child(2) { animation-duration: 560ms; animation-delay: -240ms; }
+  .now-bars.is-playing i:nth-child(3), .q-eq.on i:nth-child(3) { animation-duration: 700ms; animation-delay: -420ms; }
+  .now-bars.is-playing i:nth-child(4) { animation-duration: 940ms; animation-delay: -120ms; }
+
+  /* the card play disc rises off the cover's corner as it appears */
+  .card-play { transition: opacity 140ms ease-out, transform 200ms var(--ease-out), background-color 110ms ease; transform: translateY(4px) scale(0.94); }
+  .card-play:focus-visible { transform: none; }
+  @media (hover: hover) and (pointer: fine) {
+    .poster-card:hover .card-play, .square-card:hover .card-play { transform: none; }
+  }
+  @media (hover: none) { .card-play { transform: none; } }
+  .poster-card .card-play:active, .square-card .card-play:active { transform: scale(0.92); }
 
   /* switches: the indicator glides to the chosen side */
   .side-switch-ind { transition: transform 300ms var(--spring-ui); }
@@ -127,5 +160,10 @@
   }
 }
 
+@keyframes now-bar {
+  from { transform: scaleY(0.22); }
+  to { transform: scaleY(1); }
+}
+
 /* Keyboard-initiated changes land on the next frame (see instant.ts). */
-:root[data-instant] :is(.app, .app > .sidebar, .stage, .ambient, .side-panel, .side-switch-ind, .playerbar, .ambient-veil, .npf-art, .npf-art img, .npf-lyrics, .npf-corner) { transition: none !important; }
+:root[data-instant] :is(.app, .app > .sidebar, .stage, .ambient, .side-panel, .side-switch-ind, .playerbar, .ambient-veil, .npf-art, .npf-art img, .npf-lyrics, .npf-corner, .page) { transition: none !important; }

@@ -20,8 +20,11 @@
   --panel-glass: oklch(0.17 0.005 285 / 0.36);
   --panel-glass-hi: oklch(0.21 0.006 285 / 0.78);
   /* top-bar capsules */
-  --capsule: oklch(0 0 0 / 0.34);
-  --capsule-hi: oklch(0 0 0 / 0.5);
+  /* mid-grey glass: lighter than a dark page, darker than a bright cover,
+     so the white glyph on it always reads */
+  --capsule: oklch(0.32 0.006 285 / 0.42);
+  --capsule-hi: oklch(0.4 0.006 285 / 0.5);
+  --capsule-ring: inset 0 0 0 1px oklch(1 0 0 / 0.07), inset 0 1px 0 oklch(1 0 0 / 0.06);
   --well: oklch(1 0 0 / 0.055);
   --well-hi: oklch(1 0 0 / 0.095);
   --sheen: linear-gradient(180deg, oklch(1 0 0 / 0.05), oklch(1 0 0 / 0) 120px);
@@ -90,9 +93,7 @@
 
   --grain-opacity: 0.05;
   /* the docked player's height plus a small gap */
-  --pb-clear: 120px;
-  /* how much side-panel glass shows under the stage */
-  --stage-bottom: 0px;
+  --pb-clear: 112px;
   /* sidebar width, and its grid column (0 while the sidebar is hidden) */
   --sb: 236px;
   --sidebar-w: var(--sb);
@@ -101,8 +102,14 @@
   /* width the OS window controls take at the top right (0 outside Electron) */
   --wco-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
-@media (max-width: 1360px) {
+/* a slimmer sidebar on mid-size windows; below 900px it is an icon rail (shell.css) */
+@media (min-width: 901px) and (max-width: 1360px) {
   :root { --sb: 218px; }
+}
+/* Here rather than in shell.css: this file loads last, so its base --sb
+   would otherwise win over the icon rail's width. */
+@media (max-width: 900px) {
+  :root { --sb: 64px; }
 }
 
 * {
@@ -210,9 +217,12 @@ button:disabled {
 }
 .btn:active:not(:disabled) { transform: scale(0.965); }
 .btn-ghost { background: transparent; color: var(--t2); }
+/* the one thing to do on an empty page: solid white, like Play */
+.btn-primary { padding: 0 20px; border-radius: var(--r-pill); background: var(--t1); color: oklch(0.16 0.006 285); }
 @media (hover: hover) and (pointer: fine) {
   .btn:hover:not(:disabled) { background: oklch(1 0 0 / 0.13); }
   .btn-ghost:hover:not(:disabled) { background: var(--well); color: var(--t1); }
+  .btn-primary:hover:not(:disabled) { background: #fff; }
 }
 
 .route-badge {
@@ -237,7 +247,7 @@ button:disabled {
 .queue { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .q-owner { flex: none; padding: 2px 18px 8px; font-size: 11.5px; font-weight: 550; color: var(--t4); font-variant-numeric: tabular-nums; }
 
-.q-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 10px; scrollbar-width: none; }
+.q-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 0 0 10px; scrollbar-width: none; }
 .q-scroll::-webkit-scrollbar { display: none; }
 .q-row-wrap { position: absolute; top: 0; left: 0; right: 0; }
 
@@ -387,6 +397,7 @@ button:disabled {
 
 .album-grid {
   height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -440,6 +451,7 @@ button:disabled {
 
 .artist-list {
   height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -491,6 +503,7 @@ button:disabled {
 
 .src {
   height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 20px 24px var(--pb-clear);
   display: flex;
@@ -760,8 +773,8 @@ button:disabled {
 /* Bottom-left over the stage, just above the docked player. */
 .toasts {
   position: fixed;
-  left: calc(var(--sidebar-w) + 24px);
-  bottom: calc(var(--pb-clear) - 6px);
+  left: calc(var(--stage-l) + 18px);
+  bottom: calc(var(--pb-clear) + var(--gap) + 8px);
   z-index: 1200;
   display: flex;
   flex-direction: column;
@@ -779,7 +792,6 @@ button:disabled {
   font-weight: 550;
   background: var(--sheen), oklch(0.21 0.007 285 / 0.9);
   backdrop-filter: blur(40px);
-  -webkit-backdrop-filter: blur(40px);
   box-shadow: var(--elev-sm);
 }
 /* dismissed: back out the bottom edge it came from, faster than it arrived */
@@ -1034,7 +1046,7 @@ button:disabled {
 .lyrics-rail .queue .route-badge { display: none; }
 
 @media (max-width: 1024px) {
-  .toasts { top: 68px; bottom: auto; left: calc(var(--sidebar-w) + 16px); }
+  .toasts { top: 68px; bottom: auto; left: calc(var(--stage-l) + 16px); }
 }
 
 /* ---------- library pages ---------- */
@@ -1072,7 +1084,8 @@ button:disabled {
 .lib .artist-avatar { width: 40px; height: 40px; font-size: 15px; color: var(--acc-ink); background: linear-gradient(140deg, var(--acc), color-mix(in oklab, var(--acc) 40%, #fff)); }
 .lib .artist-name { font-size: 13.5px; font-weight: 650; }
 .lib .artist-counts { font-size: 12px; color: var(--t4); }
-.tr-scroll { height: 100%; overflow-y: auto; padding-bottom: calc(var(--pb-clear) + 60px); }
+.tr-scroll, .lib .album-grid, .lib .artist-list { scrollbar-width: thin; scrollbar-color: oklch(1 0 0 / 0.14) transparent; }
+.tr-scroll { height: 100%; overflow-x: hidden; overflow-y: auto; padding-bottom: calc(var(--pb-clear) + 60px); }
 .tr-row-wrap { position: absolute; top: 0; left: 0; right: 0; padding-bottom: 5px; }
 .tr-row-wrap .track-row { min-height: 51px; }
 .lib-roots { margin: 0 32px 10px; border: 0; border-radius: 12px; background: var(--well); padding: 8px 14px; }
@@ -1091,19 +1104,23 @@ button:disabled {
    and the two move as one; Now Playing opens it to the whole window. */
 .ambient {
   position: fixed;
-  top: 0;
-  bottom: var(--stage-bottom);
-  left: var(--sidebar-w);
-  right: 0;
+  top: var(--gap);
+  bottom: var(--gap);
+  left: var(--stage-l);
+  right: var(--gap);
   z-index: 0;
   overflow: hidden;
+  border-radius: var(--stage-radius);
   background: var(--bg);
+  /* the window's own surface around the card: the sidebar and side panel
+     are transparent, so this one spread paints all of it, corners included */
+  box-shadow: 0 0 0 100vmax var(--shell-surface);
   pointer-events: none;
 }
 @media (min-width: 1001px) {
-  .app.has-rail ~ .ambient { right: var(--rail-w); }
+  .app.has-rail ~ .ambient { right: max(var(--rail-w), var(--gap)); }
 }
-.app.is-immersive ~ .ambient { inset: 0; }
+.app.is-immersive ~ .ambient { inset: 0; border-radius: 0; }
 /* every layer keeps the window's size, so moving edges only crop it */
 .ambient > * { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
 .ambient canvas { opacity: 0; }

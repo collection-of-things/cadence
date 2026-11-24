@@ -3,6 +3,8 @@
 .lyrics-scroll, .lyrics-plain {
   position: absolute;
   inset: 0;
+  /* the sung line scales up from its left edge; it never scrolls sideways */
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
   user-select: text;
@@ -44,16 +46,19 @@
   gap: 2px;
   padding: 3px;
   border-radius: var(--r-pill);
-  background: oklch(1 0 0 / 0.1);
+  background: oklch(1 0 0 / 0.08);
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.06);
   backdrop-filter: blur(12px);
   color: #fff;
   font-size: 12.5px;
   font-weight: 600;
   text-shadow: none;
-  opacity: 0.55;
+  opacity: 0.6;
   transition: opacity 140ms ease-out;
 }
 .lyrics-tools:hover, .lyrics-tools:focus-within { opacity: 1; }
+/* with the tools showing, the lines end (and fade) above them, never under */
+:is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > :is(.lyrics-scroll, .lyrics-plain, .lyrics-empty) { bottom: 52px; }
 .lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
 .lyrics-tools button:disabled { color: oklch(1 0 0 / 0.6); }
 .lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
@@ -70,7 +75,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--sheen), var(--shell-surface);
 }
 /* it stays mounted while closing; see usePanelMounted */
 .side-panel:not(.is-open) { transform: translateX(20px); opacity: 0; }
