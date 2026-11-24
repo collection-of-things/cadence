@@ -49,10 +49,11 @@
   box-shadow: var(--pb-shadow);
 }
 
-/* floating: the same bar in the same place on the window, over Now Playing */
+/* floating: over Now Playing the bar spans the window evenly. It appears
+   in the docked bar's place and widens out (motion.css). */
 .playerbar.is-floating {
-  left: calc(var(--stage-l) + var(--pb-inset));
-  right: calc(max(var(--rail), var(--gap)) + var(--pb-inset));
+  left: calc(var(--gap) + var(--pb-inset));
+  right: calc(var(--gap) + var(--pb-inset));
   bottom: calc(var(--gap) + var(--pb-inset));
   border-radius: var(--pb-radius);
   box-shadow: var(--pb-shadow);
@@ -140,9 +141,10 @@
   .pb-art { width: 46px; height: 46px; }
   .pb-open { gap: 11px; }
 }
+/* tightest: the panel toggles and full screen stay; output and volume go
+   (the keyboard keeps M and Ctrl+arrows) */
 @container pill (max-width: 520px) {
-  .playerbar .pb-right > .ctl-btn:not(:last-child) { display: none; }
-  .playerbar .pb-right .vol { display: none; }
+  .playerbar .pb-right .vol, .playerbar .pb-right .dev-picker { display: none; }
 }
 
 /* ---- play on: this computer or a paired phone ---- */

@@ -79,7 +79,7 @@ export function FavoritesView() {
             {ready ? (
               <>
                 <div className="album-chips">
-                  <span className="chip"><SongIcon size={13} />{favorites.length} {favorites.length === 1 ? 'track' : 'tracks'}</span>
+                  <span className="chip"><SongIcon size={13} />{favorites.length} {favorites.length === 1 ? 'song' : 'songs'}</span>
                 </div>
                 <div className="album-actions">
                   <button className="round-btn album-round" aria-label="Shuffle favourites" title="Shuffle"

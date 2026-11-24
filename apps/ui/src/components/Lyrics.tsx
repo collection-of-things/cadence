@@ -135,6 +135,7 @@ export function Lyrics({ track }: { track: TrackRef }) {
             el.classList.toggle('past', i < next);
             const dist = i - next;
             el.classList.toggle('d1', dist === 1);
+            el.classList.toggle('p1', dist === -1);
             el.classList.toggle('d2', dist === 2);
             el.classList.toggle('d3', dist >= 3);
           });

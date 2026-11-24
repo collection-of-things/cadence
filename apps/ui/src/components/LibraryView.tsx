@@ -113,7 +113,7 @@ function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(
                 </span>
                 <span className="artist-name">{a.name}</span>
                 <span className="artist-counts">
-                  {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}
+                  {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'song' : 'songs'}
                 </span>
               </button>
             </div>
@@ -236,7 +236,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
           <SearchIcon size={16} />
           <input
             type="search"
-            placeholder="Search title, artist, album"
+            placeholder={tab === 'artists' ? 'Filter artists' : tab === 'albums' ? 'Filter albums or artists' : 'Filter songs, artists, albums'}
             aria-label="Search library"
             value={text}
             onChange={(e) => setText(e.currentTarget.value)}

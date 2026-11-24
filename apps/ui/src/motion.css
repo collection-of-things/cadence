@@ -46,7 +46,7 @@
 /* the side panels */
 .stage { transition: box-shadow 140ms ease-out; }
 .side-panel, .app > .sidebar { transition: opacity 200ms ease; }
-:root[data-sidebar='hidden'] .app > .sidebar { transition: opacity 200ms ease, visibility 0s linear 200ms; }
+:root[data-sidebar='hidden'] .app > .sidebar { transition: opacity 90ms ease-out, visibility 0s linear 200ms; }
 @starting-style {
   .side-panel { opacity: 0; }
 }
@@ -138,7 +138,8 @@
   }
   .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move), top var(--shell-move), bottom var(--shell-move), border-radius var(--shell-move); }
   .side-panel, .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease; }
-  :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease, visibility 0s linear 260ms; }
+  /* hiding: the sidebar is gone before the see-through stage crosses it */
+  :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 90ms ease-out, visibility 0s linear 260ms; }
   @starting-style {
     .side-panel { transform: translateX(20px); }
   }
@@ -148,10 +149,13 @@
   .npf-art img:not(.is-swap) { transition: transform var(--t-spring) var(--spring-ui); }
   .npf-corner { transition: opacity 220ms ease-out, transform var(--shell-move); }
   .npf-lyrics .lyrics-scroll p { transition: color 240ms ease-out, transform var(--t-spring) var(--spring-ui); }
-  /* the docked and floating bars share one resting place, so the bar
-     itself stays still while Now Playing comes up around it */
+  /* the floating bar appears exactly where the docked one sat (.npf keeps
+     the shell's --rail from the moment it opened) and widens to span the
+     window as the room comes up around it */
+  .playerbar.is-floating { transition: transform var(--t-spring) var(--spring-ui), left 340ms var(--ease-drawer), right 340ms var(--ease-drawer); }
   @starting-style {
     .npf-art img:not(.is-swap) { transform: scale(1.03); }
+    .playerbar.is-floating { left: calc(var(--stage-l) + var(--pb-inset)); right: calc(max(var(--rail), var(--gap)) + var(--pb-inset)); }
   }
 
   /* each surface enters from what opened it and leaves the same way */

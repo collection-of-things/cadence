@@ -54,7 +54,7 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
             <div className="album-chips">
               {genre && <span className="chip"><NoteIcon size={13} />{genre}</span>}
               {year && <span className="chip"><ClockIcon size={13} />{year}</span>}
-              <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'track' : 'tracks'}</span>
+              <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'song' : 'songs'}</span>
             </div>
             <div className="album-actions">
               <button className="round-btn album-round" aria-label="Shuffle album" title="Shuffle" disabled={!ready} onClick={() => tracks && session.playShuffled(tracks, origin)}>

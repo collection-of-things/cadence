@@ -251,7 +251,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
               {container.year !== undefined && <span className="chip"><ClockIcon size={12} />{container.year}</span>}
               <span className="chip">
                 <SongIcon size={12} />
-                {page?.truncated ? `First ${tracks.length} tracks` : `${count} ${count === 1 ? 'track' : 'tracks'}`}
+                {page?.truncated ? `First ${tracks.length} songs` : `${count} ${count === 1 ? 'song' : 'songs'}`}
               </span>
               {totalDuration > 0 && <span className="chip">{formatTime(totalDuration)}</span>}
             </div>

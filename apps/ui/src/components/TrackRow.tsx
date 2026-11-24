@@ -33,22 +33,46 @@ function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) 
  */
 export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | undefined }) {
   const [open, setOpen] = useState(false);
-  // Opens upward when there is no room above the docked player (or the window edge).
-  const [up, setUp] = useState(false);
+  // Opens on whichever side of the button has room between the top bar and
+  // the docked player; when neither fits it takes the roomier side and scrolls.
+  const [place, setPlace] = useState<{ up: boolean; maxHeight?: number }>({ up: false });
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const favorite = useCollection((s) => s.favorites.some((t) => t.id === track.id));
 
   useLayoutEffect(() => {
     if (!open) {
-      setUp(false);
+      setPlace({ up: false });
       return;
     }
-    const menu = menuRef.current?.getBoundingClientRect();
-    if (!menu) return;
+    const menu = menuRef.current;
+    const trigger = ref.current?.querySelector('.row-more')?.getBoundingClientRect();
+    if (!menu || !trigger) return;
+    const height = menu.scrollHeight;
     const player = document.querySelector('.playerbar.is-docked')?.getBoundingClientRect();
+    const topbar = document.querySelector('.topbar')?.getBoundingClientRect();
     const floor = Math.min(player?.top ?? Infinity, window.innerHeight) - 8;
-    if (menu.bottom > floor) setUp(true);
+    const ceiling = (topbar?.bottom ?? 0) + 8;
+    const below = floor - trigger.bottom - 6;
+    const above = trigger.top - ceiling - 6;
+    if (height <= below) return;
+    if (height <= above) setPlace({ up: true });
+    else setPlace(above > below ? { up: true, maxHeight: above } : { up: false, maxHeight: below });
+  }, [open]);
+
+  // The menu is anchored to its row: scrolling the row's own list or
+  // resizing the window closes it (other panels scrolling, like synced
+  // lyrics, leave it alone).
+  useEffect(() => {
+    if (!open) return;
+    const scroller = ref.current?.closest('.tr-scroll, .stage-scroll');
+    const close = () => setOpen(false);
+    scroller?.addEventListener('scroll', close, { passive: true });
+    window.addEventListener('resize', close);
+    return () => {
+      scroller?.removeEventListener('scroll', close);
+      window.removeEventListener('resize', close);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -89,7 +113,12 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
         <MoreIcon size={18} />
       </button>
       {open && (
-        <div ref={menuRef} className={`menu ${up ? 'is-up' : ''}`} role="menu">
+        <div
+          ref={menuRef}
+          className={`menu ${place.up ? 'is-up' : ''}`}
+          role="menu"
+          style={place.maxHeight ? { maxHeight: place.maxHeight, overflowY: 'auto' } : undefined}
+        >
           <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
           <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>
           <AddToLibraryItem track={track} act={act} />
@@ -162,13 +191,13 @@ export function TrackRow({ track, index, variant, albumArtist, onPlay, nav }: Tr
       )}
       <span className="tr-main">
         <span className="tr-title">
-          <span className="tr-title-text">{track.title}</span>
+          <span className="tr-title-text" title={track.title}>{track.title}</span>
           {favorite && <span className="tr-fav" aria-label="Favourite"><StarIcon size={13} filled /></span>}
         </span>
-        {(variant === 'song' || (variant === 'album' && artists !== albumArtist)) && <span className="tr-sub">{artists}</span>}
+        {(variant === 'song' || (variant === 'album' && artists !== albumArtist)) && <span className="tr-sub" title={artists}>{artists}</span>}
       </span>
-      {variant === 'list' && <span className="tr-col tr-artist">{artists}</span>}
-      {variant === 'list' && <span className="tr-col tr-album">{track.album ?? ''}</span>}
+      {variant === 'list' && <span className="tr-col tr-artist" title={artists}>{artists}</span>}
+      {variant === 'list' && <span className="tr-col tr-album" title={track.album}>{track.album ?? ''}</span>}
       <span className="tr-time">{formatTime(track.durationMs)}</span>
       <TrackMenu track={track} nav={nav} />
     </div>
