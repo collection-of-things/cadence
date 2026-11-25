@@ -9,9 +9,21 @@
  * webContents.executeJavaScript into the page world.
  */
 
-import { BrowserWindow, session, type WebContents } from "electron";
+import { app, BrowserWindow, session, type WebContents } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Closing a revealed provider window hides it (it IS the playback view) —
+// except while the app quits, when every window must be allowed to close.
+let appQuitting = false;
+let quitWatched = false;
+function watchQuit(): void {
+  if (quitWatched) return;
+  quitWatched = true;
+  app.on("before-quit", () => {
+    appQuitting = true;
+  });
+}
 
 // Works under both the bundled CJS build (tsup emits __dirname) and ESM.
 const moduleDir =
@@ -200,6 +212,22 @@ export class ProviderSession {
         trackPopup(child);
       });
 
+      // The sign-in view is this same window, revealed. A user closing it
+      // must not destroy the playback page (and the in-memory sign-in with
+      // it) — hide it instead. Quit and our own teardown (destroy()) are
+      // unaffected: destroy() emits no 'close'.
+      watchQuit();
+      win.on("close", (event) => {
+        if (appQuitting) return;
+        event.preventDefault();
+        win.hide();
+      });
+      // However the window goes, forget it so the next prepare() rebuilds
+      // the view instead of driving a destroyed one.
+      win.on("closed", () => {
+        if (this.win === win) this.win = null;
+      });
+
       // Assign before loadURL: reveal() and eval() see the window even while
       // the page is still loading (or the load fails). A reset() during the
       // load must not let the stale attempt overwrite the fresh state.
@@ -331,6 +359,55 @@ export class ProviderSession {
     }
   }
 
+  /**
+   * Make sure the provider page can restore its login: copy cookie `name`
+   * onto `targetDomain` from the first of `sourceDomains` holding it, when
+   * the target lacks it or holds a different value. Returns true if it set
+   * one. Values never leave the partition.
+   */
+  async promoteCookie(name: string, sourceDomains: string[], targetDomain: string): Promise<boolean> {
+    const run = this.promoteCookieOnce(name, sourceDomains, targetDomain, this.dataEpoch);
+    this.promotions.add(run);
+    try {
+      return await run;
+    } finally {
+      this.promotions.delete(run);
+    }
+  }
+
+  /** Bumped by clearData: a promotion that read cookies before a sign-out
+   * cleared them must not write the token back. */
+  private dataEpoch = 0;
+  private readonly promotions = new Set<Promise<boolean>>();
+
+  private async promoteCookieOnce(name: string, sourceDomains: string[], targetDomain: string, epoch: number): Promise<boolean> {
+    try {
+      const ses = session.fromPartition(this.partition);
+      const all = await ses.cookies.get({ name });
+      const source = sourceDomains
+        .map((d) => all.find((c) => c.domain === d))
+        .find((c) => c !== undefined && c.value !== "");
+      if (source === undefined) return false;
+      const target = all.find((c) => c.domain === targetDomain);
+      if (target?.value === source.value) return false;
+      if (epoch !== this.dataEpoch) return false;
+      await ses.cookies.set({
+        url: `https://${targetDomain.replace(/^\./, "")}/`,
+        domain: targetDomain,
+        path: "/",
+        name,
+        value: source.value,
+        secure: true,
+        httpOnly: false,
+        sameSite: "no_restriction",
+        ...(source.expirationDate !== undefined ? { expirationDate: source.expirationDate } : {}),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Destroy the view. The session partition (and login) persists. */
   async release(): Promise<void> {
     // Popups die even when the parent is already gone — a dead view's
@@ -357,17 +434,28 @@ export class ProviderSession {
 
   /** Show the view (sign-in flow). Caller decides how to surface it. */
   reveal(): void {
-    this.win?.show();
-    this.win?.focus();
+    const win = this.liveWindow();
+    win?.show();
+    win?.focus();
   }
 
   hide(): void {
-    this.win?.hide();
+    this.liveWindow()?.hide();
+  }
+
+  /** The view's window, or null once it is gone — timers that outlive the
+   * window (sign-in fallbacks) must never touch a destroyed one. */
+  private liveWindow(): BrowserWindow | null {
+    const win = this.win;
+    return win !== null && !win.isDestroyed() ? win : null;
   }
 
   /** Wipe the partition's storage — full provider sign-out. Throws on
    * failure: callers must not report a clean sign-out they can't confirm. */
   async clearData(): Promise<void> {
+    this.dataEpoch++;
+    // A promotion already writing finishes first, so the clear removes it.
+    await Promise.all([...this.promotions]);
     await session.fromPartition(this.partition).clearStorageData();
   }
 }
