@@ -1,0 +1,181 @@
+# Before (main @ e671201)
+
+Council scores for this stage: council rated the before state Sol 5.7–6.0, Gemini 5.5, Opus 5
+
+Videos: [walkthrough.mp4](https://github.com/collection-of-things/cadence/blob/pr-assets/polish-app-ui/r0-before/walkthrough.mp4) · [motion-quarter-speed.mp4](https://github.com/collection-of-things/cadence/blob/pr-assets/polish-app-ui/r0-before/motion-quarter-speed.mp4)
+
+### Home (`01-home`)
+
+![01-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/01-home.jpg)
+
+### Home, card hover (`02-home-card-hover`)
+
+![02-home-card-hover](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/02-home-card-hover.jpg)
+
+### Home, scrolled (`03-home-scrolled`)
+
+![03-home-scrolled](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/03-home-scrolled.jpg)
+
+### Songs (`04-songs`)
+
+![04-songs](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/04-songs.jpg)
+
+### Songs, row hover (`05-songs-row-hover`)
+
+![05-songs-row-hover](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/05-songs-row-hover.jpg)
+
+### Songs, row menu (`06-songs-menu`)
+
+![06-songs-menu](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/06-songs-menu.jpg)
+
+### Albums (`07-albums`)
+
+![07-albums](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/07-albums.jpg)
+
+### Artists (`08-artists`)
+
+![08-artists](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/08-artists.jpg)
+
+### Album (`09-album-detail`)
+
+![09-album-detail](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/09-album-detail.jpg)
+
+### Album, scrolled (`10-album-detail-scrolled`)
+
+![10-album-detail-scrolled](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/10-album-detail-scrolled.jpg)
+
+### Artist (`11-artist-detail`)
+
+![11-artist-detail](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/11-artist-detail.jpg)
+
+### Favourite Songs (`12-favourites`)
+
+![12-favourites](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/12-favourites.jpg)
+
+### Sources (`13-sources`)
+
+![13-sources](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/13-sources.jpg)
+
+### Search (`14-search`)
+
+![14-search](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/14-search.jpg)
+
+### Up Next panel (`15-queue`)
+
+![15-queue](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/15-queue.jpg)
+
+### Lyrics panel (`16-lyrics`)
+
+![16-lyrics](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/16-lyrics.jpg)
+
+### Now Playing (`17-now-playing`)
+
+![17-now-playing](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/17-now-playing.jpg)
+
+### Settings (`18-settings`)
+
+![18-settings](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/18-settings.jpg)
+
+### Settings, appearance (`19-settings-appearance`)
+
+![19-settings-appearance](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/19-settings-appearance.jpg)
+
+### Sidebar hidden (`20-sidebar-hidden`)
+
+![20-sidebar-hidden](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/20-sidebar-hidden.jpg)
+
+### Apple Music, signed out (`21-apple-home`)
+
+![21-apple-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/21-apple-home.jpg)
+
+### Play on menu (`22-play-on-menu`)
+
+![22-play-on-menu](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/22-play-on-menu.jpg)
+
+### Sidebar hover (`23-sidebar-row-hover`)
+
+![23-sidebar-row-hover](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/23-sidebar-row-hover.jpg)
+
+### Search focused (`24-search-focus`)
+
+![24-search-focus](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/24-search-focus.jpg)
+
+### Row menu near the player (`25-songs-menu-bottom`)
+
+![25-songs-menu-bottom](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/25-songs-menu-bottom.jpg)
+
+### Favourites, empty (`26-empty-favourites`)
+
+![26-empty-favourites](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/26-empty-favourites.jpg)
+
+### 1100px (`30-narrow-1100-home`)
+
+![30-narrow-1100-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/30-narrow-1100-home.jpg)
+
+### 900px (`31-narrow-900-home`)
+
+![31-narrow-900-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/31-narrow-900-home.jpg)
+
+### 900px Songs (`32-narrow-900-songs`)
+
+![32-narrow-900-songs](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/32-narrow-900-songs.jpg)
+
+### 720px (minimum) (`33-min-720-home`)
+
+![33-min-720-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/33-min-720-home.jpg)
+
+### 720px Album (`34-min-720-album`)
+
+![34-min-720-album](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/34-min-720-album.jpg)
+
+### 1100px Up Next (`35-narrow-1100-queue`)
+
+![35-narrow-1100-queue](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/35-narrow-1100-queue.jpg)
+
+### 1920px (`36-wide-1920-home`)
+
+![36-wide-1920-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/36-wide-1920-home.jpg)
+
+### 900px Up Next (`37-narrow-900-queue`)
+
+![37-narrow-900-queue](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/37-narrow-900-queue.jpg)
+
+### 900px Lyrics (`38-narrow-900-lyrics`)
+
+![38-narrow-900-lyrics](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/38-narrow-900-lyrics.jpg)
+
+### 1040px Up Next (`39-mid-1040-queue`)
+
+![39-mid-1040-queue](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/39-mid-1040-queue.jpg)
+
+### Worst-case names: Home (`40-worst-home`)
+
+![40-worst-home](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/40-worst-home.jpg)
+
+### Worst-case: Songs (`41-worst-songs`)
+
+![41-worst-songs](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/41-worst-songs.jpg)
+
+### Worst-case: Album (`42-worst-album`)
+
+![42-worst-album](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/42-worst-album.jpg)
+
+### Worst-case: Up Next (`43-worst-queue`)
+
+![43-worst-queue](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/43-worst-queue.jpg)
+
+### Worst-case: Now Playing (`44-worst-now-playing`)
+
+![44-worst-now-playing](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/44-worst-now-playing.jpg)
+
+### Worst-case: 900px player (`45-worst-player-900`)
+
+![45-worst-player-900](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/45-worst-player-900.jpg)
+
+### Worst-case: 720px player (`46-worst-player-720`)
+
+![46-worst-player-720](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/46-worst-player-720.jpg)
+
+### Worst-case: Artist (`47-worst-artist`)
+
+![47-worst-artist](https://raw.githubusercontent.com/collection-of-things/cadence/pr-assets/polish-app-ui/r0-before/47-worst-artist.jpg)
