@@ -901,7 +901,6 @@ button:disabled {
 
 /* EQ unavailable: the sliders fade; the note explaining why and the band labels stay readable */
 .set-dim .eq-slider { opacity: 0.45; }
-.set-dim :is(.eq-gain, .eq-freq) { color: var(--t4); }
 .set-dim .set-label { color: var(--t3); }
 
 .set-row {
@@ -980,7 +979,7 @@ button:disabled {
 
 .eq-gain {
   font-size: var(--fs-micro);
-  color: var(--text-faint);
+  color: var(--t3);
   font-variant-numeric: tabular-nums;
   min-height: 14px;
 }
