@@ -1,6 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useUi } from '../hooks';
-import { CloseIcon } from '../icons';
 import { Lyrics } from './Lyrics';
 import { QueuePanel } from './QueuePanel';
 import './lyrics.css';
@@ -29,14 +28,14 @@ interface SidePanelProps {
   open: boolean;
   tab: PanelTab;
   onTab(tab: PanelTab): void;
-  onClose(): void;
 }
 
 /**
  * The one right-hand panel beneath the stage, mirroring the sidebar: Lyrics
- * and Up Next share it as tabs instead of stacking two overlays.
+ * and Up Next share it as tabs instead of stacking two overlays. The player
+ * bar's Lyrics and Queue buttons open and close it.
  */
-export function SidePanel({ open, tab, onTab, onClose }: SidePanelProps) {
+export function SidePanel({ open, tab, onTab }: SidePanelProps) {
   const track = useUi((s) => s.snapshot.current?.track);
   const tabs: { id: PanelTab; label: string }[] = [
     { id: 'lyrics', label: 'Lyrics' },
@@ -66,9 +65,6 @@ export function SidePanel({ open, tab, onTab, onClose }: SidePanelProps) {
             </button>
           ))}
         </div>
-        <button className="icon-btn" aria-label="Close panel" title="Close" onClick={onClose}>
-          <CloseIcon size={16} />
-        </button>
       </header>
       <div className="side-panel-body" role="tabpanel">
         {tab === 'queue' ? (

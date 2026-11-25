@@ -176,6 +176,10 @@ export function App() {
   };
   const isApple = platform === 'apple';
   const panelTab: PanelTab = queueOpen ? 'queue' : 'lyrics';
+  // The queue replaces lyrics in the panel rather than stacking on them, so
+  // closing it (its button, Q or Escape) closes the panel instead of falling
+  // back to lyrics. Now Playing keeps its own lyrics column, so leave it be.
+  if (queueOpen && railOpen && !expanded) setRailOpen(false);
   // Now Playing has its own Up Next, so the panel unmounts under it but keeps its space.
   const panelShown = queueOpen || (railOpen && hasTrack);
   const panelOpen = !expanded && panelShown;
@@ -189,10 +193,6 @@ export function App() {
   const showTab = (tab: PanelTab) => {
     setRailOpen(tab === 'lyrics');
     session.setQueueOpen(tab === 'queue');
-  };
-  const closePanel = () => {
-    setRailOpen(false);
-    session.setQueueOpen(false);
   };
 
   return (
@@ -258,7 +258,7 @@ export function App() {
           </div>
         </main>
       </div>
-      {panelMounted && <SidePanel open={panelOpen} tab={shownPanelTab} onTab={showTab} onClose={closePanel} />}
+      {panelMounted && <SidePanel open={panelOpen} tab={shownPanelTab} onTab={showTab} />}
       {expanded && createPortal(<NowPlayingFull onClose={closeNowPlaying} location={location} onNavigate={navigate} panelShown={panelShown} />, document.body)}
       {createPortal(<Toasts />, document.body)}
     </div>
