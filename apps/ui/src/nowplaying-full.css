@@ -76,7 +76,7 @@
 
 /* Up Next in the right column: same place as the lyrics, no card */
 .npf-queue { display: flex; flex-direction: column; }
-.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; }
+.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: var(--fs-title-3); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
 
 /* sidebar over Now Playing: a drawer that slides in from the left edge and
    sits in exactly the same place as the shell's sidebar. The cover stays put;

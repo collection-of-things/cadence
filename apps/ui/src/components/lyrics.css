@@ -15,11 +15,11 @@
 .lyrics-scroll p {
   margin: 0;
   font-family: var(--font-display);
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   cursor: pointer;
   transform-origin: left center;
 }
-.lyrics-plain { white-space: pre-wrap; font-family: var(--font-display); font-weight: 600; }
+.lyrics-plain { white-space: pre-wrap; font-family: var(--font-display); font-weight: var(--fw-semibold); }
 .lyrics-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--text-dim); text-align: center; }
 .lyrics-follow {
   position: absolute;
@@ -31,8 +31,8 @@
   background: oklch(1 0 0 / 0.14);
   backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
 }
 .lyrics-follow:hover { background: rgba(255, 255, 255, 0.26); }
 /* local files: attach a lyrics file, nudge the timing. Quiet until pointed at. */
@@ -50,10 +50,10 @@
   box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.06);
   backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
   text-shadow: none;
-  opacity: 0.78;
+  opacity: 0.92;
   transition: opacity 140ms ease-out;
 }
 .lyrics-tools:hover, .lyrics-tools:focus-within { opacity: 1; }
@@ -63,7 +63,7 @@
 :is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > .lyrics-follow { bottom: 62px; }
 .lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
 /* disabled reads as quiet text, not the app's 35% disabled fade on top of the pill's */
-.lyrics-tools button:disabled { opacity: 1; color: oklch(1 0 0 / 0.55); cursor: default; }
+.lyrics-tools button:disabled { opacity: 1; color: oklch(1 0 0 / 0.7); cursor: default; }
 .lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-tools button:hover:not(:disabled) { background: oklch(1 0 0 / 0.16); }
@@ -99,13 +99,13 @@
   border-radius: 14px;
   box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent);
 }
-.lyrics-rail .lyrics-scroll p { padding: 12px 0; font-family: var(--font-lyrics); font-size: 20px; font-weight: 650; line-height: 1.42; letter-spacing: -0.005em; color: oklch(1 0 0 / 0.52); }
+.lyrics-rail .lyrics-scroll p { padding: 12px 0; font-family: var(--font-lyrics); font-size: var(--fs-title-2); font-weight: var(--fw-bold); line-height: 1.3; letter-spacing: var(--ls-heading); text-wrap: balance; color: oklch(1 0 0 / 0.52); }
 .lyrics-rail .lyrics-scroll p.active { color: #fff; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-rail .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.7); }
 }
-.lyrics-rail .lyrics-plain { padding-top: 24px; font-family: var(--font-lyrics); font-size: 17px; line-height: 1.6; color: var(--t2); }
-.lyrics-rail .lyrics-empty { font-size: 14px; color: var(--t3); }
+.lyrics-rail .lyrics-plain { padding-top: 24px; font-family: var(--font-lyrics); font-size: var(--fs-title-3); line-height: var(--lh-prose); color: var(--t2); }
+.lyrics-rail .lyrics-empty { font-size: var(--fs-body); color: var(--t3); }
 
 /* ---- Now Playing column: big display type, no card ---- */
 .npf-lyrics .lyrics-scroll, .npf-lyrics .lyrics-plain {
@@ -117,31 +117,33 @@
   padding: 12px 0;
   font-family: var(--font-lyrics);
   font-size: clamp(26px, 2.5vw, 40px);
-  font-weight: 700;
-  letter-spacing: -0.012em;
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-heading);
   line-height: 1.2;
-  color: oklch(1 0 0 / 0.36);
+  color: oklch(1 0 0 / 0.44);
+  /* a soft dark halo keeps dim lines legible over a bright cover glow */
+  text-shadow: 0 0 20px oklch(0 0 0 / 0.4);
   transform-origin: left center;
   /* the sung line grows 4%; wrapping 6% short keeps it inside the column */
   padding-right: 4.5%;
   overflow-wrap: anywhere;
-  text-wrap: pretty;
+  text-wrap: balance;
 }
 /* depth of field: lines blur with distance from the one being sung */
-.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.3); filter: blur(1px); }
+.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.4); filter: blur(1px); }
 /* depth of field starts two lines out: the neighbours of the sung line stay sharp */
-.npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.5); filter: none; }
-.npf-lyrics .lyrics-scroll p.p1 { color: oklch(1 0 0 / 0.38); filter: none; }
-.npf-lyrics .lyrics-scroll p.d2 { filter: blur(1.2px); }
-.npf-lyrics .lyrics-scroll p.d3 { filter: blur(2.2px); opacity: 0.8; }
+.npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.54); filter: none; }
+.npf-lyrics .lyrics-scroll p.p1 { color: oklch(1 0 0 / 0.44); filter: none; }
+.npf-lyrics .lyrics-scroll p.d2 { filter: blur(0.75px); }
+.npf-lyrics .lyrics-scroll p.d3 { filter: blur(1px); }
 /* the sung line: brighter, a touch larger, tinted by the cover */
-.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 22%, #fff); filter: none; opacity: 1; transform: scale(1.04); }
+.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 10%, #fff); filter: none; opacity: 1; transform: scale(1.04); }
 /* reading ahead: pointing at the lyrics, or tabbing to them, brings every line into focus */
 .npf-lyrics .lyrics-scroll:hover p, :root[data-input='keyboard'] .npf-lyrics .lyrics-scroll:focus-visible p { filter: none; }
 @media (hover: hover) and (pointer: fine) {
-  .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.62); }
+  .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.72); }
 }
-.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: 22px; font-weight: 600; line-height: 1.6; color: oklch(1 0 0 / 0.78); }
-.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: clamp(22px, 2vw, 30px); font-weight: 700; letter-spacing: -0.012em; color: oklch(1 0 0 / 0.3); }
+.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: 22px; font-weight: var(--fw-semibold); line-height: 1.6; color: oklch(1 0 0 / 0.78); }
+.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: clamp(22px, 2vw, 30px); font-weight: var(--fw-bold); letter-spacing: var(--ls-heading); color: oklch(1 0 0 / 0.5); }
 .npf-lyrics .lyrics-follow { right: 8px; bottom: 8px; }
 .npf-lyrics .lyrics-tools { left: 8px; bottom: 8px; }
