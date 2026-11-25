@@ -53,6 +53,7 @@
 
 /* opening Now Playing: the shell leaves quickly (exits beat entrances) so
    the page never ghosts through the cover as the room comes up */
+.app { transition: opacity 160ms ease-out; }
 .app.is-immersive { transition: opacity 90ms ease-out; }
 .app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
 /* the room comes up 70ms after the shell starts leaving (90ms), so the page
@@ -146,6 +147,10 @@
   :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 90ms ease-out, visibility 0s linear 260ms; }
   @starting-style {
     .side-panel { transform: translateX(20px); }
+  }
+  .side-panel:not(.is-open) { transition: transform var(--shell-move), opacity 80ms ease-out; }
+  @media (min-width: 1001px) {
+    .side-panel.is-open { transition: transform var(--shell-move), opacity 180ms ease-out 90ms; }
   }
 
   /* the player lifts off the bottom edge into Now Playing and settles back */

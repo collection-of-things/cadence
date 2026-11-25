@@ -122,7 +122,7 @@
 .album .track-list > .track-row:nth-child(even) { --row-pill: oklch(1 0 0 / 0.028); }
 /* scrolled content fades out under the top bar like every page; the colour
    wash sits outside the scroller, so it stays put behind the bar */
-.album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 14px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset))); }
+.album-scroll { padding-top: calc(var(--topbar-h) + 14px); mask-image: var(--fade-both); }
 .album-corner { position: absolute; top: calc(var(--topbar-h) + 14px); right: 24px; display: flex; gap: 8px; }
 .album-corner .round-btn { width: 36px; height: 36px; border-radius: 50%; color: oklch(0.93 0 0); background: var(--capsule); }
 

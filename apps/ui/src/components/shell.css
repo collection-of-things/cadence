@@ -89,8 +89,8 @@
    The masks sit on the scrollers, not on .stage-main: a masked ancestor of
    the row menus would stop their glass blurring the rows behind them. */
 :root {
-  --fade-top: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 10px));
-  --fade-both: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 10px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset)));
+  --fade-top: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 10px), #000 calc(var(--topbar-h) + 12px));
+  --fade-both: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 10px), #000 calc(var(--topbar-h) + 12px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset)));
   --fade-bottom: linear-gradient(to bottom, #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset)));
 }
 
