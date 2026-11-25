@@ -64,6 +64,17 @@
   right: var(--npf-col-right);
   bottom: 136px;
   width: var(--npf-col-w);
+  isolation: isolate;
+}
+/* the cover's ambient glow can bloom right behind the words; a soft dark
+   pool under the column keeps the dim lines at 3:1 without brightening them */
+.npf-lyrics::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -14% -16% -14% -10%;
+  background: radial-gradient(closest-side, oklch(0 0 0 / 0.34), oklch(0 0 0 / 0.18) 62%, transparent);
+  pointer-events: none;
 }
 @media (max-width: 1000px) {
   .npf { --npf-col-right: 20px; --npf-col-w: 52vw; }

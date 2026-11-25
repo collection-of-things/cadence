@@ -899,8 +899,9 @@ button:disabled {
   border-top: 1px solid var(--border-soft);
 }
 
-/* EQ unavailable: the sliders fade; the note explaining why stays readable */
-.set-dim .eq-grid { opacity: 0.45; }
+/* EQ unavailable: the sliders fade; the note explaining why and the band labels stay readable */
+.set-dim .eq-slider { opacity: 0.45; }
+.set-dim :is(.eq-gain, .eq-freq) { color: var(--t4); }
 .set-dim .set-label { color: var(--t3); }
 
 .set-row {
