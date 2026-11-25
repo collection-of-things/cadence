@@ -10,32 +10,28 @@ import { ROUTE_STATE_META, routeLabel } from '../routes';
 import { RouteBadge } from './RouteBadge';
 import './controls.css';
 
-function triChip(key: string, tri: 'yes' | 'no' | 'unknown', label: string) {
-  if (tri === 'yes') return { key, label, tone: 'ok' as const };
-  if (tri === 'unknown') return { key, label: `${label}?`, tone: 'dim' as const };
-  return null;
-}
-
 const ENGINE_LABELS: Record<RouteCapabilities['playback']['engine'], string> = {
   'native-pcm': 'Native PCM',
   'provider-engine': 'Provider engine',
   none: 'No engine',
 };
 
+/** "up to 32-bit…" reads as a sentence: capital first letter. */
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function RouteCard({ cap }: { cap: RouteCapabilities }) {
   const meta = ROUTE_STATE_META[cap.state];
-  const chips = [
-    {
-      key: 'eng',
-      label: ENGINE_LABELS[cap.playback.engine],
-      tone: cap.playback.engine === 'none' ? ('dim' as const) : ('ok' as const),
-    },
-    triChip('gap', cap.playback.gapless, 'Gapless'),
-    triChip('eq', cap.audio.eq, 'EQ'),
-    triChip('pcm', cap.audio.pcmAccess, 'PCM'),
-    triChip('rg', cap.audio.replayGain, 'ReplayGain'),
-    { key: 'vis', label: cap.visuals.kind === 'pcm-fft' ? 'PCM FFT' : 'Ambient visuals', tone: 'dim' as const },
-  ].filter((c): c is NonNullable<typeof c> => c !== null);
+  // What the route is confirmed to do leads as chips; what it might do is
+  // one quiet line; the engine and its notes wait behind Details.
+  const tri = [
+    { key: 'gap', tri: cap.playback.gapless, label: 'Gapless' },
+    { key: 'eq', tri: cap.audio.eq, label: 'EQ' },
+    { key: 'pcm', tri: cap.audio.pcmAccess, label: 'PCM' },
+    { key: 'rg', tri: cap.audio.replayGain, label: 'ReplayGain' },
+  ];
+  const confirmed = tri.filter((c) => c.tri === 'yes');
+  const unconfirmed = tri.filter((c) => c.tri === 'unknown').map((c) => c.label);
+  const visuals = cap.visuals.kind === 'pcm-fft' ? 'Spectrum visuals from the audio' : 'Ambient visuals';
 
   return (
     <section className="src-route">
@@ -46,24 +42,16 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
           {meta.label}
         </span>
       </header>
+      {cap.audio.qualityCeiling && <p className="src-quality">{sentence(cap.audio.qualityCeiling)}</p>}
       {cap.stateDetail && <p className="src-route-detail">{cap.stateDetail}</p>}
-      <ul className="cap-chips" aria-label="Capabilities">
-        {chips.map((c) => (
-          <li key={c.key} className={`cap-chip is-${c.tone}`} title={c.tone === 'dim' ? 'Not confirmed for this route' : undefined}>
-            {c.label}
-          </li>
-        ))}
-      </ul>
-      {cap.audio.qualityCeiling && <p className="src-quality">{cap.audio.qualityCeiling}</p>}
-      {cap.notes.length > 0 && (
-        <ul className="src-notes">
-          {cap.notes.map((n) => (
-            <li key={n}>{n}</li>
-          ))}
+      {confirmed.length > 0 && (
+        <ul className="cap-chips" aria-label="Capabilities">
+          {confirmed.map((c) => <li key={c.key} className="cap-chip is-ok">{c.label}</li>)}
         </ul>
       )}
+      {unconfirmed.length > 0 && <p className="src-unconfirmed">Not confirmed: {unconfirmed.join(', ')}</p>}
       {cap.state === 'unauthenticated' && (
-        <button className="btn src-signin" onClick={() => session.signInRoute(cap.route)}>
+        <button className="btn btn-primary src-signin" onClick={() => session.signInRoute(cap.route)}>
           Sign in
         </button>
       )}
@@ -72,6 +60,13 @@ function RouteCard({ cap }: { cap: RouteCapabilities }) {
           Sign out
         </button>
       )}
+      <details className="src-details">
+        <summary>Details</summary>
+        <ul className="src-notes">
+          <li>{ENGINE_LABELS[cap.playback.engine]} · {visuals}</li>
+          {cap.notes.map((n) => <li key={n}>{n}</li>)}
+        </ul>
+      </details>
     </section>
   );
 }

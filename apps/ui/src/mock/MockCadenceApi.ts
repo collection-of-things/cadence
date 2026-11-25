@@ -50,7 +50,8 @@ export class MockCadenceApi implements CadenceApi {
   ];
 
   constructor() {
-    const { tracks, albums } = makeLibrary();
+    const worstCase = typeof location !== 'undefined' && new URLSearchParams(location.search).get('cadence_mock') === 'worst';
+    const { tracks, albums } = makeLibrary(worstCase);
     this.tracks = tracks;
     this.albums = albums;
     this.caps = makeCapabilities();

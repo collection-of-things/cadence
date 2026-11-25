@@ -251,7 +251,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
               {container.year !== undefined && <span className="chip"><ClockIcon size={12} />{container.year}</span>}
               <span className="chip">
                 <SongIcon size={12} />
-                {page?.truncated ? `First ${tracks.length} tracks` : `${count} ${count === 1 ? 'track' : 'tracks'}`}
+                {page?.truncated ? `First ${tracks.length} songs` : `${count} ${count === 1 ? 'song' : 'songs'}`}
               </span>
               {totalDuration > 0 && <span className="chip">{formatTime(totalDuration)}</span>}
             </div>
@@ -274,11 +274,11 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
           </div>
         </section>
         <section className="album-tracks" aria-label={`${container.title} tracks`}>
-          {loading && <CatalogSkeleton label="Loading tracks" rows />}
+          {loading && <CatalogSkeleton label="Loading songs" rows />}
           {!loading && error && <p className="list-empty" role="alert">{error}</p>}
-          {!loading && !error && tracks.length === 0 && <p className="list-empty">No tracks on this {container.kind}.</p>}
+          {!loading && !error && tracks.length === 0 && <p className="list-empty">No songs on this {container.kind}.</p>}
           {!loading && !error && tracks.length > 0 && <TrackListToolbar {...controls} />}
-          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No tracks match.</p>}
+          {!loading && !error && tracks.length > 0 && shown.length === 0 && <p className="list-empty">No songs match.</p>}
           {!loading && !error && (
             <SongList
               tracks={shown}

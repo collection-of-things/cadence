@@ -54,7 +54,7 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
             <div className="album-chips">
               {genre && <span className="chip"><NoteIcon size={13} />{genre}</span>}
               {year && <span className="chip"><ClockIcon size={13} />{year}</span>}
-              <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'track' : 'tracks'}</span>
+              <span className="chip"><SongIcon size={13} />{count} {count === 1 ? 'song' : 'songs'}</span>
             </div>
             <div className="album-actions">
               <button className="round-btn album-round" aria-label="Shuffle album" title="Shuffle" disabled={!ready} onClick={() => tracks && session.playShuffled(tracks, origin)}>
@@ -86,7 +86,7 @@ export function AlbumView({ album }: { album: LibraryAlbum }) {
               {Array.from({ length: 7 }, (_, i) => <span key={i} className="skeleton skeleton-row" />)}
             </div>
           ) : shown.length === 0 ? (
-            <p className="list-empty">{tracks.length ? 'No tracks match.' : 'No tracks found for this album.'}</p>
+            <p className="list-empty">{tracks.length ? 'No songs match.' : 'No songs found for this album.'}</p>
           ) : (
             <div className="track-list">
               {shown.map((track) => (

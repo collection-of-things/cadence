@@ -46,14 +46,19 @@
 /* the side panels */
 .stage { transition: box-shadow 140ms ease-out; }
 .side-panel, .app > .sidebar { transition: opacity 200ms ease; }
-:root[data-sidebar='hidden'] .app > .sidebar { transition: opacity 200ms ease, visibility 0s linear 200ms; }
+:root[data-sidebar='hidden'] .app > .sidebar { transition: opacity 90ms ease-out, visibility 0s linear 200ms; }
 @starting-style {
   .side-panel { opacity: 0; }
 }
 
-/* opening Now Playing: the shell recedes as the room comes up */
-.app.is-immersive, .app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
-.npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out; }
+/* opening Now Playing: the shell leaves quickly (exits beat entrances) so
+   the page never ghosts through the cover as the room comes up */
+.app { transition: opacity 160ms ease-out; }
+.app.is-immersive { transition: opacity 90ms ease-out; }
+.app.is-immersive ~ .ambient .ambient-veil { transition: opacity 200ms ease-out; }
+/* the room comes up 70ms after the shell starts leaving (90ms), so the page
+   never shows through the cover or under the lyrics */
+.npf-art, .npf-lyrics, .npf-corner { transition: opacity 220ms ease-out 70ms; }
 @starting-style {
   .npf-art, .npf-lyrics, .npf-corner { opacity: 0; }
 }
@@ -70,12 +75,31 @@
 
 /* switching service swaps the whole library */
 .platform-fade { transition: opacity var(--t-fade) ease-out; }
+
+/* a new page arrives as one piece: the page carries everything on it, so no
+   row or card staggers in after it (pages change tens of times a day) */
+.page { transition: opacity 160ms ease-out; }
+@starting-style {
+  .page { opacity: 0; }
+}
+
+/* an album's colour eases into the window frame instead of snapping */
+@property --shell-tint {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgb(132 150 236);
+}
+:root { transition: --shell-tint 280ms ease; }
+
+/* the card play disc and row actions fade in where the pointer is */
+.card-play, .row-more, .q-acts .icon-btn { transition: opacity 120ms ease-out, background-color 110ms ease, color 110ms ease; }
+.track-row, .q-row, .artist-row, .src-hit, .album-card, .square-card { transition: background-color 90ms ease; }
 .npf-nav { transition: opacity 200ms ease-out; }
 .toast { transition: opacity 180ms ease-out; }
 .menu { transition: opacity 120ms ease-out; }
 .add-glyph.is-added { transition: opacity 140ms ease-out; }
 @starting-style {
-  .platform-fade, .npf-nav, .toast, .menu, .add-glyph.is-added { opacity: 0; }
+  .side-scroll.platform-fade, .npf-nav, .toast, .menu, .add-glyph.is-added { opacity: 0; }
 }
 
 /* ---- movement, only for people who are fine with it ---- */
@@ -86,6 +110,28 @@
   }
   :is(.poster-open, .square-open, .sidebar-signin) { transition: transform var(--t-press) var(--ease-out); }
 
+  /* the page rises the last few pixels as it fades in */
+  .page { transition: opacity 160ms ease-out, translate 220ms var(--ease-out); }
+  @starting-style {
+    .page { translate: 0 4px; }
+  }
+
+  /* the playing marker: four bars breathing at different rates, so the
+     row reads as playing from across the room */
+  .now-bars.is-playing i, .q-eq.on i { animation: now-bar 820ms ease-in-out infinite alternate both; }
+  .now-bars.is-playing i:nth-child(2), .q-eq.on i:nth-child(2) { animation-duration: 560ms; animation-delay: -240ms; }
+  .now-bars.is-playing i:nth-child(3), .q-eq.on i:nth-child(3) { animation-duration: 700ms; animation-delay: -420ms; }
+  .now-bars.is-playing i:nth-child(4) { animation-duration: 940ms; animation-delay: -120ms; }
+
+  /* the card play disc rises off the cover's corner as it appears */
+  .card-play { transition: opacity 140ms ease-out, transform 200ms var(--ease-out), background-color 110ms ease; transform: translateY(4px) scale(0.94); }
+  .card-play:focus-visible { transform: none; }
+  @media (hover: hover) and (pointer: fine) {
+    .poster-card:hover .card-play, .square-card:hover .card-play { transform: none; }
+  }
+  @media (hover: none) { .card-play { transform: none; } }
+  .poster-card .card-play:active, .square-card .card-play:active { transform: scale(0.92); }
+
   /* switches: the indicator glides to the chosen side */
   .side-switch-ind { transition: transform 300ms var(--spring-ui); }
   .side-chevron { transition: opacity 110ms ease, transform 160ms var(--ease-out); }
@@ -95,22 +141,30 @@
     box-shadow: 0 0 0 1px oklch(1 0 0 / 0.08);
     transition: left var(--shell-move), right var(--shell-move);
   }
-  .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move); }
+  .app.is-moving ~ .ambient { transition: left var(--shell-move), right var(--shell-move), top var(--shell-move), bottom var(--shell-move), border-radius var(--shell-move); }
   .side-panel, .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease; }
-  :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 200ms ease, visibility 0s linear 260ms; }
+  /* hiding: the sidebar is gone before the see-through stage crosses it */
+  :root[data-sidebar='hidden'] .app > .sidebar { transition: transform var(--shell-move), opacity 90ms ease-out, visibility 0s linear 260ms; }
   @starting-style {
     .side-panel { transform: translateX(20px); }
+  }
+  .side-panel:not(.is-open) { transition: transform var(--shell-move), opacity 80ms ease-out; }
+  @media (min-width: 1001px) {
+    .side-panel.is-open { transition: transform var(--shell-move), opacity 180ms ease-out 90ms; }
   }
 
   /* the player lifts off the bottom edge into Now Playing and settles back */
   .playerbar { transition: transform var(--t-spring) var(--spring-ui); }
   .npf-art img:not(.is-swap) { transition: transform var(--t-spring) var(--spring-ui); }
-  .npf-corner { transition: opacity 220ms ease-out, transform var(--shell-move); }
+  .npf-corner { transition: opacity 220ms ease-out 70ms, transform var(--shell-move); }
   .npf-lyrics .lyrics-scroll p { transition: color 240ms ease-out, transform var(--t-spring) var(--spring-ui); }
+  /* the floating bar appears exactly where the docked one sat (.npf keeps
+     the shell's --rail from the moment it opened) and widens to span the
+     window as the room comes up around it */
+  .playerbar.is-floating { transition: transform var(--t-spring) var(--spring-ui), left 340ms var(--ease-drawer), right 340ms var(--ease-drawer); }
   @starting-style {
-    .playerbar.is-floating { transform: translateY(14px); }
-    .playerbar.is-docked { transform: translateY(-14px); }
     .npf-art img:not(.is-swap) { transform: scale(1.03); }
+    .playerbar.is-floating { left: calc(var(--stage-l) + var(--pb-inset)); right: calc(max(var(--rail), var(--gap)) + var(--pb-inset)); }
   }
 
   /* each surface enters from what opened it and leaves the same way */
@@ -127,5 +181,10 @@
   }
 }
 
+@keyframes now-bar {
+  from { transform: scaleY(0.22); }
+  to { transform: scaleY(1); }
+}
+
 /* Keyboard-initiated changes land on the next frame (see instant.ts). */
-:root[data-instant] :is(.app, .app > .sidebar, .stage, .ambient, .side-panel, .side-switch-ind, .playerbar, .ambient-veil, .npf-art, .npf-art img, .npf-lyrics, .npf-corner) { transition: none !important; }
+:root[data-instant] :is(.app, .app > .sidebar, .stage, .ambient, .side-panel, .side-switch-ind, .playerbar, .ambient-veil, .npf-art, .npf-art img, .npf-lyrics, .npf-corner, .page) { transition: none !important; }

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { LibraryAlbum } from '@cadence/protocol';
 import { api, session } from '../session';
-import { useElementWidth, useUi } from '../hooks';
+import { prefersReducedMotion, useElementWidth, useUi } from '../hooks';
 import { FolderIcon, NoteIcon, SearchIcon } from '../icons';
 import { useLibraryRead } from '../library';
 import type { LibraryTab } from '../navigation';
@@ -37,7 +37,54 @@ function AlbumsGrid({ query, onSelectAlbum }: { query: string; onSelectAlbum(alb
 function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; onSelectAlbum(album: LibraryAlbum): void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const width = useElementWidth(scrollRef);
-  const columns = Math.max(1, Math.floor((width + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
+  const fit = (w: number) => Math.max(1, Math.floor((w + ALBUM_GAP) / (ALBUM_MIN_WIDTH + ALBUM_GAP)));
+  // While a side panel or the sidebar slides, the cards stretch in place and
+  // the column count changes once, after the stage settles, each card
+  // gliding from where it was to where it lands (FLIP).
+  const [columns, setColumns] = useState(() => fit(width));
+  const before = useRef<Map<string, DOMRect> | null>(null);
+  const settleColumns = (next: number) => {
+    const rects = new Map<string, DOMRect>();
+    scrollRef.current?.querySelectorAll<HTMLElement>('.album-card[data-id]').forEach((el) => rects.set(el.dataset.id!, el.getBoundingClientRect()));
+    before.current = rects;
+    setColumns(next);
+  };
+  useLayoutEffect(() => {
+    const rects = before.current;
+    before.current = null;
+    if (!rects || prefersReducedMotion()) return;
+    scrollRef.current?.querySelectorAll<HTMLElement>('.album-card[data-id]').forEach((el) => {
+      const from = rects.get(el.dataset.id!);
+      if (!from) return;
+      const to = el.getBoundingClientRect();
+      const dx = from.left - to.left;
+      const dy = from.top - to.top;
+      const s = to.width ? from.width / to.width : 1;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(s - 1) < 0.01) return;
+      // A card changing rows glides over its new neighbours, not under them
+      // (each row is its own layer), so its row is lifted for the glide.
+      const row = Math.abs(dy) >= 1 ? el.closest<HTMLElement>('.album-row') : null;
+      if (row) row.style.zIndex = '1';
+      const glide = el.animate(
+        [{ transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${s})` }, { transformOrigin: 'top left', transform: 'none' }],
+        { duration: 260, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' },
+      );
+      if (row) void glide.finished.finally(() => { row.style.zIndex = ''; }).catch(() => {});
+    });
+  }, [columns]);
+  useEffect(() => {
+    if (fit(width) === columns) return;
+    if (prefersReducedMotion() || !document.querySelector('.app.is-moving')) {
+      settleColumns(fit(width));
+      return;
+    }
+    // Commit on the frame the stage settles (it drops .is-moving), not on a guess.
+    let frame = requestAnimationFrame(function settle() {
+      if (document.querySelector('.app.is-moving')) frame = requestAnimationFrame(settle);
+      else settleColumns(fit(scrollRef.current?.clientWidth ?? width));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [width, columns]);
   const cardWidth = Math.max(0, (width - ALBUM_GAP * (columns - 1)) / columns);
   const virtualizer = useVirtualizer({
     count: Math.ceil(albums.length / columns),
@@ -58,7 +105,7 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
             style={{ transform: `translateY(${vi.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
           >
             {albums.slice(vi.index * columns, (vi.index + 1) * columns).map((a) => (
-              <button key={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
+              <button key={a.id} data-id={a.id} className="album-card" onClick={() => onSelectAlbum(a)} aria-label={`Open ${a.title} by ${a.artist}`}>
                 {a.artwork ? <img src={a.artwork.url} alt="" loading="lazy" decoding="async" /> : <span className="album-noart"><NoteIcon size={40} /></span>}
                 <span className="album-title">{a.title}</span>
                 <span className="album-artist">
@@ -76,6 +123,13 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
 
 function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(name: string): void }) {
   const artists = useLibraryRead(() => api.library.artists({}), [], []);
+  // Each artist wears the cover of one of their albums, like the artist page.
+  const albums = useLibraryRead(() => api.library.albums({}), [], []);
+  const covers = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const album of albums ?? []) if (album.artwork && !map.has(album.artist)) map.set(album.artist, album.artwork.url);
+    return map;
+  }, [albums]);
   // `query` is already debounced by LibraryView.
   const shown = useMemo(() => {
     if (!artists || !query) return artists ?? [];
@@ -101,10 +155,12 @@ function ArtistsList({ query, onSelectArtist }: { query: string; onSelectArtist(
           return (
             <div key={a.name} className="artist-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
               <button className="artist-row" onClick={() => onSelectArtist(a.name)}>
-                <span className="artist-avatar">{a.name.slice(0, 1).toUpperCase()}</span>
+                <span className="artist-avatar">
+                  {covers.get(a.name) ? <img src={covers.get(a.name)} alt="" loading="lazy" decoding="async" /> : a.name.slice(0, 1).toUpperCase()}
+                </span>
                 <span className="artist-name">{a.name}</span>
                 <span className="artist-counts">
-                  {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'track' : 'tracks'}
+                  {a.albumCount} {a.albumCount === 1 ? 'album' : 'albums'} · {a.trackCount} {a.trackCount === 1 ? 'song' : 'songs'}
                 </span>
               </button>
             </div>
@@ -128,7 +184,7 @@ function TracksTable({ query }: { query: string }) {
   });
 
   if (!tracks) return <SkeletonRows />;
-  if (!list.length) return <div className="lib-status">No tracks match.</div>;
+  if (!list.length) return <div className="lib-status">No songs match.</div>;
 
   return (
     <div className="tr-scroll" ref={scrollRef}>
@@ -171,6 +227,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
   const [query, setQuery] = useState(submitted ?? '');
   const scan = useUi((s) => s.scan);
   const counts = useLibraryRead(() => api.library.counts(), [], null);
+  const artistCount = useLibraryRead(() => api.library.artists({}).then((a) => a.length), [], null);
 
   // Each top-bar submission replaces what is in the field.
   useEffect(() => {
@@ -216,7 +273,12 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
     <div className="lib">
       <header className="lib-head">
         <h1>{TITLES[tab]}</h1>
-        {counts && (
+        {/* while filtering, the header says what the list is showing */}
+        {query ? (
+          <span className="lib-count">Results for “{query}”</span>
+        ) : tab === 'artists' && artistCount !== null ? (
+          <span className="lib-count">{artistCount} {artistCount === 1 ? 'artist' : 'artists'}</span>
+        ) : counts && (
           <span className="lib-count">
             {counts.albums} {counts.albums === 1 ? 'album' : 'albums'} · {counts.tracks} {counts.tracks === 1 ? 'song' : 'songs'}
           </span>
@@ -227,7 +289,7 @@ export function LibraryView({ tab, onTab, onSelectAlbum, onSelectArtist, query: 
           <SearchIcon size={16} />
           <input
             type="search"
-            placeholder="Search title, artist, album"
+            placeholder="Search songs, artists, albums"
             aria-label="Search library"
             value={text}
             onChange={(e) => setText(e.currentTarget.value)}

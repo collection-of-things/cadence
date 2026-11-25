@@ -1,7 +1,19 @@
 /* ============ App shell: sidebar | stage | side panel ============
-   The stage is the raised main screen and carries the artwork's colour.
-   The side panels are glass beneath it with only a trace of that colour:
-   they stay put while the stage slides over them (motion.css). */
+   The stage is a raised card inset from the window edges and carries the
+   artwork's colour. The sidebar and side panel sit on the window's own
+   surface with only a trace of that colour: they stay put while the card
+   slides over them (motion.css). */
+
+:root {
+  /* the panels' surface carries about a tenth of the current theme: the open
+     page's colour when App sets one, otherwise the playing song's */
+  --shell-tint: var(--acc);
+  --shell-surface: color-mix(in oklab, var(--shell-tint) 9%, oklch(0.135 0.004 285 / 0.78));
+  /* the stage card: its inset from the window edges and its corner */
+  --gap: 8px;
+  --stage-radius: 18px;
+  --stage-l: max(var(--sidebar-w), var(--gap));
+}
 
 /* the toggle: the stage slides over the sidebar and portals (toasts) follow */
 :root[data-sidebar='hidden'] { --sidebar-w: 0px; }
@@ -15,25 +27,22 @@
 
 .app {
   --rail: 0px;
-  /* the panels' glass carries about a tenth of the current theme: the open
-     page's colour when App sets one, otherwise the playing song's */
-  --shell-tint: var(--acc);
-  --shell-surface: color-mix(in oklab, var(--shell-tint) 10%, oklch(0.24 0.005 70 / 0.5));
+  --stage-r: max(var(--rail), var(--gap));
   position: relative;
   z-index: 5;
   height: 100%;
   isolation: isolate;
 }
 .app.has-rail { --rail: var(--rail-w); }
-/* the sliver of glass that shows under the stage */
+/* the strip of window above the card still drags the window */
+.app.is-immersive::before { display: none; }
 .app::before {
   content: '';
   position: absolute;
-  left: var(--sidebar-w);
-  right: var(--rail);
-  bottom: 0;
-  height: var(--stage-bottom);
-  background: var(--shell-surface);
+  z-index: 3;
+  inset: 0 0 auto 0;
+  height: var(--gap);
+  -webkit-app-region: drag;
 }
 .app[data-svc='apple'] { --svc: #fa2d48; }
 .app[data-svc='local'] { --svc: #8f86e8; }
@@ -45,6 +54,7 @@
 .page-wash {
   position: absolute;
   inset: 0;
+  border-radius: inherit;
   z-index: 0;
   pointer-events: none;
   opacity: 0;
@@ -63,14 +73,26 @@
   container: stage / inline-size;
   position: absolute;
   z-index: 2;
-  top: 0;
-  bottom: var(--stage-bottom);
-  left: var(--sidebar-w);
-  right: var(--rail);
-  overflow: hidden;
-  box-shadow: 0 0 0 1px oklch(1 0 0 / 0.08), 0 0 44px -4px oklch(0 0 0 / 0.6);
+  top: var(--gap);
+  bottom: var(--gap);
+  left: var(--stage-l);
+  right: var(--stage-r);
+  /* no overflow clip here: a rounded clip is a backdrop root in Chromium and
+     would stop the player's and top bar's glass blurring the page. The page
+     layer below clips itself instead. */
+  border-radius: var(--stage-radius);
+  box-shadow: 0 0 0 1px oklch(1 0 0 / 0.07), 0 1px 0 0 oklch(1 0 0 / 0.04) inset, 0 2px 6px -2px oklch(0 0 0 / 0.5), 0 18px 48px -12px oklch(0 0 0 / 0.55);
 }
-.stage-main { position: absolute; inset: 0; }
+.stage-main { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; }
+/* Every page scroller fades out under the top bar and again before the
+   card's bottom edge, so nothing peeks out beneath the floating player.
+   The masks sit on the scrollers, not on .stage-main: a masked ancestor of
+   the row menus would stop their glass blurring the rows behind them. */
+:root {
+  --fade-top: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 10px), #000 calc(var(--topbar-h) + 12px));
+  --fade-both: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 10px), #000 calc(var(--topbar-h) + 12px), #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset)));
+  --fade-bottom: linear-gradient(to bottom, #000 calc(100% - var(--pb-inset) - 8px), transparent calc(100% - var(--pb-inset)));
+}
 
 /* Every page scrolls here; content fades out under the top bar. */
 .stage-scroll {
@@ -79,8 +101,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  padding: calc(var(--topbar-h) + 14px) 32px calc(var(--pb-clear) + 60px);
-  mask-image: linear-gradient(to bottom, transparent 0, transparent calc(var(--topbar-h) - 14px), #000 calc(var(--topbar-h) + 10px));
+  padding: calc(var(--topbar-h) + 10px) 32px calc(var(--pb-clear) + 48px);
+  mask-image: var(--fade-both);
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: oklch(1 0 0 / 0.16) transparent;
@@ -93,7 +115,6 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--sheen), var(--shell-surface);
   user-select: none;
 }
 .app > .sidebar {
@@ -191,11 +212,12 @@
 .side-scroll {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 4px 10px 14px;
+  padding: 4px 10px 24px;
   scrollbar-width: none;
-  mask-image: linear-gradient(180deg, #000 86%, transparent 99%);
+  mask-image: linear-gradient(180deg, transparent, #000 10px, #000 calc(100% - 40px), transparent);
 }
 .side-scroll::-webkit-scrollbar { display: none; }
 
@@ -212,14 +234,17 @@
   letter-spacing: 0;
   line-height: 1.2;
 }
-.side-chevron { display: grid; margin-left: auto; opacity: 0.7; }
+.side-chevron { display: grid; margin-left: auto; opacity: 0.45; }
 .side-chevron.is-closed { transform: rotate(-90deg); opacity: 1; }
 .side-section-head:focus-visible .side-chevron { opacity: 1; }
 @media (hover: hover) and (pointer: fine) {
   .side-section-head:hover { color: var(--t2); }
   .side-section-head:hover .side-chevron { opacity: 1; }
 }
-.side-section-rows { display: grid; gap: 1px; }
+/* minmax(0, 1fr): an auto column grows to the longest name, so the label
+   would never ellipsize and runs under the stage instead. */
+.side-section-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.side-section-rows.is-closed { display: none; }
 
 .side-row {
   position: relative;
@@ -296,7 +321,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 calc(14px + var(--wco-right)) 0 14px;
+  padding: 0 calc(14px + max(0px, var(--wco-right) - var(--gap))) 0 14px;
   -webkit-app-region: drag;
 }
 .topbar button, .topbar input { -webkit-app-region: no-drag; }
@@ -305,23 +330,23 @@
 
 /* filled capsules: the fill is translucent black, so each picks up the page's colour */
 :is(.topbar, .npf-corner) .chrome-btn {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  color: oklch(0.93 0 0);
+  color: oklch(0.95 0 0);
   background: var(--capsule);
+  box-shadow: var(--capsule-ring);
   backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
 }
-:is(.topbar, .npf-corner) .chrome-btn svg { width: 20px; height: 20px; }
+:is(.topbar, .npf-corner) .chrome-btn svg { width: 18px; height: 18px; }
 :is(.topbar, .npf-corner) .chrome-btn:disabled { opacity: 1; color: oklch(1 0 0 / 0.3); }
 :is(.topbar, .npf-corner) .chrome-btn.is-on { color: var(--t1); background: var(--capsule-hi); }
 /* back and forward share one capsule with a thin divider */
-.topbar-history { display: flex; border-radius: 999px; background: var(--capsule); backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4); }
-.topbar-history .chrome-btn { width: 42px; border-radius: 0; background: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.topbar-history { display: flex; border-radius: 999px; background: var(--capsule); box-shadow: var(--capsule-ring); backdrop-filter: blur(24px) saturate(1.4); }
+.topbar-history .chrome-btn { width: 40px; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; }
 .topbar-history .chrome-btn:first-child { border-radius: 999px 0 0 999px; }
 .topbar-history .chrome-btn:last-child { border-radius: 0 999px 999px 0; }
-.topbar-history .chrome-btn + .chrome-btn::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 1px; background: oklch(1 0 0 / 0.2); }
+.topbar-history .chrome-btn + .chrome-btn::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 1px; background: oklch(1 0 0 / 0.14); }
 @media (hover: hover) and (pointer: fine) {
   :is(.topbar, .npf-corner) .chrome-btn:hover:not(:disabled) { color: var(--t1); background: var(--capsule-hi); }
 }
@@ -354,10 +379,10 @@
   align-items: center;
   -webkit-app-region: no-drag;
 }
-.topbar-search > svg { position: absolute; z-index: 1; left: 13px; color: var(--t3); pointer-events: none; }
+.topbar-search > svg { position: absolute; z-index: 1; left: 13px; color: oklch(1 0 0 / 0.6); pointer-events: none; }
 .topbar-search input {
   width: 100%;
-  height: 38px;
+  height: 36px;
   padding: 0 64px 0 36px;
   border: 0;
   outline: 0;
@@ -366,13 +391,15 @@
   font: inherit;
   font-size: 13px;
   background: var(--capsule);
+  box-shadow: var(--capsule-ring);
   backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  transition: background-color 160ms ease, box-shadow 160ms ease;
 }
-.topbar-search input::placeholder { color: var(--t3); }
-.topbar-search input:focus { background: var(--capsule-hi); }
+.topbar-search input::placeholder { color: oklch(1 0 0 / 0.55); }
+.topbar-search input:focus { background: var(--capsule-hi); box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.16), 0 0 0 3px color-mix(in oklab, var(--acc) 22%, transparent); }
 .topbar-search input::-webkit-search-cancel-button { display: none; }
 .topbar-keys { position: absolute; right: 12px; display: flex; gap: 3px; pointer-events: none; }
+.topbar-keys { transition: opacity 120ms ease; }
 .topbar-search input:focus ~ .topbar-keys, .topbar-search input:not(:placeholder-shown) ~ .topbar-keys { opacity: 0; }
 .kbd {
   display: inline-grid;
@@ -469,9 +496,8 @@
   min-width: 216px;
   padding: 5px;
   border-radius: 13px;
-  background: var(--sheen), oklch(0.2 0.007 285 / 0.9);
+  background: var(--sheen), oklch(0.2 0.007 285 / 0.94);
   backdrop-filter: blur(56px) saturate(1.8);
-  -webkit-backdrop-filter: blur(56px) saturate(1.8);
   box-shadow: var(--shadow-pop);
 }
 .menu [role='menuitem'] {
@@ -495,13 +521,16 @@
   .stage-scroll { padding-left: 24px; padding-right: 24px; }
 }
 @media (max-width: 900px) {
-  :root { --sb: 64px; }
+  /* --sb is 64px here (styles.css) */
   .side-top { padding: 12px 8px 4px; }
   .side-brand { justify-content: center; padding: 0; }
-  .side-brand-name, .side-switch-label, .side-section-head, .side-row-label, .side-count { display: none; }
-  .side-switch { grid-template-columns: 1fr; grid-auto-flow: row; }
-  .side-switch-ind { width: auto; right: 3px; height: calc((100% - 6px) / var(--n)); bottom: auto; transform: translateY(calc(var(--i, 0) * 100%)); }
-  .side-switch button { padding: 0; }
+  /* scoped to the sidebar: the side panel's tabs reuse the switch and keep their labels */
+  .sidebar :is(.side-brand-name, .side-switch-label, .side-section-head, .side-row-label, .side-count) { display: none; }
+  .sidebar .side-switch { grid-template-columns: 1fr; grid-auto-flow: row; }
+  .sidebar .side-switch-ind { width: auto; right: 3px; height: calc((100% - 6px) / var(--n)); bottom: auto; transform: translateY(calc(var(--i, 0) * 100%)); }
+  .sidebar .side-switch button { padding: 0; }
+  /* the rail has no section heads to reopen, so every section shows */
+  .sidebar .side-section-rows.is-closed { display: grid; }
   .side-scroll { padding: 8px 8px 14px; }
   .side-section + .side-section { margin-top: 8px; padding-top: 8px; }
   .side-row { justify-content: center; padding: 0; height: 40px; }
@@ -512,10 +541,22 @@
   .topbar-keys { display: none; }
 }
 
-/* too narrow for both panels: the lyrics rail steps aside */
+/* too narrow for a third column: the panel floats over the stage's right
+   edge as a glass card, below the top bar and clear of the player */
 @media (max-width: 1000px) {
   .app.has-rail { --rail: 0px; }
-  .app.has-rail .lyrics-rail { display: none; }
+  .app .lyrics-rail {
+    z-index: 3;
+    top: calc(var(--gap) + 52px);
+    right: var(--gap);
+    bottom: calc(var(--gap) + var(--pb-clear) - 2px);
+    width: min(var(--rail-w), calc(100vw - var(--sb) - 2 * var(--gap) - 40px));
+    border-radius: 16px 0 0 16px;
+    background: linear-gradient(180deg, oklch(1 0 0 / 0.05), oklch(1 0 0 / 0) 120px), oklch(0.17 0.006 285 / 0.86);
+    backdrop-filter: blur(40px) saturate(1.6);
+    box-shadow: var(--pb-shadow);
+  }
+  .app .lyrics-rail .side-panel-head { padding-top: 10px; -webkit-app-region: no-drag; }
 }
 
 /* the side panel sits under the window buttons, so the top bar needs no room for them */

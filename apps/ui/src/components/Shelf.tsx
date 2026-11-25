@@ -27,7 +27,7 @@ export function Shelf({ head, label, children }: { head: ReactNode; label: strin
           </div>
         )}
       </div>
-      <div className="shelf-rail" ref={railRef} onScroll={onScroll}>
+      <div className={`shelf-rail ${edges.start ? 'at-start' : ''} ${edges.end ? 'at-end' : ''}`} ref={railRef} onScroll={onScroll}>
         {children}
       </div>
     </section>
@@ -107,15 +107,17 @@ export function SkeletonRows({ count = 8 }: { count?: number }) {
  * Centred message for an empty, failed or signed-out page. `alert` announces
  * it as an error; children go under the text (a Sign in button, say).
  */
-export function EmptyState({ title, body, alert = false, children }: {
+export function EmptyState({ title, body, alert = false, icon, children }: {
   title: string;
   body: string;
   alert?: boolean;
+  /** Defaults to a note; `false` shows none. */
+  icon?: ReactNode | false;
   children?: ReactNode;
 }) {
   return (
     <div className="empty-state" role={alert ? 'alert' : 'status'}>
-      <span className="empty-icon"><NoteIcon size={30} /></span>
+      {icon !== false && <span className="empty-icon">{icon ?? <NoteIcon size={30} />}</span>}
       <h2>{title}</h2>
       <p>{body}</p>
       {children}

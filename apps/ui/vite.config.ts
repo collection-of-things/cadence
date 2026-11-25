@@ -4,5 +4,6 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   plugins: [react()],
-  server: { port: 5173, strictPort: true },
+  // portless injects PORT; fall back to Vite's usual port when run directly.
+  server: { port: Number(process.env.PORT) || 5173, strictPort: true },
 });

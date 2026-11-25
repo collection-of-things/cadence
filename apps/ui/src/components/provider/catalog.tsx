@@ -20,7 +20,7 @@ import { stationToTrack } from '@cadence/protocol';
 import { api, session } from '../../session';
 import { useUi } from '../../hooks';
 import { cleanIpcError } from '../../ipcError';
-import { routeState } from '../../routes';
+import { routeState, routeLabel } from '../../routes';
 import { EmptyState, Shelf, ShelfTitle, SkeletonRows, SkeletonShelf, SquareCard } from '../Shelf';
 import { TrackRow } from '../TrackRow';
 import './provider.css';
@@ -180,9 +180,9 @@ export function CatalogSectionView({ title, subtitle, entries, nav }: {
 }
 
 /** "Sign in" for a route; shown wherever a page needs an account. */
-export function SignInButton({ route }: { route: RouteId }) {
+export function SignInButton({ route, primary = false }: { route: RouteId; primary?: boolean }) {
   return (
-    <button className="btn" onClick={() => session.signInRoute(route)}>
+    <button className={primary ? 'btn btn-primary' : 'btn'} onClick={() => session.signInRoute(route)}>
       Sign in
     </button>
   );
@@ -217,11 +217,14 @@ export function ProviderPageFrame({ title, loading = false, error = null, route,
     <div className="stage-scroll home">
       <header className="page-head"><h1>{title}</h1></header>
       {loading && <CatalogSkeleton label={`Loading ${title}`} />}
-      {!loading && error && (
-        <EmptyState title={`Could not load ${title}`} body={error} alert>
-          {route && /sign\s?in|authoriz|unauth/i.test(error) && <SignInButton route={route} />}
+      {!loading && error && (route && /sign\s?in|authoriz|unauth/i.test(error) ? (
+        // Signed out is a step to take, not a failure.
+        <EmptyState title={`Sign in to ${routeLabel(route)}`} body={`${title} and your library appear here once you're signed in.`}>
+          <SignInButton route={route} primary />
         </EmptyState>
-      )}
+      ) : (
+        <EmptyState title={`Could not load ${title}`} body={error} alert />
+      ))}
       {!loading && !error && children}
     </div>
   );

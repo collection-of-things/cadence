@@ -145,7 +145,42 @@ function demoLrc(durationMs: number): string {
   return rows.join('\n');
 }
 
-export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
+/**
+ * Worst-case names for stress-testing layouts (`?cadence_mock=worst`): long
+ * and unbreakable titles, many artists, emoji and non-Latin text, on the
+ * first album (which also holds the playing track).
+ */
+const WORST = {
+  album: 'An Extraordinarily Long Album Title That Keeps Going (Deluxe Anniversary Remastered Edition)',
+  artist: 'The Unreasonably Named Orchestra of Very Long Artist Names & Friends',
+  titles: [
+    'A Song Whose Title Simply Refuses To End Before The Row Runs Out Of Room Entirely',
+    'Supercalifragilisticexpialidociousandthensomemorewithoutanyspacesatall',
+    '夜に駆ける — 月の光の中で踊る長い長いタイトル',
+    '🌊🌊 Waves 🌊🌊',
+    'I',
+  ],
+};
+
+function applyWorstCase(tracks: TrackRef[], albums: LibraryAlbum[]): void {
+  const first = albums[0];
+  if (!first) return;
+  const oldTitle = first.title;
+  first.title = WORST.album;
+  first.artist = WORST.artist;
+  let i = 0;
+  for (const track of tracks) {
+    if (track.album !== oldTitle) continue;
+    track.album = WORST.album;
+    track.artists = i === 1
+      ? [{ name: WORST.artist }, { name: 'Featuring Another Person' }, { name: 'And One More' }]
+      : [{ name: WORST.artist }];
+    track.title = WORST.titles[i % WORST.titles.length]!;
+    i += 1;
+  }
+}
+
+export function makeLibrary(worstCase = false): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
   const tracks: TrackRef[] = [];
   const albums: LibraryAlbum[] = [];
   ALBUMS.forEach((spec, ai) => {
@@ -194,6 +229,7 @@ export function makeLibrary(): { tracks: TrackRef[]; albums: LibraryAlbum[] } {
       genre: spec.genre,
     });
   });
+  if (worstCase) applyWorstCase(tracks, albums);
   return { tracks, albums };
 }
 

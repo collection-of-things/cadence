@@ -50,7 +50,7 @@ export async function run(ctx) {
   await navTo(ctx, "Albums", ".lib .album-grid");
   await openAlbumByName(ctx, "Signal Atlas");
   const facts = await page.locator(".album-chips .chip").allTextContents();
-  ev.check("album facts show track count", facts.some((f) => /3 tracks/.test(f)),
+  ev.check("album facts show track count", facts.some((f) => /3 (songs|tracks)/i.test(f)),
     facts.join(" | "));
   await shot(ctx, "album-facts");
 }

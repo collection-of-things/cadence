@@ -82,7 +82,8 @@ export function Sidebar({ location, onNavigate }: SidebarProps) {
         <span>{title}</span>
         <span className={`side-chevron ${closed[id] ? 'is-closed' : ''}`}><ChevronIcon size={13} /></span>
       </button>
-      {!closed[id] && <div className="side-section-rows">{children}</div>}
+      {/* Rows stay mounted when closed: the narrow icon rail has no heads to reopen them. */}
+      <div className={`side-section-rows ${closed[id] ? 'is-closed' : ''}`}>{children}</div>
     </section>
   );
 

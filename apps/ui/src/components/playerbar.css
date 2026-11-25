@@ -5,10 +5,17 @@
    panels; .is-floating is the same bar in the same place, lifted off that
    edge over Now Playing. */
 
+:root {
+  --pb-inset: 10px;
+  /* concentric with the stage card's corner, 10px further in */
+  --pb-radius: 12px;
+  --pb-shadow: 0 0 0 1px oklch(1 0 0 / 0.09), inset 0 1px 0 oklch(1 0 0 / 0.07), 0 2px 6px -1px oklch(0 0 0 / 0.35), 0 22px 50px -16px oklch(0 0 0 / 0.65);
+}
+
 .playerbar {
   position: absolute;
   z-index: 30;
-  height: 100px;
+  height: 92px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 340px) minmax(0, 1fr);
   grid-template-rows: auto auto;
@@ -23,8 +30,8 @@
   container: pill / inline-size;
   user-select: none;
   /* see-through glass: the page shows through it, blurred */
-  background: var(--sheen), oklch(0.16 0.006 285 / 0.46);
-  backdrop-filter: blur(36px) saturate(1.7);
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.045), oklch(1 0 0 / 0) 60%), oklch(0.17 0.006 285 / 0.62);
+  backdrop-filter: blur(40px) saturate(1.8);
 }
 @media (prefers-reduced-transparency: reduce) {
   .playerbar {
@@ -33,26 +40,29 @@
   }
 }
 
+/* docked: a glass card floating just off the stage card's bottom edge */
 .playerbar.is-docked {
-  left: 16px;
-  right: 16px;
-  bottom: 0;
-  border-radius: 12px 12px 0 0;
-  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.08);
+  left: var(--pb-inset);
+  right: var(--pb-inset);
+  bottom: var(--pb-inset);
+  border-radius: var(--pb-radius);
+  box-shadow: var(--pb-shadow);
 }
 
+/* floating: over Now Playing the bar spans the window evenly. It appears
+   in the docked bar's place and widens out (motion.css). */
 .playerbar.is-floating {
-  left: calc(var(--sidebar-w) + 16px);
-  right: calc(var(--rail) + 16px);
-  bottom: 14px;
-  border-radius: 16px;
-  box-shadow: var(--shadow-pop);
+  left: calc(var(--gap) + var(--pb-inset));
+  right: calc(var(--gap) + var(--pb-inset));
+  bottom: calc(var(--gap) + var(--pb-inset));
+  border-radius: var(--pb-radius);
+  box-shadow: var(--pb-shadow);
 }
 
 /* ---- left: what's playing ---- */
 .pb-now { grid-area: now; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .pb-open { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 13px; margin-right: 8px; text-align: start; }
-.pb-art { width: 60px; height: 60px; flex: none; display: grid; place-items: center; border-radius: 7px; overflow: hidden; color: var(--t4); background: var(--well); box-shadow: 0 4px 14px -4px oklch(0 0 0 / 0.6); }
+.pb-art { width: 58px; height: 58px; flex: none; display: grid; place-items: center; border-radius: 7px; overflow: hidden; color: var(--t4); background: var(--well); box-shadow: 0 4px 14px -4px oklch(0 0 0 / 0.6); }
 .pb-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pb-meta { min-width: 0; display: grid; gap: 3px; }
 .pb-title { font-size: 14.5px; font-weight: 600; line-height: 1.2; letter-spacing: -0.008em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -106,9 +116,39 @@
   .playerbar .pb-right .vol-input { display: none; }
   .playerbar .pb-right .vol { margin-right: 0; }
 }
+/* compact: the seek line runs the bar's full width on top, and one row of
+   now playing | transport | panels sits under it */
+/* The bar can't query its own width, so its grid follows the stage's
+   (the bar is the stage's width less its 10px insets). Mid widths: the
+   panel buttons keep their size and the title takes the rest, so the
+   transport sits between them rather than dead centre. */
+@container stage (max-width: 1000px) {
+  .playerbar { grid-template-columns: minmax(0, 1fr) minmax(220px, 320px) auto; column-gap: 16px; }
+}
+/* narrow pages have a 24px gutter; the bar steps in to meet it halfway */
+@container stage (max-width: 840px) {
+  .playerbar.is-docked { --pb-inset: 14px; }
+}
+@container stage (max-width: 720px) {
+  .playerbar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'seek seek seek'
+      'now controls right';
+    column-gap: 14px;
+    row-gap: 6px;
+    padding: 0 14px;
+  }
+}
 @container pill (max-width: 700px) {
-  .pb-seek .time-readout, .playerbar .transport .ctl-side, .pb-now .pb-fav { display: none; }
-  .pb-art { width: 48px; height: 48px; }
+  .pb-seek .time-readout, .playerbar .transport .ctl-side, .pb-now .pb-fav, .pb-now .route-badge { display: none; }
+  .pb-art { width: 46px; height: 46px; }
+  .pb-open { gap: 11px; }
+}
+/* tightest: the panel toggles and full screen stay; output and volume go
+   (the keyboard keeps M and Ctrl+arrows) */
+@container pill (max-width: 520px) {
+  .playerbar .pb-right .vol, .playerbar .pb-right .dev-picker { display: none; }
 }
 
 /* ---- play on: this computer or a paired phone ---- */
@@ -117,7 +157,9 @@
 .dev-picker { position: relative; display: flex; }
 .playerbar .pb-right .dev-trigger.is-remote { color: var(--acc); background: var(--accent-soft); }
 /* the player sits on the bottom edge, so this menu opens upward */
-.menu.menu-up { top: auto; bottom: calc(100% + 10px); transform-origin: bottom right; }
+/* it clears the bar's top edge instead of covering the seek line */
+.menu.menu-up { top: auto; right: -8px; bottom: calc(100% + 44px); transform-origin: bottom right; }
+@container pill (max-width: 700px) { .menu.menu-up { bottom: calc(100% + 20px); } }
 .dev-menu { min-width: 260px; }
 .dev-head { padding: 7px 10px 5px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--t4); }
 .dev-item {

@@ -105,6 +105,9 @@ export interface UiRuntime {
   clock: { positionMs: number; atMs: number; playing: boolean; durationMs: number; seekRevision: number };
 }
 
+/** How long a route notice stays up before the store drops it. */
+export const TOAST_MS = 6500;
+
 export const EMPTY_QUEUE: QueueState = {
   owner: 'coordinator',
   items: [],
@@ -263,7 +266,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
   function pushToast(route: RouteId, message: string, retriable: boolean) {
     const t: Toast = { id: ++toastSeq, route, message, retriable };
     set({ toasts: [...get().toasts.slice(-3), t] });
-    setTimeout(() => set({ toasts: get().toasts.filter((x) => x.id !== t.id) }), 6500);
+    setTimeout(() => set({ toasts: get().toasts.filter((x) => x.id !== t.id) }), TOAST_MS);
   }
 
   // Newest position tick, kept out of the store so ~10Hz ticks don't notify
