@@ -68,7 +68,7 @@ export function Transport() {
         className={`ctl-btn ctl-play ${busy ? 'is-busy' : ''}`}
         aria-label={showPause ? 'Pause' : 'Play'}
         disabled={(showPause && !canPause) || !hasTrack}
-        onClick={() => session.togglePlay()}
+        onClick={() => session.togglePlay({ fromButton: true })}
       >
         <span className={`icon-swap ${showPause ? '' : 'is-play'}`}>
           {showPause ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
