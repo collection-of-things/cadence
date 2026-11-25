@@ -23,18 +23,16 @@ function electronBinary() {
   const source = resolve(stock, "../../..");
   const cache = join(dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".cache", "cadence-dev");
   const bundle = join(cache, "Cadence.app");
+  const binary = join(bundle, "Contents", "MacOS", "Electron");
   const stampFile = join(cache, "source");
   try {
     const stamp = `${source}\n${statSync(join(source, "Contents", "Info.plist")).mtimeMs}`;
-    if (!existsSync(bundle) || !existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
+    if (!existsSync(binary) || !existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
       rmSync(bundle, { recursive: true, force: true });
       mkdirSync(cache, { recursive: true });
-      // -c clones on APFS, so the copy takes no time or space.
-      try {
-        execFileSync("cp", ["-cR", source, bundle], { stdio: "ignore" });
-      } catch {
-        execFileSync("cp", ["-R", source, bundle], { stdio: "ignore" });
-      }
+      // -c clones on APFS, so the copy takes no time or space; cp falls
+      // back to a plain copy where cloning is unsupported.
+      execFileSync("cp", ["-cR", source, bundle], { stdio: "ignore" });
       const plist = join(bundle, "Contents", "Info.plist");
       const set = (key, value) => execFileSync("plutil", ["-replace", key, "-string", value, plist]);
       set("CFBundleName", "Cadence");
@@ -44,7 +42,7 @@ function electronBinary() {
       execFileSync("codesign", ["--force", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime", bundle], { stdio: "ignore" });
       writeFileSync(stampFile, stamp);
     }
-    return join(bundle, "Contents", "MacOS", "Electron");
+    return binary;
   } catch (error) {
     console.warn(`[launch] running stock Electron; could not prepare Cadence.app: ${error.message}`);
     return stock;
