@@ -26,7 +26,11 @@ function electronBinary() {
   const binary = join(bundle, "Contents", "MacOS", "Electron");
   const stampFile = join(cache, "source");
   try {
-    const stamp = `${source}\n${statSync(join(source, "Contents", "Info.plist")).mtimeMs}`;
+    // `pnpm vmp:sign` rewrites only the framework's .sig, so it is part of
+    // the stamp: signing Electron after a clone exists refreshes the clone.
+    const vmpSig = join(source, "Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Electron Framework.sig");
+    const sigStamp = existsSync(vmpSig) ? statSync(vmpSig).mtimeMs : "none";
+    const stamp = `${source}\n${statSync(join(source, "Contents", "Info.plist")).mtimeMs}\n${sigStamp}`;
     if (!existsSync(binary) || !existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
       // The stamp marks a finished clone, so a failed rebuild is retried.
       rmSync(stampFile, { force: true });

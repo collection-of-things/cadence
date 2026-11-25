@@ -10,7 +10,8 @@
     "test": "pnpm -r test",
     "dev": "node scripts/build-audio.mjs && pnpm --filter @cadence/ui build && pnpm --filter @cadence/desktop dev",
     "verify": "bash scripts/verify.sh",
-    "build:audio": "node scripts/build-audio.mjs"
+    "build:audio": "node scripts/build-audio.mjs",
+    "vmp:sign": "node scripts/vmp-sign.mjs"
   },
   "packageManager": "pnpm@12.21.0",
   "devDependencies": {
