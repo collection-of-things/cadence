@@ -142,11 +142,12 @@ export function TimeReadout({ part }: { part: 'elapsed' | 'remaining' }) {
     const loop = () => {
       raf = requestAnimationFrame(loop);
       const pos = positionNow();
-      const text = part === 'elapsed' ? formatTime(pos) : `-${formatTime(Math.max(0, duration - pos))}`;
+      const text = part === 'elapsed' ? formatTime(pos) : `\u2212${formatTime(Math.max(0, duration - pos))}`;
       if (text !== last && ref.current) ref.current.textContent = last = text;
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, [duration, part]);
-  return <span className={`time-readout is-${part}`} ref={ref} aria-hidden="true" />;
+  // an hour-long track reserves h:mm:ss up front, so the line never jumps at the hour
+  return <span className={`time-readout is-${part}${duration >= 3_600_000 ? ' is-hours' : ''}`} ref={ref} aria-hidden="true" />;
 }

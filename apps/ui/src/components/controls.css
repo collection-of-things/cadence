@@ -29,7 +29,7 @@
   background: var(--acc);
   color: var(--acc-ink);
   font-size: 8px;
-  font-weight: 800;
+  font-weight: var(--fw-bold);
 }
 
 .transport { display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -93,8 +93,8 @@
   border-radius: 6px;
   background: oklch(0.22 0.007 285 / 0.95);
   color: #fff;
-  font-size: 11px;
-  font-weight: 550;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   opacity: 0;
@@ -136,4 +136,4 @@
 .vol-input:focus-visible { outline: none; }
 :root[data-input='keyboard'] .vol-input:focus-visible::-webkit-slider-runnable-track { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 3px; }
 
-.time-readout { flex: none; min-width: 92px; color: var(--t3); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.time-readout { flex: none; min-width: 92px; color: var(--t3); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; text-align: center; }

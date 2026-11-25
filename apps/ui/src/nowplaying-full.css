@@ -42,7 +42,7 @@
   transform: translateX(-50%);
   mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%);
 }
-.npf.is-paused .npf-art img, .npf.is-paused .npf-lyrics { filter: brightness(0.8) saturate(0.85); }
+.npf.is-paused .npf-art img { filter: brightness(0.8) saturate(0.85); }
 
 /* Match the top bar controls and move with the sidebar drawer. */
 /* where the top bar's own buttons sit, so they don't jump as the view opens */
@@ -64,6 +64,17 @@
   right: var(--npf-col-right);
   bottom: 136px;
   width: var(--npf-col-w);
+  isolation: isolate;
+}
+/* the cover's ambient glow can bloom right behind the words; a soft dark
+   pool under the column keeps the dim lines at 3:1 without brightening them */
+.npf-lyrics::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -14% -16% -14% -10%;
+  background: radial-gradient(closest-side, oklch(0 0 0 / 0.38), oklch(0 0 0 / 0.2) 62%, transparent);
+  pointer-events: none;
 }
 @media (max-width: 1000px) {
   .npf { --npf-col-right: 20px; --npf-col-w: 52vw; }
@@ -76,7 +87,7 @@
 
 /* Up Next in the right column: same place as the lyrics, no card */
 .npf-queue { display: flex; flex-direction: column; }
-.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: 17px; font-weight: 700; letter-spacing: -0.013em; }
+.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: var(--fs-title-3); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
 
 /* sidebar over Now Playing: a drawer that slides in from the left edge and
    sits in exactly the same place as the shell's sidebar. The cover stays put;

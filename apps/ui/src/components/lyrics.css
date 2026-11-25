@@ -15,11 +15,13 @@
 .lyrics-scroll p {
   margin: 0;
   font-family: var(--font-display);
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   cursor: pointer;
   transform-origin: left center;
 }
-.lyrics-plain { white-space: pre-wrap; font-family: var(--font-display); font-weight: 600; }
+.lyrics-plain { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-display); font-weight: var(--fw-semibold); }
+/* room past the last line, so it can scroll clear of the bottom fade */
+.lyrics-plain::after { content: ''; display: block; height: 12%; }
 .lyrics-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--text-dim); text-align: center; }
 .lyrics-follow {
   position: absolute;
@@ -31,8 +33,8 @@
   background: oklch(1 0 0 / 0.14);
   backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
 }
 .lyrics-follow:hover { background: rgba(255, 255, 255, 0.26); }
 /* local files: attach a lyrics file, nudge the timing. Quiet until pointed at. */
@@ -50,20 +52,17 @@
   box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.06);
   backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
   text-shadow: none;
-  opacity: 0.78;
-  transition: opacity 140ms ease-out;
 }
-.lyrics-tools:hover, .lyrics-tools:focus-within { opacity: 1; }
 /* with the tools showing, the lines end (and fade) above them, never under */
 :is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > :is(.lyrics-scroll, .lyrics-plain, .lyrics-empty) { bottom: 60px; }
 /* Follow sits above the tools rather than over their right end */
 :is(.side-panel-body, .npf-lyrics):has(> .lyrics-tools) > .lyrics-follow { bottom: 62px; }
 .lyrics-tools button { min-width: 28px; height: 28px; padding: 0 10px; border-radius: var(--r-pill); color: inherit; font: inherit; }
 /* disabled reads as quiet text, not the app's 35% disabled fade on top of the pill's */
-.lyrics-tools button:disabled { opacity: 1; color: oklch(1 0 0 / 0.55); cursor: default; }
+.lyrics-tools button:disabled { opacity: 1; color: oklch(1 0 0 / 0.76); cursor: default; }
 .lyrics-tools .lyrics-offset { min-width: 62px; font-variant-numeric: tabular-nums; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-tools button:hover:not(:disabled) { background: oklch(1 0 0 / 0.16); }
@@ -90,7 +89,7 @@
 .side-panel-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lyrics-rail .lyrics-scroll, .lyrics-rail .lyrics-plain {
   padding: 0 22px 0 24px;
-  mask-image: linear-gradient(transparent, transparent 8px, #000 48px, #000 86%, transparent);
+  mask-image: linear-gradient(transparent, transparent 8px, #000 32px, #000 92%, transparent);
 }
 .lyrics-rail .lyrics-scroll::before { height: 30%; }
 /* The viewport's edge mask would fade an outline on it, so the unmasked
@@ -99,49 +98,52 @@
   border-radius: 14px;
   box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 70%, transparent);
 }
-.lyrics-rail .lyrics-scroll p { padding: 12px 0; font-family: var(--font-lyrics); font-size: 20px; font-weight: 650; line-height: 1.42; letter-spacing: -0.005em; color: oklch(1 0 0 / 0.52); }
+.lyrics-rail .lyrics-scroll p { padding: 12px 0; font-family: var(--font-lyrics); font-size: var(--fs-title-2); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); text-wrap: balance; overflow-wrap: anywhere; color: oklch(1 0 0 / 0.52); }
 .lyrics-rail .lyrics-scroll p.active { color: #fff; }
 @media (hover: hover) and (pointer: fine) {
   .lyrics-rail .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.7); }
 }
-.lyrics-rail .lyrics-plain { padding-top: 24px; font-family: var(--font-lyrics); font-size: 17px; line-height: 1.6; color: var(--t2); }
-.lyrics-rail .lyrics-empty { font-size: 14px; color: var(--t3); }
+.lyrics-rail .lyrics-plain { padding-top: 24px; font-family: var(--font-lyrics); font-size: var(--fs-title-3); line-height: var(--lh-prose); color: var(--t2); }
+.lyrics-rail .lyrics-empty { font-size: var(--fs-body); color: var(--t3); }
 
 /* ---- Now Playing column: big display type, no card ---- */
 .npf-lyrics .lyrics-scroll, .npf-lyrics .lyrics-plain {
   padding: 0 8px;
-  mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 8%, #000 92%, transparent);
 }
 .npf-lyrics .lyrics-scroll::before, .npf-lyrics .lyrics-scroll::after { height: 42%; }
 .npf-lyrics .lyrics-scroll p {
   padding: 12px 0;
   font-family: var(--font-lyrics);
-  font-size: clamp(26px, 2.5vw, 40px);
-  font-weight: 700;
-  letter-spacing: -0.012em;
-  line-height: 1.2;
-  color: oklch(1 0 0 / 0.36);
+  font-size: var(--fs-lyric);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-heading);
+  line-height: var(--lh-heading);
+  color: oklch(1 0 0 / 0.46);
+  /* a soft dark halo keeps dim lines legible over a bright cover glow */
+  text-shadow: 0 0 22px oklch(0 0 0 / 0.45);
   transform-origin: left center;
   /* the sung line grows 4%; wrapping 6% short keeps it inside the column */
   padding-right: 4.5%;
   overflow-wrap: anywhere;
-  text-wrap: pretty;
+  text-wrap: balance;
 }
 /* depth of field: lines blur with distance from the one being sung */
-.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.3); filter: blur(1px); }
+.npf-lyrics .lyrics-scroll p.past { filter: blur(0.75px); }
 /* depth of field starts two lines out: the neighbours of the sung line stay sharp */
-.npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.5); filter: none; }
-.npf-lyrics .lyrics-scroll p.p1 { color: oklch(1 0 0 / 0.38); filter: none; }
-.npf-lyrics .lyrics-scroll p.d2 { filter: blur(1.2px); }
-.npf-lyrics .lyrics-scroll p.d3 { filter: blur(2.2px); opacity: 0.8; }
+.npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.58); filter: none; }
+.npf-lyrics .lyrics-scroll p.p1 { filter: none; }
+.npf-lyrics .lyrics-scroll p.d2 { filter: none; }
+.npf-lyrics .lyrics-scroll p.d3 { filter: blur(0.75px); }
 /* the sung line: brighter, a touch larger, tinted by the cover */
-.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 22%, #fff); filter: none; opacity: 1; transform: scale(1.04); }
+.npf-lyrics .lyrics-scroll p.active { color: color-mix(in oklab, var(--acc) 10%, #fff); filter: none; opacity: 1; transform: scale(1.04); }
 /* reading ahead: pointing at the lyrics, or tabbing to them, brings every line into focus */
 .npf-lyrics .lyrics-scroll:hover p, :root[data-input='keyboard'] .npf-lyrics .lyrics-scroll:focus-visible p { filter: none; }
 @media (hover: hover) and (pointer: fine) {
-  .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.62); }
+  .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.72); }
 }
-.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: 22px; font-weight: 600; line-height: 1.6; color: oklch(1 0 0 / 0.78); }
-.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: clamp(22px, 2vw, 30px); font-weight: 700; letter-spacing: -0.012em; color: oklch(1 0 0 / 0.3); }
+.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: var(--fs-lyric-plain); font-weight: var(--fw-semibold); line-height: var(--lh-prose); color: oklch(1 0 0 / 0.78); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
+/* the message sits where the lines would, as quiet as the next line and with their halo */
+.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: var(--fs-title-1); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); text-align: start; text-wrap: balance; color: oklch(1 0 0 / 0.58); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
 .npf-lyrics .lyrics-follow { right: 8px; bottom: 8px; }
 .npf-lyrics .lyrics-tools { left: 8px; bottom: 8px; }

@@ -57,8 +57,8 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
       </span>
       {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" width={34} height={34} loading="lazy" decoding="async" /> : <span className="q-art" />}
       <span className="q-tt">
-        <span className="q-title">{t.title}</span>
-        <span className="q-artist">{artistsLine(t.artists)}</span>
+        <span className="q-title" title={t.title}>{t.title}</span>
+        <span className="q-artist" title={artistsLine(t.artists)}>{artistsLine(t.artists)}</span>
       </span>
       <RouteBadge route={t.route} />
       <span className="q-dur">{formatTime(t.durationMs)}</span>

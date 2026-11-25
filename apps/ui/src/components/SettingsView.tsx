@@ -254,7 +254,7 @@ function AccountsSection() {
                   <i className="src-dot" aria-hidden />
                   {meta.label}
                 </span>
-                {cap.stateDetail}
+                {cap.stateDetail && <span className="set-detail">{cap.stateDetail}</span>}
               </>
             }
           >

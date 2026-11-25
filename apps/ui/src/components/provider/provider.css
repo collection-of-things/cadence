@@ -6,4 +6,4 @@
 .catalog-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 22px; }
 .catalog-search-field { max-width: 460px; margin: 0 0 22px; }
 .catalog-more { margin: 0 0 24px; }
-.catalog-count { color: var(--t4); font-size: 12px; margin: -22px 0 24px; }
+.catalog-count { color: var(--t4); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; margin: -22px 0 24px; }
