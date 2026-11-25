@@ -28,6 +28,8 @@ function electronBinary() {
   try {
     const stamp = `${source}\n${statSync(join(source, "Contents", "Info.plist")).mtimeMs}`;
     if (!existsSync(binary) || !existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
+      // The stamp marks a finished clone, so a failed rebuild is retried.
+      rmSync(stampFile, { force: true });
       rmSync(bundle, { recursive: true, force: true });
       mkdirSync(cache, { recursive: true });
       // -c clones on APFS, so the copy takes no time or space; cp falls
