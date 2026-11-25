@@ -11,9 +11,11 @@ import type {
   QueueState,
   RouteAdapter,
   RouteCapabilities,
+  RouteErrorCode,
   RouteId,
 } from "@cadence/protocol";
 import type { AdapterRegistry } from "../adapters/registry.js";
+import { RouteError } from "../adapters/route-error.js";
 import { isFidelityCapable, isReplayGainCapable, isRestartRestorable } from "../adapters/types.js";
 import { isTrack, parsePersistedPlayback, type PersistedPlayback } from "./persisted-state.js";
 import * as QueueOps from "./queue-ops.js";
@@ -621,7 +623,7 @@ export class Coordinator {
         this.positionMs = previousPosition;
       }
       this.emitQueue();
-      this.failStart(route, item.queueId, `prepare failed: ${msg(cause)}`, true);
+      this.failStart(route, item.queueId, failure(cause, "prepare failed"));
       return;
     }
 
@@ -697,7 +699,7 @@ export class Coordinator {
       // `started` can't resurrect "playing" over the reported error.
       this.lease = null;
       this.activeAdapter = null;
-      this.failStart(route, item.queueId, `play failed: ${msg(cause)}`, true);
+      this.failStart(route, item.queueId, failure(cause, "play failed"));
       return;
     }
     if (this.lease === null || this.lease.generationId !== lease.generationId) {
@@ -740,10 +742,10 @@ export class Coordinator {
   }
 
   /** Record a start failure: error stays local to the route, queue preserved. */
-  private failStart(route: RouteId, queueId: string, message: string, retriable: boolean): void {
+  private failStart(route: RouteId, queueId: string, f: Failure): void {
     this.status = "error";
-    this.lastError = { route, queueId, message, retriable };
-    this.emitError(route, queueId, message, retriable);
+    this.lastError = { route, queueId, message: f.message, retriable: f.retriable, ...(f.code ? { code: f.code } : {}) };
+    this.emitError(route, queueId, f.message, f.retriable, f.code);
     this.emitSnapshot();
     this.persistSoon();
   }
@@ -831,7 +833,8 @@ export class Coordinator {
       return true;
     } catch (cause) {
       const route = lease?.route ?? this.activeRouteValue ?? "local";
-      this.emitError(route, lease?.queueId, `${op} failed: ${msg(cause)}`, true);
+      const f = failure(cause, `${op} failed`);
+      this.emitError(route, lease?.queueId, f.message, f.retriable, f.code);
       return false;
     }
   }
@@ -855,9 +858,15 @@ export class Coordinator {
       // Adapter errors carry no generationId; they stay local to their route.
       const isActive = route === this.activeRoute;
       if (isActive && this.lease !== null) {
-        this.lastError = { route, queueId: this.lease.queueId, message: e.message, retriable: e.retriable };
+        this.lastError = {
+          route,
+          queueId: this.lease.queueId,
+          message: e.message,
+          retriable: e.retriable,
+          ...(e.code ? { code: e.code } : {}),
+        };
       }
-      this.emitError(route, this.lease?.queueId, e.message, e.retriable);
+      this.emitError(route, this.lease?.queueId, e.message, e.retriable, e.code);
       if (isActive) this.emitSnapshot();
       return;
     }
@@ -1198,17 +1207,42 @@ export class Coordinator {
     this.emit({ kind: "queue", queue: this.queue });
   }
 
-  private emitError(route: RouteId, queueId: string | undefined, message: string, retriable: boolean): void {
-    if (queueId === undefined) {
-      this.emit({ kind: "error", route, message, retriable });
-    } else {
-      this.emit({ kind: "error", route, queueId, message, retriable });
-    }
+  private emitError(
+    route: RouteId,
+    queueId: string | undefined,
+    message: string,
+    retriable: boolean,
+    code?: RouteErrorCode,
+  ): void {
+    this.emit({
+      kind: "error",
+      route,
+      ...(queueId === undefined ? {} : { queueId }),
+      message,
+      retriable,
+      ...(code ? { code } : {}),
+    });
   }
 }
 
 function msg(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+interface Failure {
+  message: string;
+  retriable: boolean;
+  code?: RouteErrorCode;
+}
+
+/** How a rejected adapter call reads to the listener. A RouteError already
+ * carries its user-facing message, retriability and code; anything else is
+ * an unexpected failure, prefixed with the operation and worth retrying. */
+function failure(cause: unknown, op: string): Failure {
+  if (cause instanceof RouteError) {
+    return { message: cause.message, retriable: cause.retriable, ...(cause.code ? { code: cause.code } : {}) };
+  }
+  return { message: `${op}: ${msg(cause)}`, retriable: true };
 }
 
 /**

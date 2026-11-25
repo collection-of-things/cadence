@@ -180,7 +180,7 @@ export interface PlaybackSnapshot {
   replayGain?: boolean;
   output?: ActiveOutput;
   /** Per-route error, kept local to the route — never takes others down. */
-  lastError?: { route: RouteId; queueId: string; message: string; retriable: boolean };
+  lastError?: { route: RouteId; queueId: string; message: string; retriable: boolean; code?: RouteErrorCode };
 }
 
 // Commands UI -> coordinator -------------------------------------------------
@@ -208,13 +208,20 @@ export type PlaybackCommand =
 
 // Events coordinator -> UI ----------------------------------------------------
 
+/**
+ * Machine-readable reason a route refused or failed work. The UI keys
+ * actions off it: `unauthenticated` offers sign-in instead of "Try again".
+ * Other strings are route-specific (e.g. "drm-unsigned").
+ */
+export type RouteErrorCode = "unauthenticated" | "no-subscription" | (string & {});
+
 export type CoordinatorEvent =
   | { kind: "snapshot"; snapshot: PlaybackSnapshot }
   | { kind: "queue"; queue: QueueState }
   | { kind: "capabilities"; route: RouteId; capabilities: RouteCapabilities }
   | { kind: "position"; positionMs: number; atMs: number; generationId: number }
   | { kind: "trackEnded"; queueId: string; generationId: number }
-  | { kind: "error"; route: RouteId; queueId?: string; message: string; retriable: boolean }
+  | { kind: "error"; route: RouteId; queueId?: string; message: string; retriable: boolean; code?: RouteErrorCode }
   | { kind: "fft"; bands: number[]; peak: number; atMs: number; generationId: number }
   | { kind: "output"; output: ActiveOutput };
 
@@ -223,8 +230,13 @@ export type CoordinatorEvent =
 // ---------------------------------------------------------------------------
 
 /**
- * A route adapter drives one playback engine. All failures must be reported
- * through events and stay local to the route.
+ * A route adapter drives one playback engine. Failures stay local to the route.
+ *
+ * Error ownership: a failure of an awaited call (prepare, play, resume, ...)
+ * is reported ONLY by rejecting that call — its caller reports it, once. The
+ * `error` adapter event is reserved for unsolicited failures no caller is
+ * waiting on (view crash, mid-stream stall). Emitting AND rejecting for the
+ * same failure double-reports it to the listener.
  */
 export interface RouteAdapter {
   readonly route: RouteId;
@@ -297,7 +309,7 @@ export type AdapterEvent =
   /** The provider stopped playback unconditionally (sign-out, teardown) —
    *  the coordinator drops the lease; this is not a queue-advance signal. */
   | { kind: "stopped"; generationId: number }
-  | { kind: "error"; message: string; retriable: boolean; code?: string }
+  | { kind: "error"; message: string; retriable: boolean; code?: RouteErrorCode }
   | { kind: "capabilitiesChanged" };
 
 // ---------------------------------------------------------------------------
