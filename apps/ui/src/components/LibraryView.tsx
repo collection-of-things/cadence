@@ -61,10 +61,15 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
       const dy = from.top - to.top;
       const s = to.width ? from.width / to.width : 1;
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(s - 1) < 0.01) return;
-      el.animate(
+      // A card changing rows glides over its new neighbours, not under them
+      // (each row is its own layer), so its row is lifted for the glide.
+      const row = Math.abs(dy) >= 1 ? el.closest<HTMLElement>('.album-row') : null;
+      if (row) row.style.zIndex = '1';
+      const glide = el.animate(
         [{ transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${s})` }, { transformOrigin: 'top left', transform: 'none' }],
         { duration: 260, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' },
       );
+      if (row) void glide.finished.finally(() => { row.style.zIndex = ''; }).catch(() => {});
     });
   }, [columns]);
   useEffect(() => {
