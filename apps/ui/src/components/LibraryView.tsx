@@ -75,7 +75,7 @@ function VirtualAlbumGrid({ albums, onSelectAlbum }: { albums: LibraryAlbum[]; o
   useEffect(() => {
     if (fit(width) === columns) return;
     if (prefersReducedMotion() || !document.querySelector('.app.is-moving')) {
-      setColumns(fit(width));
+      settleColumns(fit(width));
       return;
     }
     // Commit on the frame the stage settles (it drops .is-moving), not on a guess.
