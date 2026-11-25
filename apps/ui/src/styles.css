@@ -802,7 +802,8 @@ button:disabled {
 .cap-chip.is-dim { color: var(--t4); background: transparent; box-shadow: inset 0 0 0 1px var(--hair); }
 
 .src-quality { margin: -4px 0 0; font-size: var(--fs-small); font-weight: var(--fw-medium); line-height: var(--lh-body); color: var(--t2); font-variant-numeric: tabular-nums; }
-.src-unconfirmed { margin: 0; font-size: var(--fs-caption); line-height: var(--lh-body); color: var(--t4); }
+/* which capabilities a route hasn't confirmed: information, so the detail tier, not meta */
+.src-unconfirmed { margin: 0; font-size: var(--fs-caption); line-height: var(--lh-body); color: var(--t3); }
 .src-details { margin-top: auto; padding-top: 2px; font-size: var(--fs-caption); color: var(--t3); }
 .src-details summary { width: fit-content; cursor: pointer; list-style: none; padding: 3px 0; color: var(--t3); font-weight: var(--fw-medium); }
 .src-details summary::-webkit-details-marker { display: none; }
