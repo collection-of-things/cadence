@@ -19,7 +19,9 @@
   cursor: pointer;
   transform-origin: left center;
 }
-.lyrics-plain { white-space: pre-wrap; font-family: var(--font-display); font-weight: var(--fw-semibold); }
+.lyrics-plain { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-display); font-weight: var(--fw-semibold); }
+/* room past the last line, so it can scroll clear of the bottom fade */
+.lyrics-plain::after { content: ''; display: block; height: 12%; }
 .lyrics-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--text-dim); text-align: center; }
 .lyrics-follow {
   position: absolute;
@@ -113,7 +115,7 @@
 .npf-lyrics .lyrics-scroll p {
   padding: 12px 0;
   font-family: var(--font-lyrics);
-  font-size: clamp(26px, 2.5vw, 40px);
+  font-size: var(--fs-lyric);
   font-weight: var(--fw-bold);
   letter-spacing: var(--ls-heading);
   line-height: var(--lh-heading);
@@ -140,8 +142,8 @@
 @media (hover: hover) and (pointer: fine) {
   .npf-lyrics .lyrics-scroll p:not(.active):hover { color: oklch(1 0 0 / 0.72); }
 }
-.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: var(--fs-title-2); font-weight: var(--fw-semibold); line-height: var(--lh-prose); letter-spacing: var(--ls-heading); color: oklch(1 0 0 / 0.78); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
+.npf-lyrics .lyrics-plain { padding-top: 12%; font-family: var(--font-lyrics); font-size: var(--fs-lyric-plain); font-weight: var(--fw-semibold); line-height: var(--lh-prose); color: oklch(1 0 0 / 0.78); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
 /* the message sits where the lines would, as quiet as the next line and with their halo */
-.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: var(--fs-title-1); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); text-wrap: balance; color: oklch(1 0 0 / 0.58); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
+.npf-lyrics .lyrics-empty { place-items: center start; padding: 0 8px; font-family: var(--font-lyrics); font-size: var(--fs-title-1); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); text-align: start; text-wrap: balance; color: oklch(1 0 0 / 0.58); text-shadow: 0 0 22px oklch(0 0 0 / 0.45); }
 .npf-lyrics .lyrics-follow { right: 8px; bottom: 8px; }
 .npf-lyrics .lyrics-tools { left: 8px; bottom: 8px; }

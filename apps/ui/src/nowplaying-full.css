@@ -73,7 +73,7 @@
   position: absolute;
   z-index: -1;
   inset: -14% -16% -14% -10%;
-  background: radial-gradient(closest-side, oklch(0 0 0 / 0.34), oklch(0 0 0 / 0.18) 62%, transparent);
+  background: radial-gradient(closest-side, oklch(0 0 0 / 0.38), oklch(0 0 0 / 0.2) 62%, transparent);
   pointer-events: none;
 }
 @media (max-width: 1000px) {
