@@ -450,7 +450,8 @@
   box-shadow: 0 4px 14px -4px color-mix(in oklab, var(--acc) 55%, transparent);
 }
 .play-pill:active:not(:disabled) { transform: scale(0.965); }
-.play-pill:disabled { opacity: 0.4; }
+/* unavailable while the tracks load: no accent, the label stays readable */
+.play-pill:disabled { opacity: 1; background: var(--well-hi); color: var(--t3); box-shadow: none; }
 @media (hover: hover) and (pointer: fine) {
   .play-pill:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #fff); }
 }

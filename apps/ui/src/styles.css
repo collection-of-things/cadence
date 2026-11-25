@@ -256,6 +256,10 @@ button:disabled {
   .btn-ghost:hover:not(:disabled) { background: var(--well); color: var(--t1); }
   .btn-primary:hover:not(:disabled) { background: #fff; }
 }
+/* An unavailable text button keeps its words readable: the fill drops away
+   and the label steps down a tier. The global 35% fade stays for icons. */
+.btn:disabled { opacity: 1; background: var(--well); color: var(--t3); }
+.btn-ghost:disabled { background: transparent; color: var(--t4); }
 
 .route-badge {
   width: fit-content;
@@ -331,7 +335,7 @@ button:disabled {
 
 .q-art { width: 34px; height: 34px; flex: none; border-radius: 7px; object-fit: cover; background: var(--well); }
 .q-tt { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.q-title { font-size: var(--fs-caption); font-weight: var(--fw-semibold); line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-title { font-size: var(--fs-caption); font-weight: var(--fw-semibold); line-height: var(--lh-heading); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-artist { margin-top: 1px; font-size: var(--fs-caption); color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-dur { font-size: var(--fs-caption); color: var(--t4); font-variant-numeric: tabular-nums; }
 .q-acts { display: none; gap: 0; }
@@ -865,7 +869,7 @@ button:disabled {
 .set-pair { display: flex; align-items: center; gap: 20px; }
 .set-pair-qr { flex: none; width: 168px; height: 168px; padding: 8px; border-radius: var(--r-md, 10px); background: #fff; image-rendering: pixelated; }
 .set-pair-txt { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.set-pair-code { font-size: 34px; font-weight: var(--fw-bold); letter-spacing: 0.08em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.set-pair-code { font-size: var(--fs-title-1); font-weight: var(--fw-bold); letter-spacing: 0.08em; font-variant-numeric: tabular-nums; line-height: var(--lh-heading); }
 .set-skeleton { height: 18px; width: 60%; border-radius: 6px; background: var(--well-hi); }
 
 /* one choice out of a few: a filled pill marks the chosen one */

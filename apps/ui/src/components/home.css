@@ -170,8 +170,10 @@
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
-/* a chip that acts: Flat in settings, Sign in beside a search error */
-.chip-btn { cursor: pointer; }
+/* a chip that acts: Flat in settings, Sign in beside a search error. It is
+   a button, not a label over artwork, so it speaks in sentence case. */
+.chip-btn { cursor: pointer; font-size: var(--fs-caption); letter-spacing: normal; text-transform: none; }
+.chip-btn:disabled { opacity: 1; background: var(--well); color: var(--t3); cursor: default; }
 .chip-btn:active:not(:disabled) { transform: scale(0.96); }
 @media (hover: hover) and (pointer: fine) {
   .chip-btn:hover:not(:disabled) { background: oklch(1 0 0 / 0.18); color: #fff; }
