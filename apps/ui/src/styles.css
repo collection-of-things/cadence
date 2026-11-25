@@ -479,6 +479,7 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 
 /* artists */
@@ -858,7 +859,7 @@ button:disabled {
 .set-group-title { margin: 0 0 12px; font-size: var(--fs-title-3); font-weight: var(--fw-bold); letter-spacing: var(--ls-heading); line-height: var(--lh-heading); }
 .set-card { border-radius: var(--r-lg); background: var(--well); overflow: hidden; }
 .set-row .btn { flex: none; }
-.set-sub .src-state { margin-right: 8px; }
+.set-sub .src-state + .set-detail::before { content: '\00B7'; margin: 0 6px; color: var(--t4); }
 .set-value { flex: none; font-size: var(--fs-small); color: var(--t2); font-variant-numeric: tabular-nums; }
 .set-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-small); color: var(--t2); }
 .set-pair { display: flex; align-items: center; gap: 20px; }
@@ -898,9 +899,9 @@ button:disabled {
   border-top: 1px solid var(--border-soft);
 }
 
-.set-dim {
-  opacity: 0.45;
-}
+/* EQ unavailable: the sliders fade; the note explaining why stays readable */
+.set-dim .eq-grid { opacity: 0.45; }
+.set-dim .set-label { color: var(--t3); }
 
 .set-row {
   display: flex;
@@ -1085,7 +1086,7 @@ button:disabled {
 .lib-roots { display: flex; flex-direction: column; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--panel) 60%, transparent); }
 .lib-root { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); }
 .lib-root-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t2); font-family: ui-monospace, monospace; }
-.lib-root-x { padding: 0 8px; font-size: var(--fs-body); line-height: 1.4; }
+.lib-root-x { padding: 0 8px; font-size: var(--fs-small); line-height: 1; }
 .lib-roots-empty { color: var(--t3); font-size: var(--fs-caption); padding: 2px 0; }
 
 .src-head { display: flex; align-items: baseline; gap: 12px; padding: 0; }

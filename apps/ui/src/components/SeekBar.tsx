@@ -148,5 +148,6 @@ export function TimeReadout({ part }: { part: 'elapsed' | 'remaining' }) {
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, [duration, part]);
-  return <span className={`time-readout is-${part}`} ref={ref} aria-hidden="true" />;
+  // an hour-long track reserves h:mm:ss up front, so the line never jumps at the hour
+  return <span className={`time-readout is-${part}${duration >= 3_600_000 ? ' is-hours' : ''}`} ref={ref} aria-hidden="true" />;
 }

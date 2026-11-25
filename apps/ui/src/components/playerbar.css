@@ -65,9 +65,12 @@
 .pb-art { width: 58px; height: 58px; flex: none; display: grid; place-items: center; border-radius: 7px; overflow: hidden; color: var(--t4); background: var(--well); box-shadow: 0 4px 14px -4px oklch(0 0 0 / 0.6); }
 .pb-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pb-meta { min-width: 0; display: grid; gap: 3px; }
-.pb-title { font-size: var(--fs-lead); font-weight: var(--fw-semibold); line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-title { font-size: var(--fs-lead); font-weight: var(--fw-semibold); line-height: var(--lh-heading); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pb-sub { font-size: var(--fs-small); line-height: 1.25; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.playerbar.is-idle .pb-title { color: var(--t3); }
+/* idle: the cover slot fades, the words stay readable */
+.pb-open:disabled { opacity: 1; }
+.pb-open:disabled .pb-art { opacity: 0.35; }
+.playerbar.is-idle .pb-title { color: var(--t2); }
 .pb-fav { flex: none; }
 .pb-fav.is-on { color: var(--acc); }
 .pb-now .route-badge { flex: none; align-self: center; margin-left: 4px; color: var(--t2); background: var(--well-hi); }
@@ -75,6 +78,7 @@
 /* ---- middle: seek line over the transport ---- */
 .pb-seek { grid-area: seek; display: flex; align-items: center; gap: 10px; }
 .pb-seek .seek { flex: 1; }
+.pb-seek .time-readout.is-hours { min-width: 8ch; }
 .pb-seek .time-readout { flex: none; min-width: 6ch; white-space: nowrap; font-size: var(--fs-caption); color: var(--t2); }
 .pb-seek .time-readout.is-elapsed { text-align: end; }
 .pb-seek .time-readout.is-remaining { text-align: start; }
@@ -115,6 +119,7 @@
 @container pill (max-width: 860px) {
   .playerbar .pb-right .vol-input { display: none; }
   .playerbar .pb-right .vol { margin-right: 0; }
+  .pb-sub { font-size: var(--fs-caption); }
 }
 /* compact: the seek line runs the bar's full width on top, and one row of
    now playing | transport | panels sits under it */
@@ -161,14 +166,16 @@
 .menu.menu-up { top: auto; right: -8px; bottom: calc(100% + 44px); transform-origin: bottom right; }
 @container pill (max-width: 700px) { .menu.menu-up { bottom: calc(100% + 20px); } }
 .dev-menu { min-width: 260px; }
-.dev-head { padding: 7px 10px 5px; font-size: var(--fs-micro); font-weight: var(--fw-semibold); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--t4); }
+.dev-head { padding: 7px 10px 5px; font-size: var(--fs-caption); font-weight: var(--fw-medium); color: var(--t3); }
 .dev-item {
   display: flex; align-items: center; gap: 11px; width: 100%;
   padding: 8px 10px; border-radius: 8px; text-align: start; color: var(--t2);
 }
 .dev-item svg { flex: none; }
 .dev-item:hover:not(:disabled), .dev-item:focus-visible { background: oklch(1 0 0 / 0.09); color: var(--t1); outline: none; }
-.dev-item:disabled { opacity: 0.45; cursor: default; }
+.dev-item:disabled { opacity: 1; cursor: default; }
+.dev-item:disabled > svg { opacity: 0.45; }
+.dev-item:disabled:not(.is-current) .dev-name { color: var(--t3); }
 .dev-item.is-current { color: color-mix(in oklab, var(--acc) 45%, var(--t1)); }
 .dev-txt { flex: 1; min-width: 0; display: grid; gap: 1px; }
 .dev-name { font-size: var(--fs-small); font-weight: var(--fw-semibold); color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

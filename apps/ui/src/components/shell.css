@@ -230,7 +230,7 @@
   color: var(--t3);
   font-size: var(--fs-caption);
   font-weight: var(--fw-medium);
-  line-height: 1.2;
+  line-height: var(--lh-heading);
 }
 .side-chevron { display: grid; margin-left: auto; opacity: 0.45; }
 .side-chevron.is-closed { transform: rotate(-90deg); opacity: 1; }
