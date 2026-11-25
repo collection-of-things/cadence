@@ -472,6 +472,85 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     return { song: spec.id };
   }
 
+  // --- start confirmation ------------------------------------------------
+  // mk.play() resolves when MusicKit accepts the request, BEFORE the DRM
+  // license and media load. A refused license (MEDIA_LICENSE) then only
+  // fires mediaPlaybackError and MusicKit stops — so a start that returned
+  // at mk.play() reported success over silence. Starts wait for real
+  // playback (playing with a loaded stream) or the media error, bounded.
+  const START_CONFIRM_MS = 6000;
+  // A start that never settles must not hold the watcher (and swallow later
+  // unsolicited media errors) past every caller's deadline.
+  // Under the shortest caller deadline (resume's 9s eval).
+  const START_WATCH_MAX_MS = 8000;
+  const startWatchers = new Set();
+  function mediaErrorInfo(e) {
+    const text = String((e && (e.description || e.message || e.reason)) || e || '');
+    const raw = text + ' ' + String(e && e.message || '') + ' ' + String(e && e.errorCode || '');
+    const license = /MEDIA_LICENSE|-42585/i.test(raw);
+    return { license, text: text.slice(0, 200) };
+  }
+  function mediaErrorMessage(info) {
+    return info.license ? 'MEDIA_LICENSE: Apple Music refused the playback license.' : 'Apple Music playback failed: ' + (info.text || 'media error');
+  }
+  // One owner per failure: a start in flight rejects with it; otherwise it
+  // is unsolicited and reported as an event.
+  let lastMediaError = null;
+  function onMediaError(e) {
+    const info = mediaErrorInfo(e);
+    lastMediaError = { info, at: Date.now() };
+    if (startWatchers.size) { for (const w of [...startWatchers]) w(info); return; }
+    emit('error', { message: mediaErrorMessage(info), ...(info.license ? { code: 'drm-license' } : {}) });
+  }
+  // The watcher is registered before the start call, so a refusal fired
+  // while it is awaited is captured; polling begins only after it returns,
+  // so the previous item's playing state cannot confirm the new start.
+  function watchStart() {
+    let fail = null;
+    // A license refusal is the cause; a generic error after it must not hide it.
+    const watcher = (info) => { if (!fail || (info.license && !fail.license)) fail = info; };
+    const stop = () => { startWatchers.delete(watcher); clearTimeout(expiry); };
+    const expiry = setTimeout(stop, START_WATCH_MAX_MS);
+    startWatchers.add(watcher);
+    const confirm = async (isTarget) => {
+      try {
+        const deadline = Date.now() + START_CONFIRM_MS;
+        while (Date.now() < deadline) {
+          if (fail) throw new Error(mediaErrorMessage(fail));
+          if (mk.playbackState === STATES.playing && mk.currentPlaybackDuration > 0 && isTarget()) return;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        // A refusal that landed during the last wait still belongs to this start.
+        if (fail) throw new Error(mediaErrorMessage(fail));
+        // Slow networks: don't fail a start that may still begin; a later
+        // media error is reported as an event.
+      } finally {
+        stop();
+      }
+    };
+    return { confirm, failure: () => fail, cancel: stop };
+  }
+  /** Run a start (play or skip) and confirm it plays. A refusal seen while
+   * the start was awaited wins over the start's own generic rejection.
+   * isTarget: the requested item is the one playing (a skip must not be
+   * confirmed by the previous item still sounding). */
+  async function confirmStart(begin, isTarget = () => true) {
+    const began = Date.now();
+    const start = watchStart();
+    try { await begin(); }
+    catch (e) {
+      start.cancel();
+      // After the watcher expired a refusal was reported as an event; the
+      // rejection names it too, so the listener's toasts merge into one.
+      const late = lastMediaError && lastMediaError.at >= began ? lastMediaError.info : null;
+      const f = start.failure() || late;
+      throw f ? new Error(mediaErrorMessage(f)) : e;
+    }
+    applyOutputVolume();
+    ensureGraph();
+    await start.confirm(isTarget);
+  }
+
   async function setQueueAndPlay(spec, positionMs) {
     changingQueue = true;
     try {
@@ -499,9 +578,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
       applyOutputVolume();
       await readyGraph();
-      await mk.play();
-      applyOutputVolume();
-      ensureGraph();
+      await confirmStart(() => mk.play());
       // Seek after loading the stream, including zero. Seeking before play
       // can target the previous item; skipping zero retains its old position.
       const targetSeconds = Math.max(0, positionMs || 0) / 1000;
@@ -610,6 +687,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   mk.addEventListener('playbackStateDidChange', () => { applyOutputVolume(); watchGraph(); post(true); });
   mk.addEventListener('playbackTimeDidChange', () => post(false));
   mk.addEventListener('nowPlayingItemDidChange', () => post(true));
+  try { mk.addEventListener('mediaPlaybackError', onMediaError); } catch (e) {}
   if (MK.Events && MK.Events.authorizationStatusDidChange) {
     try { mk.addEventListener('authorizationStatusDidChange', () => post(true)); } catch (e) {}
   }
@@ -628,7 +706,13 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     async skipTo(spec) {
       await requireFullPlayback();
       const qi = queueInfo();
-      if (qi.nextItemId === String(spec.id)) { await mk.skipToNextItem(); }
+      if (qi.nextItemId === String(spec.id)) {
+        const from = qi.position;
+        // The queue slot moves before the stream does: confirm the requested
+        // item itself is the one now playing.
+        await confirmStart(() => mk.skipToNextItem(), () =>
+          queueInfo().position > from && String(mk.nowPlayingItem && mk.nowPlayingItem.id) === String(spec.id));
+      }
       else { await setQueueAndPlay(spec, 0); }
       applyOutputVolume();
       ensureGraph();
@@ -640,9 +724,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       await requireFullPlayback();
       applyOutputVolume();
       await readyGraph();
-      await mk.play();
-      applyOutputVolume();
-      ensureGraph();
+      await confirmStart(() => mk.play());
       post(true);
       return true;
     },

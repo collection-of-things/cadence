@@ -12,8 +12,10 @@ class FakeSession {
   evals: string[] = [];
   onEvent?: (e: { name: string; data: unknown }) => void;
   constructor(public alive = true) {}
-  async eval(expr: string): Promise<unknown> {
+  timeouts = new Map<string, number | undefined>();
+  async eval(expr: string, timeoutMs?: number): Promise<unknown> {
     this.evals.push(expr);
+    this.timeouts.set(expr, timeoutMs);
     return true;
   }
   async prepare(): Promise<void> {}
@@ -23,6 +25,11 @@ class FakeSession {
   }
   async clearData(): Promise<void> {}
   async hasSessionCookies(): Promise<boolean> {
+    return false;
+  }
+  promotions: string[] = [];
+  async promoteCookie(name: string): Promise<boolean> {
+    this.promotions.push(name);
     return false;
   }
   hide(): void {}
@@ -242,6 +249,32 @@ describe("apple adapter page events", () => {
     expect(sess.evals.some((e) => e.includes("skipTo"))).toBe(true);
     expect(sess.evals.some((e) => e.includes("__cadenceCtl.play("))).toBe(false);
     expect(events.some((e) => e.kind === "started")).toBe(true);
+  });
+
+  it("classifies a license refusal without waiting on the sign-in probe", async () => {
+    let played = false;
+    sess.eval = async (expr: string) => {
+      if (expr.includes("__cadenceCtl.play(")) {
+        played = true;
+        throw new Error("MEDIA_LICENSE: Apple Music refused the playback license.");
+      }
+      // The page stalls after the refusal: a probe then would never answer.
+      if (played && expr.includes("isAuthorized()")) return new Promise(() => {});
+      if (played && expr.includes("typeof window.__cadenceCtl")) return new Promise(() => {});
+      return true;
+    };
+    const err = await adapter
+      .play(item("q1", "sA"), { generationId: 3, route: "apple-musickit", queueId: "q1", issuedAtMs: 0 }, { positionMs: 0 })
+      .then(() => null, (e: { code?: string; retriable?: boolean }) => e);
+    expect(err).toMatchObject({ code: "drm-license", retriable: false });
+  });
+
+  it("gives start evals room for the page's 6s playback confirmation", async () => {
+    await adapter.play(item("q1", "sA"), { generationId: 3, route: "apple-musickit", queueId: "q1", issuedAtMs: 0 }, { positionMs: 0 });
+    const play = sess.evals.find((e) => e.includes("__cadenceCtl.play("))!;
+    // Above the page's 6s confirmation, inside the coordinator's 20s play deadline.
+    expect(sess.timeouts.get(play)).toBeGreaterThan(6_000);
+    expect(sess.timeouts.get(play)).toBeLessThan(20_000);
   });
 
   it("reuses the prefetched song when a manual selection creates fresh queue ids", async () => {

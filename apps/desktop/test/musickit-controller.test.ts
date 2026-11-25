@@ -1,5 +1,5 @@
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MUSICKIT_CONTROLLER_JS,
   musickitInjectScript,
@@ -175,6 +175,9 @@ async function harness(options: {
     },
     setInterval: (tick: () => void) => { ticks.push(tick); return 1; },
     setTimeout: options.configureFallback ? (fn: () => void) => { fn(); return 1; } : setTimeout,
+    clearTimeout: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
+    // The host Date, so fake timers move the page's clock too.
+    Date,
   });
   if (!window.__cadenceCtl) throw new Error("Controller did not install");
   return {
@@ -598,3 +601,145 @@ describe("Apple Music Web Audio graph", () => {
     expect(lastState()).toMatchObject({ audioGraph: "waiting", contextState: "suspended" });
   });
 });
+
+/** The fake keeps zero-arg listeners; MusicKit passes the error object. */
+const fireMediaError = (listeners: Map<string, () => void>, e: unknown) =>
+  (listeners.get("mediaPlaybackError") as ((err: unknown) => void) | undefined)?.(e);
+
+describe("start confirmation and media errors", () => {
+  const licenseError = { description: "MEDIA_LICENSE", message: "[mk-007] UNKNOWN_ERROR; MEDIA_LICENSE" };
+
+  it("rejects a start whose DRM license is refused, without also emitting an error", async () => {
+    const h = await harness();
+    h.mk.play = async () => {
+      h.mk.playbackState = 2; // MusicKit reports playing optimistically...
+      h.mk.currentPlaybackDuration = 0; // ...before any media loads
+      setTimeout(() => fireMediaError(h.listeners, licenseError), 20);
+    };
+    const err = await h.ctl.play(song, 0).then(() => null, (e: Error) => e);
+    // The page's Error is from the VM realm — check the shape, not instanceof.
+    expect(err?.message).toMatch(/^MEDIA_LICENSE/);
+    expect(h.events.filter((e) => e.name === "error")).toEqual([]);
+  });
+
+  it("resolves a start once the stream is loaded and playing", async () => {
+    const h = await harness();
+    await expect(h.ctl.play(song, 0)).resolves.toBe(true);
+  });
+
+  it("rejects a resume whose license is refused", async () => {
+    const h = await harness();
+    await h.ctl.play(song, 0);
+    h.mk.pause();
+    h.mk.play = async () => {
+      h.mk.playbackState = 1;
+      setTimeout(() => fireMediaError(h.listeners, licenseError), 20);
+    };
+    await expect(h.ctl.resume()).rejects.toThrow(/MEDIA_LICENSE/);
+  });
+
+  it("reports a media error with no start in flight as one coded event", async () => {
+    const h = await harness();
+    fireMediaError(h.listeners, licenseError);
+    expect(h.events.filter((e) => e.name === "error")).toEqual([
+      { name: "error", data: { message: "MEDIA_LICENSE: Apple Music refused the playback license.", code: "drm-license" } },
+    ]);
+  });
+});
+
+describe("start confirmation edge cases", () => {
+  const licenseError = { description: "MEDIA_LICENSE", message: "[mk-007] UNKNOWN_ERROR; MEDIA_LICENSE" };
+
+  it("keeps the license refusal when play() then rejects generically", async () => {
+    const h = await harness();
+    h.mk.play = async () => {
+      fireMediaError(h.listeners, licenseError);
+      await new Promise((r) => setTimeout(r, 150));
+      throw new Error("The play() request was interrupted");
+    };
+    const err = await h.ctl.play(song, 0).then(() => null, (e: Error) => e);
+    expect(err?.message).toMatch(/^MEDIA_LICENSE/);
+  });
+
+  it("recognizes a refusal that carries only the -42585 code", async () => {
+    const h = await harness();
+    fireMediaError(h.listeners, { errorCode: -42585, message: "[mk-007] UNKNOWN_ERROR" });
+    expect(h.events.filter((e) => e.name === "error").at(-1)?.data).toMatchObject({ code: "drm-license" });
+  });
+
+  it("confirms a skip onto the prefetched next item like any start", async () => {
+    const h = await harness();
+    await h.ctl.play(song, 0);
+    h.mk.queue = { items: [{ id: "s1" }, { id: "s2" }], position: 0 };
+    // The previous item still reports playing with a loaded stream when the
+    // skip returns; only the refusal follows.
+    (h.mk as unknown as { skipToNextItem: () => Promise<void> }).skipToNextItem = async () => {
+      h.mk.queue.position = 1; // the slot moves before the stream does
+      setTimeout(() => fireMediaError(h.listeners, licenseError), 50);
+    };
+    await expect((h.ctl as Controller & { skipTo(spec: { type: "song"; id: string }): Promise<boolean> }).skipTo({ type: "song", id: "s2" })).rejects.toThrow(/MEDIA_LICENSE/);
+  });
+
+  it("a generic media error after a refusal does not hide it", async () => {
+    const h = await harness();
+    h.mk.play = async () => {
+      fireMediaError(h.listeners, licenseError);
+      fireMediaError(h.listeners, { message: "MEDIA_PLAYBACK_ERROR" });
+      throw new Error("The play() request was interrupted");
+    };
+    await expect(h.ctl.play(song, 0)).rejects.toThrow(/^MEDIA_LICENSE/);
+  });
+
+  it("a start that never settles releases its watcher, so later errors still report", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = await harness();
+      h.mk.play = () => new Promise(() => {});
+      void h.ctl.play(song, 0);
+      // Past resume's 9s eval deadline, the shortest caller deadline.
+      await vi.advanceTimersByTimeAsync(9_000);
+      fireMediaError(h.listeners, licenseError);
+      expect(h.events.filter((e) => e.name === "error").at(-1)?.data).toMatchObject({ code: "drm-license" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a refusal in the last moment of the confirmation window still rejects the start", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = await harness();
+      // Confirmation polls every 100ms for 6s from when play() returns; the
+      // refusal lands after the last poll, 1ms before the window closes.
+      h.mk.play = async () => {
+        h.mk.playbackState = 1;
+        setTimeout(() => fireMediaError(h.listeners, licenseError), 5_999);
+      };
+      const result = h.ctl.play(song, 0).then(() => "resolved", (e: Error) => e.message);
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(await result).toMatch(/^MEDIA_LICENSE/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a start that rejects after its watcher expired still names the refusal", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = await harness();
+      await h.ctl.play(song, 0);
+      h.mk.pause();
+      h.mk.play = () => new Promise((_r, reject) => {
+        setTimeout(() => fireMediaError(h.listeners, licenseError), 8_250);
+        setTimeout(() => reject(new Error("The play() request was interrupted")), 8_500);
+      });
+      const result = h.ctl.resume().then(() => "resolved", (e: Error) => e.message);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(await result).toMatch(/^MEDIA_LICENSE/);
+      expect(h.events.filter((e) => e.name === "error").at(-1)?.data).toMatchObject({ code: "drm-license" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+

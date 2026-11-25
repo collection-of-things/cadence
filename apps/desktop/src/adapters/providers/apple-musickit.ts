@@ -27,12 +27,42 @@ import { ProviderViewAdapter } from "./provider-adapter-base.js";
 import { ProviderEvalTimeout, ProviderSession } from "./provider-session.js";
 import { musickitInjectScript } from "./inject/musickit-controller.js";
 import { AppleMusicCatalog } from "./apple-music-catalog.js";
+import { RouteError, signInRequired } from "../route-error.js";
 import type { EqCapable } from "../types.js";
 
 interface QueueSpec {
   type: "song" | "library-song" | "station" | "album" | "playlist";
   id: string;
 }
+
+const APPLE_PLAYBACK: RouteCapabilities["playback"] = {
+  engine: "provider-engine",
+  canPlay: true,
+  canPause: true,
+  canSeek: true,
+  canNextPrevious: true,
+  gapless: "unknown",
+  exclusiveOutput: "no",
+};
+
+/** Hosts where Apple's sign-in leaves the user token, most durable first. */
+const APPLE_AUTH_COOKIE_HOSTS = [".authorize.music.apple.com", ".mediaauth.apple.com"];
+
+/** What the listener sees when Apple Music playback needs an account. */
+const SIGN_IN_TO_PLAY = "Sign in to Apple Music to play full songs.";
+/** Page-side starts wait up to 6s for playback to be confirmed after the
+ * queue loads. Each eval deadline leaves room for that and still ends inside
+ * the coordinator's (play 20s, resume 10s), so a refusal arrives as the
+ * start's own rejection rather than a generic timeout. */
+const START_EVAL_MS = 18_000;
+const RESUME_EVAL_MS = 9_000;
+/** Apple's license server refused this build's DRM (Widevine) — on macOS
+ * and Windows that means Electron lacks a production VMP signature. */
+const DRM_LICENSE_REFUSED =
+  "Apple Music refused the playback license for this Cadence build. On macOS, Electron must be VMP-signed with Castlabs EVS (see README: Apple Music on macOS).";
+
+/** After an explicit sign-out: the session is closed for all use. */
+const SIGNED_OUT = "Apple Music is signed out — sign in to use it.";
 
 /** Event names the injected controller is allowed to push through the bridge. */
 const PAGE_EVENT_NAMES = new Set([
@@ -121,22 +151,53 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
    * doesn't spin a 30s wait on every poll. */
   private installBackoffUntil = 0;
 
+  /**
+   * RouteAdapter.prepare — the coordinator's playback preflight. Boots the
+   * session, then refuses unless MusicKit is authorized: playback needs an
+   * account, while catalog browsing (ensureSession) works signed out.
+   * Refusing here — before the coordinator stops the outgoing route — keeps
+   * whatever is already playing untouched when Apple cannot play.
+   */
   async prepare(): Promise<void> {
+    await this.ensureSession();
+    await this.requireAuthorized();
+  }
+
+  /** Boot the hidden view and controller. Auth-neutral: catalog and
+   * sign-in use it while signed out. */
+  private async ensureSession(): Promise<void> {
     // Teardown owns the session — nothing may boot a view while clearData
     // is pending, and a signed-out route must not rewarm on cached cookies.
     await this.signOutInFlight?.catch(() => {});
     if (this.signedOut) {
-      throw new Error("Apple Music is signed out — sign in to use it");
+      throw signInRequired(SIGNED_OUT);
     }
     await this.prepareInner();
   }
 
+  /** Throw a typed sign-in error unless the page's MusicKit is authorized.
+   * Asks the page when the cached flag says no: the install-time
+   * playerState post can still be in flight on a cold start. */
+  private async requireAuthorized(): Promise<void> {
+    if (this.authorized) return;
+    const authorized = await this.session
+      .eval<boolean>(`window.__cadenceCtl.isAuthorized()`)
+      .catch(() => false);
+    if (authorized !== true) throw signInRequired(SIGN_IN_TO_PLAY);
+  }
+
   private async prepareInner(): Promise<void> {
+    if (!this.session.alive) {
+      // A fresh view (first use, or the old window is gone): its page must
+      // be able to restore the login, and needs the controller installed.
+      this.installed = false;
+      await this.restoreLogin();
+    }
     await this.session.prepare();
     // Sign-out may have started while session.prepare() was pending —
     // recheck before any controller eval touches the view.
     if (this.signedOut) {
-      throw new Error("Apple Music is signed out — sign in to use it");
+      throw signInRequired(SIGNED_OUT);
     }
     if (this.installed) return;
     if (Date.now() < this.installBackoffUntil) {
@@ -168,14 +229,16 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
   /** Run a controller call inside the page. Navigations wipe injected state;
    * the session re-installs on did-finish-load, so retry a transient miss.
    * Non-idempotent calls (POSTs, mutations) are never retried. */
-  private async evalCtl<T>(call: string, opts: { retry?: boolean } = {}): Promise<T> {
-    await this.prepare();
+  private async evalCtl<T>(call: string, opts: { retry?: boolean; timeoutMs?: number } = {}): Promise<T> {
+    await this.ensureSession();
     try {
-      return await this.session.eval<T>(`window.__cadenceCtl.${call}`);
+      return await this.session.eval<T>(`window.__cadenceCtl.${call}`, opts.timeoutMs);
     } catch (e) {
       if (opts.retry === false) throw e;
       // A timed-out page gets no retry — probing it costs another timeout.
       if (/timed out/i.test((e as Error).message)) throw e;
+      // A license refusal came from a live controller — nothing to retry.
+      if (/MEDIA_LICENSE|-42585/.test((e as Error).message)) throw e;
       // Retry only when the controller is actually missing — never on a call
       // that merely failed (a retried POST would run twice).
       const present = await this.session
@@ -184,8 +247,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
       if (present === "object" || present === "function") throw e;
       await new Promise((r) => setTimeout(r, 800));
       this.installed = false;
-      await this.prepare();
-      return this.session.eval<T>(`window.__cadenceCtl.${call}`);
+      await this.ensureSession();
+      return this.session.eval<T>(`window.__cadenceCtl.${call}`, opts.timeoutMs);
     }
   }
 
@@ -202,7 +265,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
   }
 
   async catalog(req: CatalogRequest): Promise<CatalogPage> {
-    await this.prepare();
+    await this.ensureSession();
     return this.catalogService.query(req);
   }
 
@@ -222,6 +285,20 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     return tracks;
   }
 
+  /**
+   * Keep the login where MusicKit restores it. MusicKit's authorize() leaves
+   * the user token on Apple's auth hosts and in the open page's memory only;
+   * a fresh music.apple.com page restores sign-in solely from its own
+   * `media-user-token` cookie. Without this every reload (restart, a closed
+   * sign-in window) came back signed out, and Play looped into sign-in.
+   */
+  private async restoreLogin(): Promise<void> {
+    if (this.signedOut) return;
+    await this.session
+      .promoteCookie("media-user-token", APPLE_AUTH_COOKIE_HOSTS, ".music.apple.com")
+      .catch(() => false);
+  }
+
   /** Set by signOut so leftover cookies aren't treated as a live session. */
   private signedOut = false;
 
@@ -230,6 +307,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     // launch and most launches never touch Apple Music. Cookies alone decide
     // the reported state; the view starts on first use, and its real auth
     // state then arrives via capabilitiesChanged.
+    if (!this.installed && !this.signedOut) await this.restoreLogin();
     const savedSession =
       !this.installed && !this.signedOut && (await this.session.hasSessionCookies().catch(() => false));
     // The view can install or sign out while the cookie read is pending.
@@ -240,6 +318,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
         state: hasSession ? "ready" : "unauthenticated",
         stateDetail: "Session not loaded yet — it activates on first use.",
         canSignOut: hasSession,
+        // Playback needs an account; the UI offers sign-in instead of Play.
+        playback: { ...APPLE_PLAYBACK, canPlay: hasSession },
       });
     }
     return this.baseCapabilities({
@@ -251,15 +331,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
             stateDetail:
               "Sign into Apple Music — the music.apple.com window opens on Apple's own page.",
           }),
-      playback: {
-        engine: "provider-engine",
-        canPlay: true,
-        canPause: true,
-        canSeek: true,
-        canNextPrevious: true,
-        gapless: "unknown",
-        exclusiveOutput: "no",
-      },
+      playback: { ...APPLE_PLAYBACK, canPlay: this.authorized },
       audio: {
         // Decrypted audio reaches the page's Web Audio graph (Cider 1 runs
         // its EQ this way), but never the Rust engine.
@@ -288,13 +360,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     const attempt = ++this.playAttempt;
     this.generation = lease.generationId;
     this.installBackoffUntil = 0; // a real play request waits for install
-    if (this.signedOut) throw new Error("Apple Music is signed out");
+    if (this.signedOut) throw signInRequired(SIGNED_OUT);
     // Run on the mirror chain — a pending playLater must land before the new
     // queue, and a prefetch queued during this play must wait for it. The
     // signedOut check runs again at execution: a sign-out that lands while
     // this play waits must cancel it, not reopen the session.
     return this.enqueueMirror(async () => {
-      if (this.signedOut) throw new Error("Apple Music is signed out");
+      if (this.signedOut) throw signInRequired(SIGNED_OUT);
       const spec = specFor(item.track);
       // Read the mirror BEFORE clearing — the fast path skips inside
       // MusicKit's own queue when the coordinator's next lands on the
@@ -307,14 +379,15 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
       this.mirrored = [];
       this.unknownNpId = null;
       this.tailStuckSince = 0;
-      await this.prepare();
+      await this.ensureSession();
       try {
         this.current = { queueId: item.queueId, providerId: spec.id, station: spec.type === "station" };
         if (wasMirrored) {
-          await this.evalCtl(`skipTo(${JSON.stringify(spec)})`);
+          await this.evalCtl(`skipTo(${JSON.stringify(spec)})`, { timeoutMs: START_EVAL_MS });
         } else {
           await this.evalCtl(
             `play(${JSON.stringify(spec)}, ${Math.max(0, Math.round(opts.positionMs ?? 0))})`,
+            { timeoutMs: START_EVAL_MS },
           );
         }
         if (attempt !== this.playAttempt || this.signedOut || this.destroyed) return;
@@ -325,10 +398,31 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
           durationMs: item.track.durationMs,
         });
       } catch (e) {
-        this.error(`Apple Music play failed: ${(e as Error).message}`, true);
-        throw e;
+        // Reject only — the coordinator reports the failure (once).
+        throw await this.playbackFailure(e);
       }
     });
+  }
+
+  /** Type a MusicKit play/resume rejection so the listener gets the right
+   * action: sign in, subscribe, or try again. Auth is asked of the page
+   * rather than parsed from the message — the page is the authority. */
+  private async playbackFailure(e: unknown): Promise<Error> {
+    if (e instanceof RouteError) return e;
+    const message = e instanceof Error ? e.message : String(e);
+    // An explicit refusal needs no probe — the probe could outlast the
+    // coordinator's deadline and turn it into a generic timeout.
+    if (/MEDIA_LICENSE|-42585/.test(message)) {
+      return new RouteError(DRM_LICENSE_REFUSED, { retriable: false, code: "drm-license" });
+    }
+    const authorized = await this.session
+      .eval<boolean>(`window.__cadenceCtl.isAuthorized()`, 1_500)
+      .catch(() => null);
+    if (authorized === false) return signInRequired(SIGN_IN_TO_PLAY);
+    if (/subscription is required/i.test(message)) {
+      return new RouteError(message, { retriable: false, code: "no-subscription" });
+    }
+    return new RouteError(`Apple Music play failed: ${message}`, { retriable: true });
   }
 
   /** Mirror operations are serialized — an in-flight playLater must not
@@ -399,7 +493,13 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
 
   async resume(lease: PlaybackLease): Promise<void> {
     if (lease.generationId !== this.generation) return;
-    await this.session.eval(`window.__cadenceCtl.resume()`).catch(() => {});
+    // A refused resume (signed out, lapsed subscription) must reject — a
+    // swallowed one leaves the coordinator reporting "playing" over silence.
+    try {
+      await this.session.eval(`window.__cadenceCtl.resume()`, RESUME_EVAL_MS);
+    } catch (e) {
+      throw await this.playbackFailure(e);
+    }
   }
 
   async stop(lease: PlaybackLease): Promise<void> {
@@ -523,7 +623,9 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     this.signedOut = false;
     this.installBackoffUntil = 0; // explicit user action clears backoff
     try {
-      await this.prepare();
+      // Auth-neutral boot: signing in is how an unauthorized session gets
+      // authorized, so the playback preflight must not gate it.
+      await this.ensureSession();
     } catch (e) {
       // Only this attempt's own failure may release it — a prepare that
       // outlived its attempt must not clear a newer flow's pending flag.
@@ -710,8 +812,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
     }
     this.emit({ kind: "capabilitiesChanged" });
     if (clearFailed) {
-      this.error("Apple Music session data could not be cleared — sign-out is partial", true);
-      throw new Error("sign-out incomplete: provider session data could not be cleared");
+      // Reject only — the sign-out caller reports it (once).
+      throw new Error("Apple Music session data could not be cleared — sign-out is partial");
     }
   }
 
@@ -739,6 +841,8 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
         typeof data === "object" && data !== null && "message" in data && typeof (data as { message: unknown }).message === "string"
           ? (data as { message: string }).message.slice(0, 500)
           : "Apple Music error";
+      const code = typeof data === "object" && data !== null ? (data as { code?: unknown }).code : undefined;
+      if (code === "drm-license") return this.error(DRM_LICENSE_REFUSED, false, "drm-license");
       return this.error(msg, true);
     }
     if (name === "nowPlaying") {
@@ -759,6 +863,7 @@ export class AppleMusicKitAdapter extends ProviderViewAdapter implements EqCapab
       if (this.authorized) {
         this.signInCleanup?.(); // a live sign-in attempt just completed
         this.session.hide(); // sign-in complete — tuck it away
+        void this.restoreLogin(); // persist it for the next page load
       }
       this.emit({ kind: "capabilitiesChanged" });
     }
