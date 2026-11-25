@@ -90,7 +90,7 @@
 .side-panel-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lyrics-rail .lyrics-scroll, .lyrics-rail .lyrics-plain {
   padding: 0 22px 0 24px;
-  mask-image: linear-gradient(transparent, transparent 8px, #000 48px, #000 86%, transparent);
+  mask-image: linear-gradient(transparent, transparent 8px, #000 32px, #000 92%, transparent);
 }
 .lyrics-rail .lyrics-scroll::before { height: 30%; }
 /* The viewport's edge mask would fade an outline on it, so the unmasked
@@ -110,7 +110,7 @@
 /* ---- Now Playing column: big display type, no card ---- */
 .npf-lyrics .lyrics-scroll, .npf-lyrics .lyrics-plain {
   padding: 0 8px;
-  mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 8%, #000 92%, transparent);
 }
 .npf-lyrics .lyrics-scroll::before, .npf-lyrics .lyrics-scroll::after { height: 42%; }
 .npf-lyrics .lyrics-scroll p {
@@ -120,7 +120,7 @@
   font-weight: var(--fw-bold);
   letter-spacing: var(--ls-heading);
   line-height: 1.2;
-  color: oklch(1 0 0 / 0.44);
+  color: oklch(1 0 0 / 0.42);
   /* a soft dark halo keeps dim lines legible over a bright cover glow */
   text-shadow: 0 0 20px oklch(0 0 0 / 0.4);
   transform-origin: left center;
@@ -130,10 +130,10 @@
   text-wrap: balance;
 }
 /* depth of field: lines blur with distance from the one being sung */
-.npf-lyrics .lyrics-scroll p.past { color: oklch(1 0 0 / 0.4); filter: blur(1px); }
+.npf-lyrics .lyrics-scroll p.past { filter: blur(1px); }
 /* depth of field starts two lines out: the neighbours of the sung line stay sharp */
 .npf-lyrics .lyrics-scroll p.d1 { color: oklch(1 0 0 / 0.54); filter: none; }
-.npf-lyrics .lyrics-scroll p.p1 { color: oklch(1 0 0 / 0.44); filter: none; }
+.npf-lyrics .lyrics-scroll p.p1 { filter: none; }
 .npf-lyrics .lyrics-scroll p.d2 { filter: blur(0.75px); }
 .npf-lyrics .lyrics-scroll p.d3 { filter: blur(1px); }
 /* the sung line: brighter, a touch larger, tinted by the cover */

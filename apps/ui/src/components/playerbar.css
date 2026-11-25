@@ -70,12 +70,12 @@
 .playerbar.is-idle .pb-title { color: var(--t3); }
 .pb-fav { flex: none; }
 .pb-fav.is-on { color: var(--acc); }
-.pb-now .route-badge { flex: none; align-self: center; margin-left: 4px; color: var(--t3); background: var(--well-hi); }
+.pb-now .route-badge { flex: none; align-self: center; margin-left: 4px; color: var(--t2); background: var(--well-hi); }
 
 /* ---- middle: seek line over the transport ---- */
 .pb-seek { grid-area: seek; display: flex; align-items: center; gap: 10px; }
 .pb-seek .seek { flex: 1; }
-.pb-seek .time-readout { flex: none; min-width: 38px; font-size: var(--fs-caption); color: var(--t2); }
+.pb-seek .time-readout { flex: none; min-width: 6ch; white-space: nowrap; font-size: var(--fs-caption); color: var(--t2); }
 .pb-seek .time-readout.is-elapsed { text-align: end; }
 .pb-seek .time-readout.is-remaining { text-align: start; }
 .pb-seek .seek-line .seek-track { height: 16px; }
@@ -152,7 +152,7 @@
 }
 
 /* ---- play on: this computer or a paired phone ---- */
-.pb-remote { display: flex; align-items: center; gap: 5px; color: var(--acc); font-weight: var(--fw-medium); }
+.pb-remote { display: flex; align-items: center; gap: 5px; color: color-mix(in oklab, var(--acc) 45%, var(--t1)); font-weight: var(--fw-medium); }
 .pb-remote svg { flex: none; }
 .dev-picker { position: relative; display: flex; }
 .playerbar .pb-right .dev-trigger.is-remote { color: var(--acc); background: var(--accent-soft); }

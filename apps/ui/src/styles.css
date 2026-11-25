@@ -108,8 +108,8 @@
   --lh-body: 1.45;
   --lh-prose: 1.55;
 
-  --ls-display: -0.025em;
-  --ls-heading: -0.015em;
+  --ls-display: -0.018em;
+  --ls-heading: -0.01em;
   --ls-caps: 0.05em;
 
   --shadow-1: 0 1px 2px oklch(0 0 0 / 0.28);
@@ -331,9 +331,9 @@ button:disabled {
 
 .q-art { width: 34px; height: 34px; flex: none; border-radius: 7px; object-fit: cover; background: var(--well); }
 .q-tt { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.q-title { font-size: var(--fs-small); font-weight: var(--fw-medium); line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-title { font-size: var(--fs-caption); font-weight: var(--fw-semibold); line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-artist { margin-top: 1px; font-size: var(--fs-caption); color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.q-dur { font-size: var(--fs-caption); font-weight: var(--fw-medium); color: var(--t4); font-variant-numeric: tabular-nums; }
+.q-dur { font-size: var(--fs-caption); color: var(--t4); font-variant-numeric: tabular-nums; }
 .q-acts { display: none; gap: 0; }
 .q-acts .icon-btn { width: 26px; height: 26px; border-radius: 7px; }
 .q-row:hover .q-acts, .q-row:focus-within .q-acts { display: inline-flex; }
@@ -526,7 +526,7 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-medium);
   font-size: var(--fs-body);
 }
 
@@ -695,7 +695,7 @@ button:disabled {
 
 .src-hit-title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-medium);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -710,8 +710,8 @@ button:disabled {
 }
 
 .src-hit-time {
-  font-size: var(--fs-caption);
-  color: var(--text-faint);
+  font-size: var(--fs-small);
+  color: var(--t3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -792,14 +792,14 @@ button:disabled {
 }
 .cap-chip.is-dim { color: var(--t4); background: transparent; box-shadow: inset 0 0 0 1px var(--hair); }
 
-.src-quality { margin: -4px 0 0; font-size: var(--fs-small); font-weight: var(--fw-medium); line-height: 1.4; color: var(--t2); font-variant-numeric: tabular-nums; }
+.src-quality { margin: -4px 0 0; font-size: var(--fs-small); font-weight: var(--fw-medium); line-height: var(--lh-body); color: var(--t2); font-variant-numeric: tabular-nums; }
 .src-unconfirmed { margin: 0; font-size: var(--fs-caption); line-height: var(--lh-body); color: var(--t4); }
 .src-details { margin-top: auto; padding-top: 2px; font-size: var(--fs-caption); color: var(--t3); }
-.src-details summary { width: fit-content; cursor: pointer; list-style: none; padding: 3px 0; color: var(--t2); font-size: var(--fs-small); font-weight: var(--fw-semibold); }
+.src-details summary { width: fit-content; cursor: pointer; list-style: none; padding: 3px 0; color: var(--t3); font-weight: var(--fw-medium); }
 .src-details summary::-webkit-details-marker { display: none; }
 .src-details summary::after { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 160ms var(--ease-out); }
 .src-details[open] summary::after { transform: rotate(225deg); margin-bottom: -1px; }
-@media (hover: hover) and (pointer: fine) { .src-details summary:hover { color: var(--t2); } }
+@media (hover: hover) and (pointer: fine) { .src-details summary:hover { color: var(--t1); } }
 :root[data-input='keyboard'] .src-details summary:focus-visible { outline: 2px solid oklch(0.8 0.05 285 / 0.9); outline-offset: 2px; border-radius: 4px; }
 .src-details .src-notes { margin-top: 6px; }
 
@@ -924,7 +924,7 @@ button:disabled {
 .set-sub {
   font-size: var(--fs-caption);
   color: var(--t3);
-  line-height: 1.4;
+  line-height: var(--lh-body);
 }
 
 .switch {
@@ -1084,9 +1084,9 @@ button:disabled {
 
 .lib-roots { display: flex; flex-direction: column; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--panel) 60%, transparent); }
 .lib-root { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); }
-.lib-root-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8; font-family: ui-monospace, monospace; }
+.lib-root-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t2); font-family: ui-monospace, monospace; }
 .lib-root-x { padding: 0 8px; font-size: var(--fs-body); line-height: 1.4; }
-.lib-roots-empty { opacity: .6; font-size: var(--fs-caption); padding: 2px 0; }
+.lib-roots-empty { color: var(--t3); font-size: var(--fs-caption); padding: 2px 0; }
 
 .src-head { display: flex; align-items: baseline; gap: 12px; padding: 0; }
 .src-head h1 { margin: 0; font-size: var(--fs-title-1); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
@@ -1094,7 +1094,7 @@ button:disabled {
 .src-route-name { overflow: hidden; text-overflow: ellipsis; }
 
 /* queue badges: route colour would stack 4 accents — keep them quiet */
-.queue .route-badge { color: var(--t3); background: var(--well-hi); }
+.queue .route-badge { color: var(--t2); background: var(--well-hi); }
 /* the narrow side panel gives that width to the song title */
 .lyrics-rail .queue .route-badge { display: none; }
 
@@ -1141,7 +1141,7 @@ button:disabled {
 .artist-row-wrap .artist-row { width: 100%; }
 .lib .artist-avatar { width: 40px; height: 40px; overflow: hidden; font-size: var(--fs-lead); color: var(--t2); background: var(--well-hi); box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.08); }
 .lib .artist-avatar img { width: 100%; height: 100%; object-fit: cover; transform: scale(1.25); }
-.lib .artist-name { font-size: var(--fs-body); font-weight: var(--fw-semibold); }
+.lib .artist-name { font-size: var(--fs-body); font-weight: var(--fw-medium); }
 .lib .artist-counts { font-size: var(--fs-caption); color: var(--t4); }
 .tr-scroll, .lib .album-grid, .lib .artist-list { mask-image: var(--fade-bottom); }
 .tr-scroll { height: 100%; overflow-x: hidden; overflow-y: auto; padding-bottom: calc(var(--pb-clear) + 60px); }
@@ -1153,7 +1153,6 @@ button:disabled {
   .lib .scan, .lib-roots { margin-left: 24px; margin-right: 24px; }
 }
 .src { position: absolute; inset: 0; padding: calc(var(--topbar-h) + 14px) 32px calc(var(--pb-clear) + 60px); mask-image: var(--fade-both); }
-.src-head h1 { font-size: var(--fs-title-1); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
 .src-panel, .src-route { background: var(--well); }
 
 /* ---------- ambient field ---------- */
