@@ -241,7 +241,9 @@
   .side-section-head:hover { color: var(--t2); }
   .side-section-head:hover .side-chevron { opacity: 1; }
 }
-.side-section-rows { display: grid; gap: 1px; }
+/* minmax(0, 1fr): an auto column grows to the longest name, so the label
+   would never ellipsize and runs under the stage instead. */
+.side-section-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
 .side-section-rows.is-closed { display: none; }
 
 .side-row {
