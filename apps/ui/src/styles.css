@@ -859,6 +859,20 @@ button:disabled {
 .toast.is-leaving { opacity: 0; transform: translateY(10px); pointer-events: none; }
 .toast-msg { flex: 1; min-width: 0; }
 .toast-msg em { color: var(--t4); font-style: normal; }
+.toast-action {
+  flex: none;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+.toast-action:active { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .toast-action:hover { background: var(--accent-hover); }
+}
 
 /* ---------- settings page ---------- */
 

@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlaybackLease, QueueItem, RouteCapabilities } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
+import { RouteError } from "../route-error.js";
 
 /** One writable PCM stream into the shared audio graph. */
 export interface PcmStreamLike {
@@ -259,8 +260,8 @@ export class SpotifyLibrespotAdapter extends ProviderViewAdapter {
     this.currentQueueId = item.queueId;
     await this.prepare();
     if (!this.proc || !this.fifoPath) {
-      this.error("librespot is not running (missing binary or credentials)", false);
-      throw new Error("librespot unavailable");
+      // Reject only — the coordinator reports the failure (once).
+      throw new RouteError("librespot is not running (missing binary or credentials)", { retriable: false });
     }
     if (item.track.source.kind !== "provider") throw new Error("not a provider track");
     const uri = item.track.source.uri ?? `spotify:track:${item.track.source.providerItemId}`;

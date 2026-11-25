@@ -10,6 +10,7 @@ import type {
   QueueState,
   RemoteStatus,
   RouteCapabilities,
+  RouteErrorCode,
   RouteId,
   ScanProgress,
   TrackRef,
@@ -17,13 +18,15 @@ import type {
 import type { Rgb } from './palette';
 import { DEFAULT_PALETTE } from './palette';
 import { cleanIpcError } from './ipcError';
-import { providerForRoute } from './routes';
+import { playNeedsSignIn, providerForRoute, routeLabel } from './routes';
 
 export interface Toast {
   id: number;
   route: RouteId;
   message: string;
   retriable: boolean;
+  /** `unauthenticated` renders a Sign in action instead of "Try again". */
+  code?: RouteErrorCode;
 }
 
 export interface EqBand {
@@ -201,7 +204,8 @@ export interface UiSession {
   dispatch(e: CoordinatorEvent): void;
   init(): Promise<void>;
   dispose(): void;
-  togglePlay(): void;
+  /** `fromButton`: an explicit Play click, which may open sign-in. */
+  togglePlay(opts?: { fromButton?: boolean }): void;
   next(): void;
   previous(): void;
   seek(positionMs: number): void;
@@ -263,10 +267,18 @@ export function createUiStore(api: StoreApiSurface): UiSession {
 
   const { getState: get, setState: set } = store;
 
-  function pushToast(route: RouteId, message: string, retriable: boolean) {
-    const t: Toast = { id: ++toastSeq, route, message, retriable };
-    set({ toasts: [...get().toasts.slice(-3), t] });
+  function pushToast(route: RouteId, message: string, retriable: boolean, code?: RouteErrorCode) {
+    const t: Toast = { id: ++toastSeq, route, message, retriable, ...(code ? { code } : {}) };
+    // One notice per cause: a repeat (same route and code, or same text)
+    // replaces the live toast instead of stacking a copy under it.
+    const same = (x: Toast) => x.route === route && (code ? x.code === code : x.message === message);
+    set({ toasts: [...get().toasts.filter((x) => !same(x)).slice(-3), t] });
     setTimeout(() => set({ toasts: get().toasts.filter((x) => x.id !== t.id) }), TOAST_MS);
+  }
+
+  /** Tell the listener a route needs sign-in, with a Sign in action. */
+  function signInNotice(route: RouteId) {
+    pushToast(route, `Sign in to ${routeLabel(route)} to play.`, false, 'unauthenticated');
   }
 
   // Newest position tick, kept out of the store so ~10Hz ticks don't notify
@@ -368,7 +380,7 @@ export function createUiStore(api: StoreApiSurface): UiSession {
         break;
       }
       case 'error':
-        pushToast(e.route, e.message, e.retriable);
+        pushToast(e.route, e.message, e.retriable, e.code);
         break;
       case 'output':
         showLocal({ ...localNow(), output: e.output });
@@ -435,10 +447,21 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     dispose() {
       for (const u of unsubs) u();
     },
-    togglePlay() {
+    togglePlay(opts) {
       const { snapshot, queue } = get();
-      if (showsPauseControl(snapshot)) cmd({ kind: 'pause' });
-      else if (snapshot.status === 'paused' || snapshot.status === 'buffering') cmd({ kind: 'resume' });
+      if (showsPauseControl(snapshot)) {
+        cmd({ kind: 'pause' });
+        return;
+      }
+      // The Play button opens sign-in like any explicit Play; space and
+      // media keys say why with a Sign in toast instead of popping a window.
+      const target = snapshot.current ?? queue.items[queue.currentIndex] ?? queue.items[0];
+      if (playNeedsSignIn(get(), target?.track.route)) {
+        if (opts?.fromButton) session.signInRoute(target!.track.route);
+        else signInNotice(target!.track.route);
+        return;
+      }
+      if (snapshot.status === 'paused' || snapshot.status === 'buffering') cmd({ kind: 'resume' });
       else if (snapshot.current) cmd({ kind: 'play', queueId: snapshot.current.queueId });
       else if (queue.items.length) cmd({ kind: 'play' });
     },
@@ -483,6 +506,13 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     toggleShuffle: () => cmd({ kind: 'setShuffle', shuffle: !get().queue.shuffle }),
     playTracks(tracks, startIndex, origin = { kind: 'album' }) {
       if (!tracks.length) return;
+      // An explicit Play on a route that needs an account opens its sign-in
+      // instead of replacing the queue with tracks that cannot start.
+      const route = (tracks[startIndex] ?? tracks[0])!.route;
+      if (playNeedsSignIn(get(), route)) {
+        session.signInRoute(route);
+        return;
+      }
       const items = tracks.map((t) => queueItemFor(t, origin));
       cmd({ kind: 'setQueue', items, startIndex, autoplay: true });
     },
@@ -494,7 +524,14 @@ export function createUiStore(api: StoreApiSurface): UiSession {
     },
     removeQueueItems: (queueIds) => cmd({ kind: 'remove', queueIds }),
     moveQueueItem: (fromIndex, toIndex) => cmd({ kind: 'move', fromIndex, toIndex }),
-    playQueueId: (queueId) => cmd({ kind: 'play', queueId }),
+    playQueueId(queueId) {
+      const route = get().queue.items.find((it) => it.queueId === queueId)?.track.route;
+      if (playNeedsSignIn(get(), route)) {
+        session.signInRoute(route!);
+        return;
+      }
+      cmd({ kind: 'play', queueId });
+    },
     signInRoute(route) {
       if (!api.routes) return;
       void api.routes.signIn(route).catch((e: unknown) => pushToast(route, cleanIpcError(e, 'Sign-in failed'), true));

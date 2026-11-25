@@ -11,7 +11,7 @@ import { useUi } from '../../hooks';
 import { ClockIcon, NoteIcon, PlayIcon, SearchIcon, ShuffleIcon, SongIcon } from '../../icons';
 import { cleanIpcError } from '../../ipcError';
 import { useCoverTheme } from '../../pageTint';
-import { routeForPlatform, routeLabel, routeState } from '../../routes';
+import { playNeedsSignIn, routeForPlatform, routeLabel, routeState } from '../../routes';
 import { targetForContainer } from '../../catalogActions';
 import { AddGlyph, useJustAdded } from '../AddGlyph';
 import { LibraryButton } from '../LibraryButton';
@@ -215,6 +215,7 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
     : { kind: container.kind, id: container.id };
   const { page, error, loading } = useCatalogPage(container.route, request);
   const queued = useJustAdded();
+  const needsSignIn = useUi((s) => playNeedsSignIn(s, container.route));
 
   const artworkUrl = page?.artwork?.url ?? container.artwork?.url;
   // The page wears this cover's colours: the flood, Play and the playing row.
@@ -256,12 +257,18 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
               {totalDuration > 0 && <span className="chip">{formatTime(totalDuration)}</span>}
             </div>
             <div className="album-actions">
-              <button className="round-btn album-round" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length} onClick={() => session.playShuffled(tracks, origin)}>
+              <button className="round-btn album-round" aria-label="Shuffle" title="Shuffle" disabled={!tracks.length || needsSignIn} onClick={() => session.playShuffled(tracks, origin)}>
                 <ShuffleIcon size={18} />
               </button>
-              <button className="play-pill album-play-pill" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
-                <PlayIcon size={17} /> Play
-              </button>
+              {needsSignIn ? (
+                <button className="play-pill album-play-pill" onClick={() => session.signInRoute(container.route)}>
+                  <PlayIcon size={17} /> Sign in to play
+                </button>
+              ) : (
+                <button className="play-pill album-play-pill" disabled={!tracks.length} onClick={() => session.playTracks(tracks, 0, origin)}>
+                  <PlayIcon size={17} /> Play
+                </button>
+              )}
               <button className="round-btn album-round" aria-label="Add to queue" title={queued.added ? 'Added to queue' : 'Add to queue'} disabled={!tracks.length}
                 onClick={() => {
                   session.append(tracks);
@@ -298,14 +305,21 @@ export function CatalogDetailView({ container, nav }: ProviderViewProps & { cont
 export function ArtistView({ artist, nav }: ProviderViewProps & { artist: CatalogArtist }) {
   const { page, error, loading } = useCatalogPage(artist.route, { kind: 'artist', id: artist.id });
   const topTracks = songsOf(page?.sections.find((s) => s.id === 'artist-top-songs')?.entries ?? []);
+  const needsSignIn = useUi((s) => playNeedsSignIn(s, artist.route));
 
   return (
     <ProviderPageFrame title={artist.name} loading={loading} error={error} route={artist.route}>
       {topTracks.length > 0 && (
         <div className="album-actions artist-actions">
-          <button className="play-pill" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
-            <PlayIcon size={16} /> <span>Play top songs</span>
-          </button>
+          {needsSignIn ? (
+            <button className="play-pill" onClick={() => session.signInRoute(artist.route)}>
+              <PlayIcon size={16} /> <span>Sign in to play</span>
+            </button>
+          ) : (
+            <button className="play-pill" onClick={() => session.playTracks(topTracks, 0, { kind: 'provider', id: artist.id, name: artist.name })}>
+              <PlayIcon size={16} /> <span>Play top songs</span>
+            </button>
+          )}
         </div>
       )}
       {page && <CatalogPageView page={page} nav={nav} />}

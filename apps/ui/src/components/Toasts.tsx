@@ -60,8 +60,19 @@ export function Toasts() {
           <RouteBadge route={t.route} />
           <span className="toast-msg">
             {t.message}
-            {t.retriable && <em> Try again.</em>}
+            {t.code !== 'unauthenticated' && t.retriable && <em> Try again.</em>}
           </span>
+          {t.code === 'unauthenticated' && (
+            <button
+              className="toast-action"
+              onClick={() => {
+                session.signInRoute(t.route);
+                dismiss(t.id);
+              }}
+            >
+              Sign in
+            </button>
+          )}
           <button className="icon-btn" aria-label="Dismiss" disabled={leaving.has(t.id)} onClick={() => dismiss(t.id)}>
             <CloseIcon size={14} />
           </button>

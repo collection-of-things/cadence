@@ -31,6 +31,28 @@ pnpm verify           # all checks incl. Rust tests + headless playback probe
 pnpm dev              # launches Electron dev (needs a display)
 ```
 
+## Apple Music on macOS (and Windows)
+
+Apple Music streams Widevine-protected audio. On macOS and Windows, Apple's
+license server only grants licenses to an Electron build with a **production
+VMP signature** from Castlabs EVS. Castlabs' prebuilt Electron (installed by
+`pnpm install`) carries only a development signature, so without this step
+Apple Music signs in and browses but every song is refused with
+"Apple Music refused the playback license" (`MEDIA_LICENSE`, -42585).
+Linux has no such requirement.
+
+One-time setup with your own (free) Castlabs EVS account, then sign:
+
+```bash
+python3 -m venv ~/.local/share/cadence/evs-venv      # Homebrew Python blocks global pip
+~/.local/share/cadence/evs-venv/bin/python -m pip install --upgrade castlabs-evs
+~/.local/share/cadence/evs-venv/bin/python -m castlabs_evs.account signup   # or: account reauth
+pnpm vmp:sign                            # signs node_modules' Electron in place
+pnpm vmp:sign --check                    # verify
+```
+
+Re-run `pnpm vmp:sign` whenever Electron is reinstalled.
+
 ## Verification
 
 For real Electron UI, playback/audio, restore, and authenticated Apple Music

@@ -29,12 +29,20 @@ class PageSession {
   playGate: Promise<boolean> | null = null;
   /** Gate for the sign-in flow's authorize() eval — pending until released. */
   authorizeGate: Promise<boolean> | null = null;
+  /** MusicKit's isAuthorized, as the page's controller reports it. */
+  authorized = true;
+  /** Rejection for the controller's play() — as requireFullPlayback throws. */
+  playError: Error | null = null;
   private popupCloseHandlers: Array<() => void> = [];
   private popupOpenHandlers: Array<() => void> = [];
   async prepare(): Promise<void> {}
   async eval(expression: string): Promise<unknown> {
     this.evals.push(expression);
-    if (expression.startsWith("window.__cadenceCtl.play(")) return this.playGate ?? true;
+    if (expression === "window.__cadenceCtl.isAuthorized()") return this.authorized;
+    if (expression.startsWith("window.__cadenceCtl.play(")) {
+      if (this.playError) throw this.playError;
+      return this.playGate ?? true;
+    }
     if (expression.includes("authorize()")) return this.authorizeGate ?? true;
     return true;
   }
@@ -43,6 +51,8 @@ class PageSession {
   async clearData(): Promise<void> {}
   async dispose(): Promise<void> {}
   async hasSessionCookies(): Promise<boolean> { return false; }
+  alive = true;
+  async promoteCookie(): Promise<boolean> { return false; }
   hide(): void { this.hidden = true; }
   reveal(): void { this.hidden = false; }
   focusPopup(): boolean { return this.hasOpenPopups; }
@@ -258,5 +268,101 @@ describe("apple route x coordinator", () => {
     expect(r.page.evals.slice(before).some(expression => expression.includes("pause()"))).toBe(false);
     expect(r.coordinator.getSnapshot().status).toBe("playing");
     expect(r.coordinator.getSnapshot().lease).toEqual(lease);
+  });
+});
+
+describe("signed-out Apple playback", () => {
+  const errors = (events: CoordinatorEvent[]) =>
+    events.filter((e): e is Extract<CoordinatorEvent, { kind: "error" }> => e.kind === "error");
+  const playEvals = (page: { evals: string[] }) =>
+    page.evals.filter((e) => e.startsWith("window.__cadenceCtl.play("));
+
+  it("reports one sign-in error, never reaches MusicKit, and leaves local playback running", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("l1", "local")], startIndex: 0 });
+    expect(r.coordinator.getSnapshot().status).toBe("playing");
+    const localLease = r.coordinator.getSnapshot().lease;
+    r.page.authorized = false;
+    r.local.calls.length = 0;
+    r.events.length = 0;
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({
+      route: "apple-musickit",
+      code: "unauthenticated",
+      retriable: false,
+      message: "Sign in to Apple Music to play full songs.",
+    });
+    expect(playEvals(r.page)).toHaveLength(0);
+    // The preflight refused before the handoff: the local engine was never stopped.
+    expect(r.local.calls.filter((c) => c.startsWith("stop"))).toEqual([]);
+    expect(r.coordinator.getSnapshot().lease).toEqual(localLease);
+  });
+
+  it("reports one sign-in error when authorization is lost after the preflight", async () => {
+    const r = rig();
+    r.page.playError = new Error("Sign in to Apple Music to play full songs.");
+    const origEval = r.page.eval.bind(r.page);
+    r.page.eval = async (expression: string) => {
+      // MusicKit drops the session between preflight and play.
+      if (expression.startsWith("window.__cadenceCtl.play(")) r.page.authorized = false;
+      return origEval(expression);
+    };
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ code: "unauthenticated", retriable: false });
+    expect(r.coordinator.getSnapshot().lastError).toMatchObject({ code: "unauthenticated", retriable: false });
+  });
+
+  it("reports an unexpected play failure once, as retriable", async () => {
+    const r = rig();
+    r.page.playError = new Error("network down");
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ message: "Apple Music play failed: network down", retriable: true });
+    expect(errs[0]!.code).toBeUndefined();
+  });
+
+  it("reports a missing subscription once, without inviting a retry", async () => {
+    const r = rig();
+    r.page.playError = new Error("An active Apple Music subscription is required to play full songs.");
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ code: "no-subscription", retriable: false });
+  });
+
+  it("reports a refused DRM license once, as a non-retriable drm-license error", async () => {
+    const r = rig();
+    r.page.playError = new Error("MEDIA_LICENSE: Apple Music refused the playback license.");
+
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ code: "drm-license", retriable: false });
+    expect(errs[0]!.message).toMatch(/VMP-signed/);
+    expect(r.coordinator.getSnapshot().status).toBe("error");
+  });
+
+  it("forwards a license refusal that arrives after the start as one coded error", async () => {
+    const r = rig();
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a")], startIndex: 0 });
+    r.events.length = 0;
+    r.emitPage("error", { message: "MEDIA_LICENSE: Apple Music refused the playback license.", code: "drm-license" });
+    const errs = errors(r.events);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ code: "drm-license", retriable: false });
   });
 });

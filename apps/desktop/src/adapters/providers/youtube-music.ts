@@ -19,6 +19,7 @@ import type {
   TrackRef,
 } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
+import { RouteError } from "../route-error.js";
 import { ProviderEvalTimeout, ProviderSession } from "./provider-session.js";
 import { YouTubeMusicCatalog } from "./youtube-music-catalog.js";
 import { YTM_CONTROLLER_JS } from "./inject/ytm-controller.js";
@@ -200,8 +201,8 @@ export class YouTubeMusicAdapter extends ProviderViewAdapter {
       this.onPageEvent("playerState", result);
     } catch (e) {
       if (lease.generationId !== this.generation) return;
-      this.error(`YouTube Music play failed: ${(e as Error).message}`, true);
-      throw e;
+      // Reject only — the coordinator reports the failure (once).
+      throw new RouteError(`YouTube Music play failed: ${(e as Error).message}`, { retriable: true });
     }
   }
 

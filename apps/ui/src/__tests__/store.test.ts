@@ -485,3 +485,108 @@ describe('phone owns playback', () => {
     mock.dispose();
   });
 });
+
+describe('routes that need sign-in to play', () => {
+  async function signedOutApple() {
+    const { MockCadenceApi } = await import('../mock/MockCadenceApi');
+    const mock = new MockCadenceApi();
+    const apple = (await mock.getCapabilities()).find((c) => c.route === 'apple-musickit')!;
+    mock.dispose();
+    const capability = { ...apple, state: 'unauthenticated' as const, playback: { ...apple.playback, canPlay: false } };
+    const appleItem: QueueItem = { queueId: 'q-am', track: track('am', 'apple-musickit') };
+    const api = makeApi({
+      snapshot: snap({ status: 'stopped', lease: null, current: null }),
+      queue: queue([appleItem], { currentIndex: -1 }),
+    });
+    const signIns: string[] = [];
+    api.api.getCapabilities = async () => [capability];
+    api.api.routes = {
+      signIn: async (route) => {
+        signIns.push(route);
+      },
+      signOut: async () => {},
+    } as NonNullable<StoreApiSurface['routes']>;
+    const s = createUiStore(api.api);
+    await s.init();
+    return { s, api, signIns, capability, appleItem };
+  }
+
+  it('an explicit Play opens sign-in and sends no command', async () => {
+    const { s, api, signIns } = await signedOutApple();
+    s.playTracks([track('x', 'apple-musickit'), track('y', 'apple-musickit')], 0);
+    await Promise.resolve();
+    expect(api.sent).toEqual([]);
+    expect(signIns).toEqual(['apple-musickit']);
+    s.dispose();
+  });
+
+  it('playing a queued item opens sign-in and sends no command', async () => {
+    const { s, api, signIns, appleItem } = await signedOutApple();
+    s.playQueueId(appleItem.queueId);
+    await Promise.resolve();
+    expect(api.sent).toEqual([]);
+    expect(signIns).toEqual(['apple-musickit']);
+    s.dispose();
+  });
+
+  it('the transport Play button opens sign-in and sends nothing', async () => {
+    const { s, api, signIns } = await signedOutApple();
+    s.togglePlay({ fromButton: true });
+    expect(api.sent).toEqual([]);
+    expect(signIns).toEqual(['apple-musickit']);
+    expect(s.store.getState().toasts).toEqual([]);
+    s.dispose();
+  });
+
+  it('space and media keys explain with one Sign in toast instead of failing', async () => {
+    const { s, api, signIns } = await signedOutApple();
+    s.togglePlay();
+    s.togglePlay();
+    expect(api.sent).toEqual([]);
+    expect(signIns).toEqual([]);
+    const toasts = s.store.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ route: 'apple-musickit', code: 'unauthenticated', retriable: false });
+    s.dispose();
+  });
+
+  it('plays normally once the route reports it can play', async () => {
+    const { s, api, signIns, capability } = await signedOutApple();
+    api.emit({ kind: 'capabilities', route: 'apple-musickit', capabilities: { ...capability, state: 'ready', playback: { ...capability.playback, canPlay: true } } });
+    s.playTracks([track('x', 'apple-musickit')], 0);
+    expect(api.sent.map((c) => c.kind)).toEqual(['setQueue']);
+    expect(signIns).toEqual([]);
+    s.dispose();
+  });
+
+  it('a route that plays signed out (YouTube Music) is never gated', async () => {
+    const { s, api } = await signedOutApple();
+    s.playTracks([track('yt', 'youtube-music')], 0);
+    expect(api.sent.map((c) => c.kind)).toEqual(['setQueue']);
+    s.dispose();
+  });
+});
+
+describe('error toasts', () => {
+  it('carry the route error code', () => {
+    session.dispatch({ kind: 'error', route: 'apple-musickit', message: 'Sign in to Apple Music to play full songs.', retriable: false, code: 'unauthenticated' });
+    expect(session.store.getState().toasts.at(-1)).toMatchObject({ code: 'unauthenticated', retriable: false });
+  });
+
+  it('collapse a repeated cause into one toast', () => {
+    const e = { kind: 'error', route: 'apple-musickit', message: 'Sign in to Apple Music to play full songs.', retriable: false, code: 'unauthenticated' } as const;
+    session.dispatch(e);
+    session.dispatch({ ...e, message: 'Apple Music is signed out — sign in to use it.' });
+    session.dispatch({ kind: 'error', route: 'local', message: 'play failed: x', retriable: true });
+    session.dispatch({ kind: 'error', route: 'local', message: 'play failed: x', retriable: true });
+    const toasts = session.store.getState().toasts;
+    expect(toasts.map((t) => t.route)).toEqual(['apple-musickit', 'local']);
+    expect(toasts[0]!.message).toBe('Apple Music is signed out — sign in to use it.');
+  });
+
+  it('keep distinct failures apart', () => {
+    session.dispatch({ kind: 'error', route: 'local', message: 'play failed: a', retriable: true });
+    session.dispatch({ kind: 'error', route: 'local', message: 'play failed: b', retriable: true });
+    expect(session.store.getState().toasts).toHaveLength(2);
+  });
+});

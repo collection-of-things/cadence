@@ -59,3 +59,15 @@ export function activeCapabilities(s: RouteState): RouteCapabilities | undefined
 export function routeState(s: RouteState, route: RouteId | null): RouteCapabilities['state'] | undefined {
   return s.capabilities.find((c) => c.route === route)?.state;
 }
+
+/**
+ * True when a route reports it needs a signed-in account before it can play
+ * (signed out and `canPlay: false`). Playback starts on such a route offer
+ * sign-in instead of sending a command that can only fail. Unknown routes
+ * and routes that play signed out (YouTube Music) are never gated.
+ */
+export function playNeedsSignIn(s: RouteState, route: RouteId | null | undefined): boolean {
+  if (!route) return false;
+  const cap = s.capabilities.find((c) => c.route === route);
+  return cap !== undefined && cap.state === 'unauthenticated' && !cap.playback.canPlay;
+}

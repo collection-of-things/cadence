@@ -9,6 +9,7 @@
 
 import type { PlaybackLease, QueueItem, RouteCapabilities } from "@cadence/protocol";
 import { ProviderViewAdapter } from "./provider-adapter-base.js";
+import { RouteError } from "../route-error.js";
 import { ProviderSession } from "./provider-session.js";
 
 export class SpotifyWebAdapter extends ProviderViewAdapter {
@@ -70,8 +71,11 @@ export class SpotifyWebAdapter extends ProviderViewAdapter {
   async play(item: QueueItem, lease: PlaybackLease): Promise<void> {
     this.session.setAudioMuted(false);
     this.generation = lease.generationId;
-    this.error("Spotify web route cannot play in an unsigned build", false, "drm-unsigned");
-    throw new Error("spotify-web unavailable");
+    // Reject only — the coordinator reports the failure (once).
+    throw new RouteError("Spotify web route cannot play in an unsigned build", {
+      retriable: false,
+      code: "drm-unsigned",
+    });
   }
 
   async pause(lease: PlaybackLease): Promise<void> {

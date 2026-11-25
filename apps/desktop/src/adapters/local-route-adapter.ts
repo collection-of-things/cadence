@@ -58,6 +58,12 @@ export class LocalRouteAdapter
   private observedGapless = false;
   private observedExclusive: boolean | null = null;
 
+  /** queueId of the load RPC in flight. The service reports a failed load
+   * both as event.error and as the RPC's error response; the rejection is
+   * the one the coordinator reports, so the event is dropped (no double
+   * report — see the error ownership note on RouteAdapter). */
+  private loadingQueueId: string | null = null;
+
   constructor(client: AudioServiceClient) {
     this.client = client;
     client.onEvent((e) => {
@@ -127,12 +133,17 @@ export class LocalRouteAdapter
     // Apply fidelity before load — setFidelityMode after load rebuilds the
     // just-started pipeline (audible blip).
     if (this.fidelityMode) await this.client.setFidelityMode(true);
+    this.loadingQueueId = item.queueId;
     try {
-      await this.client.load(params);
-    } catch (e) {
-      if (!isBoundaryRetry(e)) throw e;
-      await new Promise((r) => setTimeout(r, 50));
-      await this.client.load(params);
+      try {
+        await this.client.load(params);
+      } catch (e) {
+        if (!isBoundaryRetry(e)) throw e;
+        await new Promise((r) => setTimeout(r, 50));
+        await this.client.load(params);
+      }
+    } finally {
+      if (this.loadingQueueId === item.queueId) this.loadingQueueId = null;
     }
   }
 
@@ -319,6 +330,8 @@ export class LocalRouteAdapter
         return;
       }
       case "event.error": {
+        // The in-flight load's own rejection reports this failure.
+        if (e.params.queueId !== undefined && e.params.queueId === this.loadingQueueId) return;
         this.emit({ kind: "error", message: e.params.message, retriable: e.params.retriable });
         return;
       }
