@@ -82,7 +82,7 @@
 /* it stays mounted while closing; see usePanelMounted */
 .side-panel:not(.is-open) { transform: translateX(20px); opacity: 0; }
 /* its top strip sits under the window buttons and drags the window */
-.side-panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 54px 10px 8px 12px; -webkit-app-region: drag; }
+.side-panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 54px 12px 8px; -webkit-app-region: drag; }
 /* macOS keeps its window buttons on the left, so the tabs line up with the top bar */
 :root[data-platform='mac'] .side-panel-head { padding-top: calc(var(--gap) + 5px); padding-bottom: 12px; }
 .side-panel-head button { -webkit-app-region: no-drag; }
