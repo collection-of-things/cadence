@@ -9,11 +9,12 @@
   --svc: #fa2d48;
 
   /* text tiers. Each clears 4.5:1 on the stage, the glass panels and
-     album-tinted rows; --t4 is for meta text, never on the player glass. */
+     album-tinted rows, including when the ambient glow peaks behind them;
+     --t4 is for meta text, never on the player glass. */
   --t1: oklch(0.97 0 0);
   --t2: oklch(0.83 0.005 285);
   --t3: oklch(0.74 0.007 285);
-  --t4: oklch(0.67 0.008 285);
+  --t4: oklch(0.69 0.008 285);
   /* secondary text over artwork and album-tinted heroes */
   --on-media-2: oklch(1 0 0 / 0.8);
 
