@@ -47,7 +47,7 @@ function placeMenu(trigger: DOMRect, height: number): MenuPlace {
 function AddToLibraryItem({ track, act }: { track: TrackRef; act: MenuAction }) {
   const { state, add } = useLibrarySave(targetForTrack(track));
   if (state !== 'ready') return null;
-  return <button role="menuitem" onClick={act(add)}>Add to Library</button>;
+  return <button role="menuitem" tabIndex={-1} onClick={act(add)}>Add to Library</button>;
 }
 
 /**
@@ -75,6 +75,13 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
     if (!menu || !trigger) return;
     setPlace(placeMenu(trigger, menu.scrollHeight));
   }, [open]);
+
+  // Focus the first item once the menu is placed and visible (it renders
+  // hidden for one measuring pass, and hidden elements can't take focus).
+  const placed = place !== null;
+  useLayoutEffect(() => {
+    if (open && placed) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open, placed]);
 
   // The menu is anchored to its row: scrolling the row's own list or
   // resizing the window closes it (other panels scrolling, like synced
@@ -105,7 +112,6 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
       if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener('pointerdown', away);
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     return () => document.removeEventListener('pointerdown', away);
   }, [open]);
 
@@ -165,14 +171,14 @@ export function TrackMenu({ track, nav }: { track: TrackRef; nav?: CatalogNav | 
           onClick={(e) => e.stopPropagation()}
           onKeyDown={onMenuKey}
         >
-          <button role="menuitem" onClick={act(() => session.insertNext(track))}>Play next</button>
-          <button role="menuitem" onClick={act(() => session.append(track))}>Add to queue</button>
+          <button role="menuitem" tabIndex={-1} onClick={act(() => session.insertNext(track))}>Play next</button>
+          <button role="menuitem" tabIndex={-1} onClick={act(() => session.append(track))}>Add to queue</button>
           <AddToLibraryItem track={track} act={act} />
-          <button role="menuitem" onClick={act(() => toggleFavorite(track))}>
+          <button role="menuitem" tabIndex={-1} onClick={act(() => toggleFavorite(track))}>
             {favorite ? 'Remove from Favourite Songs' : 'Add to Favourite Songs'}
           </button>
-          {songId && nav && <button role="menuitem" onClick={goTo('album')}>Go to Album</button>}
-          {songId && nav && <button role="menuitem" onClick={goTo('artist')}>Go to Artist</button>}
+          {songId && nav && <button role="menuitem" tabIndex={-1} onClick={goTo('album')}>Go to Album</button>}
+          {songId && nav && <button role="menuitem" tabIndex={-1} onClick={goTo('artist')}>Go to Artist</button>}
         </div>,
         document.body,
       )}
