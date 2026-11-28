@@ -144,6 +144,9 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
     },
   });
+  // Tag the shell's renderer so the UI can tell a failed preload apart from
+  // other Electron hosts (design tools, previews) that legitimately use the mock.
+  win.webContents.setUserAgent(`${win.webContents.getUserAgent()} CadenceShell`);
   const devUrl = process.env.CADENCE_UI_URL;
   if (devUrl !== undefined && devUrl !== "") {
     void win.loadURL(devUrl);
