@@ -13,7 +13,9 @@
   --gap: 8px;
   --stage-radius: 18px;
   --stage-l: max(var(--sidebar-w), var(--gap));
+  --side-top-pad-top: 14px;
 }
+:root[data-platform='mac'] { --side-top-pad-top: 48px; }
 
 /* the toggle: the stage slides over the sidebar and portals (toasts) follow */
 :root[data-sidebar='hidden'] { --sidebar-w: 0px; }
@@ -23,7 +25,7 @@
   visibility: hidden;
 }
 /* with no sidebar under them, the Mac window buttons sit on the top bar */
-:root[data-platform='mac'][data-sidebar='hidden'] .topbar { padding-left: 84px; }
+:root[data-platform='mac'][data-sidebar='hidden'] .topbar { padding-left: 80px; }
 
 .app {
   --rail: 0px;
@@ -123,9 +125,8 @@
   width: var(--sb);
 }
 
-.side-top { flex: none; padding: 14px 14px 4px; -webkit-app-region: drag; }
+.side-top { flex: none; padding: var(--side-top-pad-top) 14px 4px; -webkit-app-region: drag; }
 .side-top button { -webkit-app-region: no-drag; }
-[data-platform='mac'] .side-top { padding-top: 34px; }
 
 .side-brand { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 4px; }
 .side-brand img { display: block; flex: none; }
@@ -519,7 +520,9 @@
 }
 @media (max-width: 900px) {
   /* --sb is 64px here (styles.css) */
-  .side-top { padding: 12px 8px 4px; }
+  :root { --side-top-pad-top: 12px; }
+  :root[data-platform='mac'] { --side-top-pad-top: 48px; }
+  .side-top { padding-right: 8px; padding-left: 8px; padding-bottom: 4px; }
   .side-brand { justify-content: center; padding: 0; }
   /* scoped to the sidebar: the side panel's tabs reuse the switch and keep their labels */
   .sidebar :is(.side-brand-name, .side-switch-label, .side-section-head, .side-row-label, .side-count) { display: none; }

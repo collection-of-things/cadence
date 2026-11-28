@@ -93,6 +93,7 @@
 
 /* the card play disc and row actions fade in where the pointer is */
 .card-play, .row-more, .q-acts .icon-btn { transition: opacity 120ms ease-out, background-color 110ms ease, color 110ms ease; }
+.q-acts { transition: opacity 120ms ease-out; }
 .track-row, .q-row, .artist-row, .src-hit, .album-card, .square-card { transition: background-color 90ms ease; }
 .npf-nav { transition: opacity 200ms ease-out; }
 .toast { transition: opacity 180ms ease-out; }
@@ -115,6 +116,10 @@
   @starting-style {
     .page { translate: 0 4px; }
   }
+
+  /* queue actions settle into place as they fade; reduced motion keeps only the fade */
+  .q-acts { scale: 0.96; transition: opacity 120ms ease-out, scale 140ms var(--ease-out); }
+  .q-row:is(:hover, :focus-within) .q-acts { scale: 1; }
 
   /* the playing marker: four bars breathing at different rates, so the
      row reads as playing from across the room */

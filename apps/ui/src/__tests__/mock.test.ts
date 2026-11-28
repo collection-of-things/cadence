@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CoordinatorEvent } from '@cadence/protocol';
 import { MockCadenceApi } from '../mock/MockCadenceApi';
+import { makeLibrary } from '../mock/data';
 
 let api: MockCadenceApi | null = null;
 afterEach(() => {
@@ -19,6 +20,34 @@ describe('MockCadenceApi', () => {
       ['apple-musickit', 'local', 'spotify-librespot', 'spotify-web', 'youtube-music'].sort(),
     );
     expect(caps.some((c) => c.state === 'unauthenticated')).toBe(true);
+  });
+
+  it('empty mock mode starts stopped and plays the first added track on Next', async () => {
+    vi.stubGlobal('location', { search: '?cadence_mock=empty' });
+    try {
+      api = new MockCadenceApi();
+      const [snap, queue] = await Promise.all([api.getSnapshot(), api.getQueue()]);
+      expect(queue.items).toHaveLength(0);
+      expect(snap.current).toBeNull();
+      expect(snap.status).toBe('stopped');
+      expect(snap.durationMs).toBe(0);
+      const [track] = await api.library.tracks({});
+      await api.sendCommand({ kind: 'append', items: [{ queueId: 'first', track: track! }] });
+      await api.sendCommand({ kind: 'next' });
+      expect((await api.getSnapshot()).current?.queueId).toBe('first');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('worst-case fixture keeps extreme and missing metadata covered', () => {
+    const { tracks, albums } = makeLibrary(true);
+    expect(albums[0]!.title.length).toBeGreaterThan(60);
+    expect(tracks[1]!.durationMs).toBe(4_000);
+    expect(tracks[1]!.artists.length).toBeGreaterThan(1);
+    expect(tracks[2]!.durationMs).toBe(12_420_000);
+    expect(tracks[3]!.artists).toEqual([]);
+    expect(tracks[3]!.artwork).toBeUndefined();
   });
 
   it('implements transport commands and emits events', async () => {

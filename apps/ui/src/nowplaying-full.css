@@ -47,7 +47,7 @@
 /* Match the top bar controls and move with the sidebar drawer. */
 /* where the top bar's own buttons sit, so they don't jump as the view opens */
 .npf-corner { position: absolute; z-index: 4; top: calc(var(--gap) + 6px); left: calc(var(--gap) + 14px); display: flex; gap: 6px; }
-:root[data-platform='mac'] .npf:not(.has-nav) .npf-corner { left: 84px; }
+:root[data-platform='mac'] .npf:not(.has-nav) .npf-corner { left: 88px; }
 
 /* the player sits exactly where the docked one was, lifted off the bottom edge */
 .npf { --rail: 0px; }
@@ -83,11 +83,12 @@
   /* stacked: the cover has faded out by the top of the column at 40vh */
   .npf-art { width: 100vw; mask-image: linear-gradient(to bottom, #000 21vh, transparent 40vh); }
   .npf-lyrics { top: 40vh; left: 16px; right: 16px; width: auto; bottom: 128px; }
+  .npf-queue { top: 34vh; }
 }
 
 /* Up Next in the right column: same place as the lyrics, no card */
 .npf-queue { display: flex; flex-direction: column; }
-.npf-col-title { flex: none; margin: 0 0 6px 18px; font-size: var(--fs-title-3); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
+.npf-col-title { flex: none; margin: 0 0 8px 18px; font-size: var(--fs-title-2); font-weight: var(--fw-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-heading); }
 
 /* sidebar over Now Playing: a drawer that slides in from the left edge and
    sits in exactly the same place as the shell's sidebar. The cover stays put;
