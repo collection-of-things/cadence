@@ -10,7 +10,7 @@ type Call = { api: string } | { setQueue: true; previewOnly: boolean; storefront
   | { seek: number } | { play: true } | { pause: true };
 type Item = { id: string; attributes: { durationInMillis: number }; playParams: { kind: string } };
 interface Controller {
-  play(spec: { type: "song" | "station"; id: string }, positionMs: number): Promise<boolean>;
+  play(spec: { type: "song" | "station"; id: string }, positionMs: number): Promise<Record<string, unknown>>;
   resume(): Promise<boolean>;
   seek(positionMs: number): Promise<boolean>;
   setVolume(volume: number): boolean;
@@ -201,10 +201,10 @@ describe("real injected MusicKit controller", () => {
     tick();
     expect(stateCount()).toBe(installed + 1);
 
-    // MusicKit can end and move on before the next idle heartbeat.
+    // Idle completion without a playing slot cannot end an item.
     mk.playbackState = 10;
     tick();
-    expect(lastState()).toMatchObject({ state: "ended", ended: true });
+    expect(lastState()).toMatchObject({ state: "ended", ended: false });
   });
 
   it("fades Apple Music around a seek and restores the requested volume", async () => {
@@ -433,6 +433,44 @@ describe("real injected MusicKit controller", () => {
     expect(events.filter(e => e.name === "playerState").at(-1)?.data.ended).toBe(true);
   });
 
+  it("uses the stream duration and keeps a moving clock near the tail playing", async () => {
+    const { ctl, mk, lastState, events } = await harness();
+    await ctl.play(song, 0);
+    mk.currentPlaybackDuration = 245;
+    mk.currentPlaybackTime = 242.5;
+    ctl.state();
+    expect(lastState()).toMatchObject({ state: "playing", ended: false, durationMs: 245_000 });
+    expect(events.some(e => e.name === "error")).toBe(false);
+    mk.currentPlaybackTime = 244.8;
+    ctl.state();
+    expect(lastState().ended).toBe(false);
+    mk.currentPlaybackTime = 245;
+    mk.playbackState = 10;
+    ctl.state();
+    expect(lastState().ended).toBe(true);
+  });
+
+  it("recovers a stuck clock only after the stream reached its full duration", async () => {
+    vi.useFakeTimers();
+    try {
+      const { ctl, mk, lastState } = await harness();
+      await ctl.play(song, 0);
+      mk.currentPlaybackTime = 249.3;
+      ctl.state();
+      vi.advanceTimersByTime(3000);
+      ctl.state();
+      expect(lastState().ended).toBe(false);
+
+      mk.currentPlaybackTime = mk.currentPlaybackDuration;
+      ctl.state();
+      vi.advanceTimersByTime(3000);
+      ctl.state();
+      expect(lastState().ended).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reports completion when MusicKit clears the current item and duration", async () => {
     const { ctl, mk, lastState } = await harness();
     await ctl.play(song, 0);
@@ -624,7 +662,7 @@ describe("start confirmation and media errors", () => {
 
   it("resolves a start once the stream is loaded and playing", async () => {
     const h = await harness();
-    await expect(h.ctl.play(song, 0)).resolves.toBe(true);
+    await expect(h.ctl.play(song, 0)).resolves.toMatchObject({ state: "playing" });
   });
 
   it("rejects a resume whose license is refused", async () => {

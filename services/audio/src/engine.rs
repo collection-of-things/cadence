@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -124,6 +124,14 @@ struct TrackReader {
     neg: Negotiated,
     /// set by producer once it has buffered data or finished
     ready: Arc<AtomicBool>,
+    decode_error: Arc<OnceLock<String>>,
+}
+
+#[derive(Debug)]
+struct TrackEnd {
+    queue_id: String,
+    instance: u64,
+    decode_error: Arc<OnceLock<String>>,
 }
 
 /// Events the output thread cannot emit itself; drained by the monitor.
@@ -136,12 +144,12 @@ enum CoreEvent {
         started_queue_id: String,
         started_instance: u64,
         started_duration_ms: u64,
-        started_seek_offset_ms: u64,
         /// the promoted reader's own fidelity-bypass flag
         started_bypass: bool,
+        gapless: bool,
     },
     /// Active track drained with nothing behind it.
-    Ended { queue_id: String, instance: u64 },
+    Ended(TrackEnd),
 }
 
 /// Bound on queued CoreEvents. Track-boundary events are rare and the
@@ -192,6 +200,8 @@ pub struct OutputCore {
     next: Option<TrackReader>,
     /// output frames emitted for `active` since it became current
     frames_played: u64,
+    /// Source-time origin of the frames above, retained while the tail drains.
+    position_offset_ms: u64,
     events: VecDeque<CoreEvent>,
     /// Ended readers parked for the monitor to drop. A TrackReader owns
     /// its ring buffer (~buffer_secs of samples) — freeing that inside
@@ -424,8 +434,8 @@ impl OutputCore {
         self.scratch16 = tmp;
     }
 
-    /// Active track drained: promote `next` (gapless) or end. Returns true if
-    /// a new track took over on the same stream.
+    /// Promote a successor on the same stream after clean EOF. A failed
+    /// decoder drains its buffered audio and then reports the failure.
     fn advance_track(&mut self) -> bool {
         self.boundary_seq += 1;
         let mut ended = self.active.take().unwrap();
@@ -433,27 +443,34 @@ impl OutputCore {
         // and park the reader for the monitor to reclaim.
         let ended_queue_id = std::mem::take(&mut ended.queue_id);
         let ended_instance = ended.instance;
+        let decode_error = Arc::clone(&ended.decode_error);
         self.retire(ended);
-        if let Some(next) = self.next.take() {
+        let can_promote = decode_error.get().is_none()
+            && self.next.as_ref().is_some_and(|next| next.decode_error.get().is_none());
+        if can_promote {
+            let next = self.next.take().unwrap();
+            let gapless = next.ready.load(Ordering::Acquire) && !next.pipe.is_drained();
             self.push_event(CoreEvent::Boundary {
                 ended_queue_id,
                 ended_instance,
                 started_queue_id: next.queue_id.clone(),
                 started_instance: next.instance,
                 started_duration_ms: next.duration_ms,
-                started_seek_offset_ms: next.seek_offset_ms,
                 started_bypass: next.bypass,
+                gapless,
             });
             self.frames_played = 0;
+            self.position_offset_ms = next.seek_offset_ms;
             self.active = Some(next);
             self.underrun = false;
             true
         } else {
             self.ended_pending = true;
-            self.push_event(CoreEvent::Ended {
+            self.push_event(CoreEvent::Ended(TrackEnd {
                 queue_id: ended_queue_id,
                 instance: ended_instance,
-            });
+                decode_error,
+            }));
             false
         }
     }
@@ -488,6 +505,7 @@ impl OutputCore {
             old.pipe.abort();
         }
         self.frames_played = 0;
+        self.position_offset_ms = track.seek_offset_ms;
         self.stalled = false;
         self.underrun = false;
         self.ended_pending = false;
@@ -510,18 +528,14 @@ impl OutputCore {
             t.pipe.abort();
         }
         self.frames_played = 0;
+        self.position_offset_ms = 0;
         self.stalled = false;
         self.underrun = false;
         self.flush_output();
     }
 
     fn position_ms(&self) -> u64 {
-        let off = self
-            .active
-            .as_ref()
-            .map(|t| t.seek_offset_ms)
-            .unwrap_or(0);
-        off + self.frames_played * 1000 / self.negotiated.rate.max(1) as u64
+        self.position_offset_ms + self.frames_played * 1000 / self.negotiated.rate.max(1) as u64
     }
 }
 
@@ -788,6 +802,7 @@ impl Engine {
                 active: None,
                 next: None,
                 frames_played: 0,
+                position_offset_ms: 0,
                 events: VecDeque::with_capacity(MAX_CORE_EVENTS),
                 retired: VecDeque::with_capacity(MAX_RETIRED_READERS),
                 underrun: false,
@@ -1009,14 +1024,33 @@ impl Engine {
         )
     }
 
-    fn plan_track(&self, src: &SourceSpec, seek_ms: u64) -> Result<TrackPlan> {
-        self.plan_track_opts(src, seek_ms, true)
+    fn plan_track(&self, src: &SourceSpec) -> Result<TrackPlan> {
+        self.plan_track_opts(src, true)
+    }
+
+    fn plan_prefetch(&self, src: &SourceSpec) -> Result<TrackPlan> {
+        let mut plan = self.plan_track(src)?;
+        let stream = self.core.lock().unwrap().negotiated.clone();
+        let fidelity = self.state.lock().unwrap().fidelity;
+        let source_layout = plan.info.as_ref().and_then(|info| info.channel_layout.as_deref());
+        // Ordinary playback can resample onto the open stream. Preserve
+        // channel mapping and sample precision, and keep explicit fidelity
+        // mode's native-format contract.
+        if !fidelity && plan.neg != stream
+            && plan.src_channels == stream.channels
+            && crate::sink::resolve_positions(source_layout, plan.src_channels) == stream.positions
+            && plan.src_depth.preserved_by(stream.kind)
+        {
+            plan.rplan = resample_plan(plan.src_rate, stream.rate, false, false).0;
+            plan.neg = stream;
+            plan.native = false;
+        }
+        Ok(plan)
     }
 
     fn plan_track_opts(
         &self,
         src: &SourceSpec,
-        seek_ms: u64,
         prefer_native: bool,
     ) -> Result<TrackPlan> {
         let (src_rate, src_channels, src_depth, duration_ms, info) = match src {
@@ -1026,7 +1060,7 @@ impl Engine {
                     info.sample_rate_hz,
                     info.channels,
                     info.bit_depth,
-                    info.duration_ms.saturating_sub(seek_ms),
+                    info.duration_ms,
                     Some(info),
                 )
             }
@@ -1100,7 +1134,7 @@ impl Engine {
         rebuild_ok: bool,
         expected: Option<(u64, u64)>,
     ) -> Result<(TrackReader, ProducerHandle, u64, bool, Option<AudioInfo>)> {
-        let plan = self.plan_track(&src, seek_ms)?;
+        let plan = self.plan_track(&src)?;
         self.spawn_with_native_fallback(
             queue_id,
             src,
@@ -1154,7 +1188,7 @@ impl Engine {
                 eprintln!(
                     "native stream negotiation failed ({e:#}); retrying at device default"
                 );
-                let plan = self.plan_track_opts(&src, seek_ms, false)?;
+                let plan = self.plan_track_opts(&src, false)?;
                 self.spawn_pipeline_planned(
                     queue_id,
                     src,
@@ -1209,6 +1243,9 @@ impl Engine {
             if format_differs || sink_unhealthy {
                 let (cur_rate, cur_kind) = (core.negotiated.rate, core.negotiated.kind);
                 drop(core);
+                if !rebuild_ok && sink_unhealthy {
+                    bail!("cannot prefetch while the output stream is unavailable");
+                }
                 if !rebuild_ok && format_differs {
                     bail!(
                         "incompatible format for seamless transition: \
@@ -1267,6 +1304,7 @@ impl Engine {
         let capacity = (neg.rate as f32 * self.cfg.buffer_secs) as usize * neg.channels as usize;
 
         let ready = Arc::new(AtomicBool::new(false));
+        let decode_error = Arc::new(OnceLock::new());
         // Fidelity bypass means NO DSP on ANY negotiated kind — only the
         // s32 bypass runs a DSP-free producer, so the f32 bypass path must
         // be starved of EQ/RG inputs to stay bit-transparent.
@@ -1295,8 +1333,7 @@ impl Engine {
                 let (prod, cons) = ringbuf::channel::<f32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
                 let r = ready.clone();
-                let qid_c = qid.clone();
-                let emit_c = Arc::clone(&self.emit);
+                let error = Arc::clone(&decode_error);
                 let prod_ret = prod.clone();
                 let info_c = info.clone();
                 let join = std::thread::Builder::new()
@@ -1307,16 +1344,7 @@ impl Engine {
                             info_c,
                         );
                         if let Err(e) = res {
-                            eprintln!("producer {qid_c}: {e:#}");
-                            (emit_c)(serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "method": "event.error",
-                                "params": {
-                                    "queueId": qid_c,
-                                    "message": format!("decode failed: {e:#}"),
-                                    "retriable": true,
-                                },
-                            }));
+                            let _ = error.set(format!("decode failed: {e:#}"));
                         }
                         // A dead producer must still close the ring — else
                         // the consumer buffers forever and the boundary
@@ -1333,6 +1361,7 @@ impl Engine {
                         bypass,
                         neg: neg.clone(),
                         ready,
+                        decode_error,
                     },
                     join,
                 )
@@ -1341,8 +1370,7 @@ impl Engine {
                 let (prod, cons) = ringbuf::channel::<i32>(capacity);
                 let feed = self.ensure_feed(&src2, queue_id);
                 let r = ready.clone();
-                let qid_c = qid.clone();
-                let emit_c = Arc::clone(&self.emit);
+                let error = Arc::clone(&decode_error);
                 let prod_ret = prod.clone();
                 let info_c = info.clone();
                 let join = std::thread::Builder::new()
@@ -1351,16 +1379,7 @@ impl Engine {
                         let res =
                             run_producer_s32(&*decoder, src2, seek_ms, &neg2, feed, prod, r, info_c);
                         if let Err(e) = res {
-                            eprintln!("producer {qid_c}: {e:#}");
-                            (emit_c)(serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "method": "event.error",
-                                "params": {
-                                    "queueId": qid_c,
-                                    "message": format!("decode failed: {e:#}"),
-                                    "retriable": true,
-                                },
-                            }));
+                            let _ = error.set(format!("decode failed: {e:#}"));
                         }
                         prod_ret.finish();
                     })?;
@@ -1374,6 +1393,7 @@ impl Engine {
                         bypass,
                         neg: neg.clone(),
                         ready,
+                        decode_error,
                     },
                     join,
                 )
@@ -1893,7 +1913,7 @@ impl Engine {
                 st.reported_prefetch_ready = false;
             }
         };
-        match self.plan_track(&src, 0) {
+        match self.plan_prefetch(&src) {
             Ok(plan) if plan.neg == self.core.lock().unwrap().negotiated => {
                 match self.spawn_with_native_fallback(&qid, src.clone(), 0, rg, false, plan, Some((seq, gen))) {
                     Ok((reader, handle, _dur, _bypass, _info)) => {
@@ -2128,7 +2148,7 @@ impl Engine {
         // report gapless:false honestly when the time comes.
         // One plan (one ffprobe) serves both the compatibility check and
         // the spawn below.
-        let plan = self.plan_track(&src, 0)?;
+        let plan = self.plan_prefetch(&src)?;
         let compatible = self.core.lock().unwrap().negotiated == plan.neg;
         if compatible {
             // Via the fallback so a failed native open is cached here too
@@ -2595,7 +2615,8 @@ impl Engine {
     /// drained — see the parked-end logic in monitor_loop. The staged
     /// tail must play out before we emit trackEnded or respawn, or the
     /// last ~186ms of audio is cut (mpv drains via ao_drain).
-    fn handle_track_end(&self, queue_id: String, instance: u64) {
+    fn handle_track_end(&self, end: TrackEnd) {
+        let TrackEnd { queue_id, instance, decode_error } = end;
         // Take the armed successor in the SAME critical section as the
         // adoption — a write in between would be stolen by the boundary.
         let (gen, pf) = {
@@ -2612,8 +2633,14 @@ impl Engine {
             // The monitor owns this end now — pending-end
             // is resolved, not "in flight" for respawns.
             core.ended_pending = false;
+            if let Some(next) = core.next.take() {
+                next.pipe.abort();
+            }
             st.current_instance = 0;
             st.queue_id = None;
+            if decode_error.get().is_some() {
+                st.state = PlayState::Error;
+            }
             // A slot armed under another generation must
             // not reopen against THIS track's end.
             let pf = match st.prefetch.take() {
@@ -2622,14 +2649,18 @@ impl Engine {
             };
             (st.generation, pf)
         };
-        self.emit(
-            "event.trackEnded",
-            json!({
-                "generationId": gen,
-                "queueId": queue_id,
-                "gapless": false,
-            }),
-        );
+        if let Some(message) = decode_error.get() {
+            self.emit("event.error", json!({
+                "generationId": gen, "queueId": queue_id, "message": message, "retriable": true, "terminal": true,
+            }));
+            self.emit("event.state", json!({ "generationId": gen, "state": "error" }));
+            return;
+        }
+        let report_end = |continues| {
+            self.emit("event.trackEnded", json!({
+                "generationId": gen, "queueId": queue_id, "gapless": false, "continues": continues,
+            }));
+        };
         // A prefetched successor that couldn't share the
         // stream (format reopen required) starts here —
         // honestly NOT gapless.
@@ -2697,8 +2728,7 @@ impl Engine {
                         drop(st);
                         drop(core);
                         *self.producer.lock().unwrap() = Some(handle);
-                        self.emit_state(None);
-                        self.emit_output();
+                        report_end(true);
                         self.emit(
                             "event.trackStarted",
                             json!({
@@ -2708,7 +2738,9 @@ impl Engine {
                                 "gapless": false,
                             }),
                         );
-                        break;
+                        self.emit_state(None);
+                        self.emit_output();
+                        return;
                     }
                     Err(e) => {
                         // A concurrent rebuild or boundary
@@ -2741,16 +2773,6 @@ impl Engine {
                     }
                 }
             }
-            // The successful install above already
-            // advanced the state — skip the stopped check
-            // when a successor is now active.
-            let advanced = {
-                let st = self.state.lock().unwrap();
-                st.queue_id.is_some()
-            };
-            if advanced {
-                return;
-            }
         }
         // Check + stop atomically — a newer load must not
         // be overwritten with Stopped in the gap, and a device error
@@ -2766,7 +2788,8 @@ impl Engine {
             ours
         };
         if stopped {
-            self.emit_state(None);
+            self.emit("event.state", json!({ "generationId": gen, "state": "stopped" }));
+            report_end(false);
         }
     }
 
@@ -2801,8 +2824,7 @@ impl Engine {
         //  completion = a drained event newer than baseline on the
         //  same sink generation)
         let mut pending_ends: std::collections::VecDeque<(
-            String,
-            u64,
+            TrackEnd,
             std::time::Instant,
             u64,
             Option<(u64, u64, std::time::Instant)>,
@@ -2846,8 +2868,8 @@ impl Engine {
                         started_queue_id,
                         started_instance,
                         started_duration_ms,
-                        started_seek_offset_ms,
                         started_bypass,
+                        gapless,
                     } => {
                         // A concurrent load may have landed while this event
                         // sat in the drain window — only adopt the promotion
@@ -2870,7 +2892,6 @@ impl Engine {
                             // differ from the ended track's on the same
                             // stream format (e.g. Int(32) on F32).
                             st.fidelity_bypass = started_bypass;
-                            let _ = started_seek_offset_ms;
                             // promoted prefetch slot consumed — its source and
                             // ReplayGain become the CURRENT track's. A slot
                             // from another generation is dropped, not adopted.
@@ -2890,7 +2911,8 @@ impl Engine {
                             json!({
                                 "generationId": gen,
                                 "queueId": ended_queue_id,
-                                "gapless": true,
+                                "gapless": gapless,
+                                "continues": true,
                             }),
                         );
                         self.emit(
@@ -2899,14 +2921,14 @@ impl Engine {
                                 "generationId": gen,
                                 "queueId": started_queue_id,
                                 "durationMs": started_duration_ms,
-                                "gapless": true,
+                                "gapless": gapless,
                             }),
                         );
                         // The promoted track's bypass flag may differ from
                         // the ended track's on the same stream — report it.
                         self.emit_output();
                     }
-                    CoreEvent::Ended { queue_id, instance } => {
+                    CoreEvent::Ended(end) => {
                         // Park the end until the staging ring drains —
                         // the last chunk of the track is still audible
                         // in the ring. Handling it now would clear the
@@ -2945,8 +2967,7 @@ impl Engine {
                             / rate
                             + 500;
                         pending_ends.push_back((
-                            queue_id,
-                            instance,
+                            end,
                             std::time::Instant::now(),
                             deadline_ms,
                             None,
@@ -2963,9 +2984,11 @@ impl Engine {
             // quantum. Issue a drain and wait for the `drained` event
             // (mpv's pw_stream_flush model); the deadline bounds a
             // stalled graph.
-            while let Some((qid, inst, since, deadline_ms, issued, ring0)) =
+            while let Some((end, since, deadline_ms, issued, ring0)) =
                 pending_ends.pop_front()
             {
+                let qid = &end.queue_id;
+                let inst = end.instance;
                 // Ownership first: a parked end superseded by a load
                 // must never flush the NEW track's stream.
                 let owned = {
@@ -2976,7 +2999,7 @@ impl Engine {
                 if !owned {
                     let Some((_base, gen, _)) = issued else {
                         // Never touched the sink — drop outright.
-                        self.handle_track_end(qid, inst);
+                        self.handle_track_end(end);
                         continue;
                     };
                     // Its drain IS in flight on the reused stream:
@@ -2995,7 +3018,7 @@ impl Engine {
                             }
                         }
                     }
-                    self.handle_track_end(qid, inst); // stale → bails
+                    self.handle_track_end(end); // stale → bails
                     continue;
                 }
                 enum Gate {
@@ -3091,8 +3114,7 @@ impl Engine {
                     Gate::Paused => {
                         // Deadline doesn't tick while paused.
                         pending_ends.push_front((
-                            qid,
-                            inst,
+                            end,
                             std::time::Instant::now(),
                             deadline_ms,
                             issued,
@@ -3102,8 +3124,7 @@ impl Engine {
                     }
                     Gate::DrainIssued => {
                         pending_ends.push_front((
-                            qid,
-                            inst,
+                            end,
                             since,
                             deadline_ms,
                             drain_base,
@@ -3145,11 +3166,10 @@ impl Engine {
                         if r0.elapsed()
                             > std::time::Duration::from_millis(wait0)
                         {
-                            self.handle_track_end(qid, inst);
+                            self.handle_track_end(end);
                         } else {
                             pending_ends.push_front((
-                                qid,
-                                inst,
+                                end,
                                 since,
                                 deadline_ms,
                                 issued,
@@ -3165,7 +3185,7 @@ impl Engine {
                         if let Some(s) = self.sink.lock().unwrap().as_ref() {
                             s.resume();
                         }
-                        self.handle_track_end(qid, inst);
+                        self.handle_track_end(end);
                     }
                     Gate::Playing => {
                         if since.elapsed()
@@ -3182,7 +3202,7 @@ impl Engine {
                                     s.resume();
                                 }
                             }
-                            self.handle_track_end(qid, inst);
+                            self.handle_track_end(end);
                         } else {
                             // A completion CAN be coalesced away: our
                             // drain can finish on the data loop while a
@@ -3265,9 +3285,7 @@ impl Engine {
                                                     s2.resume();
                                                 }
                                                 drop(g);
-                                                self.handle_track_end(
-                                                    qid, inst,
-                                                );
+                                                self.handle_track_end(end);
                                                 continue;
                                             }
                                             Some(new_base) => {
@@ -3280,8 +3298,7 @@ impl Engine {
                                 }
                             }
                             pending_ends.push_front((
-                                qid,
-                                inst,
+                                end,
                                 since,
                                 deadline_ms,
                                 drain_base,
@@ -3917,11 +3934,13 @@ mod tests {
                     instance: 1, queue_id: "active".into(), duration_ms: 1,
                     seek_offset_ms: 0, pipe: PipeReader::S32(active_cons),
                     bypass: false, neg: neg.clone(), ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
                 });
                 c.next = Some(TrackReader {
                     instance: 2, queue_id: "empty".into(), duration_ms: 0,
                     seek_offset_ms: 0, pipe: PipeReader::S32(cons),
                     bypass: false, neg: neg.clone(), ready,
+                    decode_error: Arc::new(OnceLock::new()),
                 });
                 c.paused = false;
                 let mut out = [0i32; 8];
@@ -3929,7 +3948,7 @@ mod tests {
                 assert_eq!(out, [123, -456, 0, 0, 0, 0, 0, 0]);
                 assert!(c.active.is_none());
                 assert!(matches!(c.events.front(), Some(CoreEvent::Boundary { started_queue_id, .. }) if started_queue_id == "empty"));
-                assert!(matches!(c.events.back(), Some(CoreEvent::Ended { queue_id, .. }) if queue_id == "empty"));
+                assert!(matches!(c.events.back(), Some(CoreEvent::Ended(TrackEnd { queue_id, .. })) if queue_id == "empty"));
             }
         }
     }
@@ -4127,6 +4146,7 @@ mod tests {
                 instance, queue_id: instance.to_string(), duration_ms: 1,
                 seek_offset_ms: 0, pipe, bypass: false, neg: neg.clone(),
                 ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
             };
             let int_reader = make_reader(1, PipeReader::S32(ic));
             let float_reader = make_reader(2, PipeReader::F32(fc));
@@ -4155,7 +4175,7 @@ mod tests {
             assert_eq!(&tap[..12], expected_tap);
             assert_eq!(&tap[12..], &[0.0; 4]);
             assert!(matches!(c.events.front(), Some(CoreEvent::Boundary { .. })));
-            assert!(matches!(c.events.back(), Some(CoreEvent::Ended { .. })));
+            assert!(matches!(c.events.back(), Some(CoreEvent::Ended(_))));
         }
     }
 
@@ -4232,12 +4252,13 @@ mod tests {
             positions: None,
             },
             ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
         });
         assert!(!c.advance_track()); // nothing behind it -> Ended
         assert_eq!(c.retired.len(), 1, "ended reader must be parked");
         assert_eq!(c.retired[0].queue_id, "", "queue_id moved into the event");
         assert!(
-            matches!(c.events.back(), Some(CoreEvent::Ended { .. })),
+            matches!(c.events.back(), Some(CoreEvent::Ended(_))),
             "expected a pending Ended event"
         );
         // Monitor-side drain frees the ring off the callback thread.
@@ -4287,6 +4308,7 @@ mod tests {
             positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
             });
             c.paused = false;
             let mut out = [0i16; 7];
@@ -4329,6 +4351,7 @@ mod tests {
             positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
             });
             c.paused = false;
             let mut out = [0i32; 5];
@@ -4357,6 +4380,7 @@ mod tests {
             positions: None,
                 },
                 ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
             });
             let mut out = [0i32; 5];
             c.pull_s32(&mut out);
@@ -4388,6 +4412,7 @@ mod tests {
             bypass: false,
             neg,
             ready: Arc::new(AtomicBool::new(true)),
+                decode_error: Arc::new(OnceLock::new()),
         });
         c.paused = false;
         c.volume = 0.5;

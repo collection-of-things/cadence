@@ -151,7 +151,7 @@ describe("local route load failures", () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  function rig() {
+  function rig(retryLoad = false) {
     const dir = mkdtempSync(join(tmpdir(), "cadence-errors-"));
     dirs.push(dir);
     const { spawn: rawSpawn, services } = mockSpawnFactory();
@@ -161,7 +161,15 @@ describe("local route load failures", () => {
         s.handlers.set(m, () => ({ ok: true }));
       }
       // Like the Rust engine: emit event.error for the load, then fail the RPC.
+      let loadCount = 0;
       s.handlers.set("audio.load", (p: { queueId: string; generationId: number }) => {
+        if (retryLoad) {
+          if (++loadCount > 1) return { ok: true, durationMs: 1000 };
+          s.pushEvent("event.state", { generationId: p.generationId, state: "error" });
+          s.pushEvent("event.error", { generationId: p.generationId, queueId: p.queueId,
+            message: "stream rebuild in flight", retriable: true });
+          return new Error("stream rebuild in flight");
+        }
         s.pushEvent("event.error", { generationId: p.generationId, queueId: p.queueId, message: "unsupported codec", retriable: false });
         return new Error("unsupported codec");
       });
@@ -189,6 +197,17 @@ describe("local route load failures", () => {
     const errs = r.events.filter((e) => e.kind === "error");
     expect(errs).toHaveLength(1);
     expect(errs[0]).toMatchObject({ route: "local", message: "play failed: unsupported codec" });
+    r.coordinator.dispose();
+    await r.client.shutdown?.().catch(() => undefined);
+  });
+
+  it("keeps playback leased after a native load retries during a rebuild", async () => {
+    const r = rig(true);
+    await r.coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a")], startIndex: 0 });
+    expect(r.services[0]!.methods().filter((method) => method === "audio.load")).toHaveLength(2);
+    expect(r.services[0]!.methods()).not.toContain("audio.stop");
+    expect(r.coordinator.getSnapshot()).toMatchObject({ status: "playing", lease: { generationId: 1 } });
+    expect(r.events.filter((e) => e.kind === "error")).toHaveLength(0);
     r.coordinator.dispose();
     await r.client.shutdown?.().catch(() => undefined);
   });

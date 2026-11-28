@@ -6,10 +6,10 @@
 (*               commit lease -> re-silence outgoing (cross-route) ->      *)
 (*               play incoming -> issue prefetch                           *)
 (*                                                                         *)
-(*   events:     `ended`      -> arm 600ms promotion window when a         *)
-(*                             prefetch is installed, else queue an        *)
-(*                             advance link keyed on the ENDED item        *)
-(*               `started`    -> engine self-promotion advances the queue  *)
+(*   events:     paired end/start -> adopt the engine's committed successor *)
+(*               resolved end    -> queue advance for the ended item       *)
+(*               unresolved end  -> allow a promotion window if armed      *)
+(*               `started`       -> adopt engine self-promotion           *)
 (*               timer fire   -> queue the advance link (gen+qid check)    *)
 (*                                                                         *)
 (* Queue is fixed: 3 items, routes local/local/yt, repeat off.             *)
@@ -381,12 +381,14 @@ PlayResolve ==
 \* Environment: adapter events, promotion timer, prefetch resolution
 \* -------------------------------------------------------------------------
 
-\* `ended` from the engine. Gated to the live lease and deduped.
-EngineEnded ==
+\* `ended` without a committed successor. A legacy/provider end can wait
+\* for promotion; an explicit native end advances even with a prefetch ACK.
+EngineEnded(resolved) ==
     /\ stepCount < MaxSteps
     /\ stepCount' = stepCount + 1
     /\ si.phase /= "failed"  \* the fail path is synchronous
     /\ HasLease
+    /\ (~resolved \/ (lease.route = "local" /\ pendingPrefetch.qid /= 0))
     /\ sounding[lease.route]  \* only a sounding track can end
     /\ \E q \in {lease.qid} :
         /\ <<lease.g, q>> \notin handledEnded
@@ -399,7 +401,7 @@ EngineEnded ==
                  /\ active' = "none"
                  /\ advanceDue' = FALSE
                  /\ UNCHANGED <<armedGen, armedQid, startQueue, succ, removed>>
-            ELSE /\ IF pendingPrefetch.qid /= 0
+            ELSE /\ IF (pendingPrefetch.qid /= 0 /\ ~resolved)
                       THEN /\ armedGen' = lease.g
                            /\ armedQid' = lease.qid
                            /\ advanceDue' = TRUE   \* armed window owes it
@@ -436,14 +438,20 @@ EngineStarted ==
 
 \* Engine self-promotion: a started whose queueId is not the lease's.
 \* promoteTrack advances queue intent with no play call.
-EnginePromoted(q) ==
+EnginePromoted(q, resolved) ==
     /\ stepCount < MaxSteps
     /\ stepCount' = stepCount + 1
     /\ si.phase /= "failed"  \* the fail path is synchronous
     /\ HasLease
-    \* self-promotion is a boundary event: it can only surface inside the
-    \* promotion window, while an advance is due, or mid-handoff
-    /\ (armedGen /= 0 \/ advanceDue \/ si.phase /= "idle")
+    \* The native engine emits a paired end/start after committing the
+    \* successor. The pair does not arm a fallback advance.
+    /\ IF resolved
+       THEN /\ lease.route = "local"
+            /\ sounding[lease.route]
+            /\ <<lease.g, lease.qid>> \notin handledEnded
+            /\ handledEnded' = handledEnded \cup {<<lease.g, lease.qid>>}
+       ELSE /\ (armedGen /= 0 \/ advanceDue \/ si.phase /= "idle")
+            /\ UNCHANGED handledEnded
     /\ q \in Items \cup {9}   \* 9 = foreign queueId (warn path)
     /\ q /= lease.qid
     /\ (q = pendingPrefetch.qid \/ q = (IF currentIndex \in Items THEN succ[currentIndex] ELSE 0) \/ q = 9)
@@ -474,7 +482,7 @@ EnginePromoted(q) ==
                ELSE /\ lease' = [lease EXCEPT !.qid = q]  \* warn path
                     /\ UNCHANGED <<currentIndex, status, inFlight, succ, removed>>
     /\ UNCHANGED <<generation, active, si, startQueue, userStarts,
-                   handledEnded, stoppedBad, staleStomp, movedAdvance, succ, removed>>
+                   stoppedBad, staleStomp, movedAdvance, succ, removed>>
 
 \* Queue mutation: unlink a non-live item — the advance's target can
 \* disappear between event and link-run (the reviewers' wedge scenario).
@@ -583,7 +591,8 @@ Next ==
     \/ DropStart \/ Done
     \/ BeginStart \/ PrepareResolve \/ FailSettle \/ StopOutResolve
     \/ CommitLease \/ ResilenceResolve \/ PlayResolve
-    \/ EngineEnded \/ EngineStarted \/ (\E q \in Items \cup {9} : EnginePromoted(q))
+    \/ EngineStarted
+    \/ (\E resolved \in BOOLEAN : EngineEnded(resolved) \/ (\E q \in Items \cup {9} : EnginePromoted(q, resolved)))
     \/ TimerFire \/ PrefetchResolve \/ (\E i \in Items : QueueRemove(i))
 
 FairActions ==

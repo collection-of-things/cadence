@@ -211,7 +211,7 @@ impl DecodeStream {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 4)
         };
-        let n = read_full(&mut self.stdout, bytes)?;
+        let n = self.read_pcm(bytes)?;
         Ok(n / 4)
     }
 
@@ -220,8 +220,19 @@ impl DecodeStream {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 4)
         };
-        let n = read_full(&mut self.stdout, bytes)?;
+        let n = self.read_pcm(bytes)?;
         Ok(n / 4)
+    }
+
+    fn read_pcm(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let n = read_full(&mut self.stdout, bytes)?;
+        if n == 0 && !bytes.is_empty() {
+            let status = self.child.wait()?;
+            if !status.success() {
+                return Err(std::io::Error::other(format!("ffmpeg exited with {status}")));
+            }
+        }
+        Ok(n)
     }
 }
 
@@ -274,8 +285,12 @@ impl Decoder for FfmpegDecoder {
     }
 
     fn open(&self, req: &DecodeRequest) -> Result<DecodeStream> {
+        let info = match req.info.clone() {
+            Some(info) => info,
+            None => self.probe(&req.path)?,
+        };
         let mut cmd = Command::new(tool_bin("ffmpeg"));
-        cmd.args(["-v", "error", "-nostdin", "-hide_banner"]);
+        cmd.args(["-v", "error", "-xerror", "-nostdin", "-hide_banner"]);
         if req.seek_ms > 0 {
             cmd.args(["-ss", &format!("{:.3}", req.seek_ms as f64 / 1000.0)]);
         }
@@ -294,12 +309,6 @@ impl Decoder for FfmpegDecoder {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("ffmpeg stdout missing"))?;
-        // A caller that already probed passes the result through — re-
-        // running ffprobe here would double the spawn cost per pipeline.
-        let info = match req.info.clone() {
-            Some(info) => info,
-            None => self.probe(&req.path)?,
-        };
         Ok(DecodeStream {
             info,
             kind: req.kind,

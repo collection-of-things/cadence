@@ -32,15 +32,13 @@ export const YTM_CONTROLLER_JS = String.raw`
     return null;
   }
 
-  // Within this window of the duration, a track change counts as the site
-  // auto-advancing past a finished track (not a redirect of the same song).
-  const END_SLACK_MS = 4000;
   const bootId = Math.random().toString(36).slice(2);
   let expected = null;     // videoId Cadence asked for
   let generationId = null;
   let switching = false;
   let holdAfterEnd = false; // keep the site's autoplay silent until the next play()
   let endedEmitted = false;
+  const playingVideos = new WeakMap();
   let lastGood = { positionMs: 0, durationMs: 0 };
   let lastKey = '';
 
@@ -55,14 +53,17 @@ export const YTM_CONTROLLER_JS = String.raw`
   function readState() {
     const v = video();
     const base = { bootId, generationId, expectedVideoId: expected, url: location.href };
-    if (!v) return { ...base, state: 'idle', positionMs: 0, durationMs: 0, volume: 1, title: '', byline: '', videoId: null, ad: false };
+    if (!v) return {
+      ...base, ...lastGood, state: endedEmitted ? 'ended' : 'idle',
+      volume: 1, title: '', byline: '', videoId: null, ad: false,
+    };
     const ad = isAd();
     const bar = playerBar();
     let state = 'paused';
     // Ads run in the same <video>: report them as buffering with the track's
     // position held, never as the track itself.
     if (ad) state = v.paused ? 'paused' : 'buffering';
-    else if (v.ended || endedEmitted) state = 'ended';
+    else if (endedEmitted) state = 'ended';
     else if (v.readyState < 3 && !v.paused) state = 'buffering';
     else if (!v.paused) state = 'playing';
     if (!ad && !endedEmitted) {
@@ -85,7 +86,7 @@ export const YTM_CONTROLLER_JS = String.raw`
   }
 
   function markEnded() {
-    if (switching || endedEmitted || !expected) return;
+    if (switching || endedEmitted || !expected || isAd()) return;
     endedEmitted = true;
     holdAfterEnd = true;
     const v = video();
@@ -93,16 +94,15 @@ export const YTM_CONTROLLER_JS = String.raw`
     postState(true);
   }
 
-  // The track the site is on is not the one Cadence asked for. Near the end
-  // of the requested track that is autoplay; otherwise it is the site
-  // resolving the same song to another id, which we adopt.
-  function checkTrack() {
-    if (!expected || endedEmitted || isAd()) return;
-    const id = currentId();
-    if (!id || id === expected) return;
-    const nearEnd = lastGood.durationMs > 0 && lastGood.positionMs >= lastGood.durationMs - END_SLACK_MS;
-    if (nearEnd) markEnded();
-    else expected = id;
+  function trackPlayingVideo(v) {
+    // A detached video no longer sends events through document capture.
+    // It can still report completion while metadata points at the next pick.
+    if (!playingVideos.has(v)) {
+      v.addEventListener('ended', () => {
+        if (v.ended && playingVideos.get(v) === generationId) markEnded();
+      });
+    }
+    playingVideos.set(v, generationId);
   }
 
   function enforceHold() {
@@ -113,7 +113,21 @@ export const YTM_CONTROLLER_JS = String.raw`
 
   function postState(force) {
     if (switching) return;
-    checkTrack();
+    if (expected && !endedEmitted && !isAd()) {
+      const id = currentId();
+      const v = video();
+      // Site redirects can change the ID without ending playback. Only
+      // advance on a terminal event or a clock that already reached its end.
+      const completedBeforeChange = id && id !== expected && lastGood.durationMs > 0 &&
+        lastGood.positionMs >= lastGood.durationMs;
+      if ((v?.ended && playingVideos.get(v) === generationId) || completedBeforeChange) {
+        markEnded();
+        return;
+      } else if (id) {
+        expected = id;
+      }
+      if (v && !v.paused) trackPlayingVideo(v);
+    }
     enforceHold();
     const s = readState();
     const key = s.state + '|' + s.videoId + '|' + s.ad + '|' + s.positionMs + '|' + s.durationMs + '|' + s.title;
@@ -134,9 +148,6 @@ export const YTM_CONTROLLER_JS = String.raw`
   for (const ev of ['play', 'playing', 'pause', 'waiting', 'seeked', 'durationchange', 'loadedmetadata', 'emptied']) {
     document.addEventListener(ev, (e) => { if (e.target === video()) postState(true); }, true);
   }
-  document.addEventListener('ended', (e) => {
-    if (e.target === video() && !isAd()) markEnded();
-  }, true);
   document.addEventListener('yt-navigate-finish', () => postState(true));
   let playerHooked = null;
   function hookPlayer() {
@@ -144,7 +155,7 @@ export const YTM_CONTROLLER_JS = String.raw`
     if (!p || p === playerHooked || typeof p.addEventListener !== 'function') return;
     playerHooked = p;
     // YT player state 0 = ENDED; more reliable than <video>.ended on MSE.
-    try { p.addEventListener('onStateChange', (st) => { if (p === player() && st === 0 && !isAd()) markEnded(); }); } catch (e) {}
+    try { p.addEventListener('onStateChange', (st) => { if (p === player() && st === 0 && currentId() === expected) markEnded(); }); } catch (e) {}
   }
   // Position heartbeat; cheap when nothing changed (dedupe key).
   setInterval(() => { hookPlayer(); postState(false); }, 1000);
@@ -187,6 +198,7 @@ export const YTM_CONTROLLER_JS = String.raw`
           await v.play();
           if (generationId !== generation) return 'superseded';
           if (attempt > 0 && currentId() !== videoId) throw new Error('YouTube Music changed tracks during startup');
+          if (!isAd()) trackPlayingVideo(v);
           break;
         } catch (e) {
           if (generationId !== generation) return 'superseded';

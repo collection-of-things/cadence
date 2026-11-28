@@ -6,6 +6,7 @@ mod common;
 
 use cadence_audio::decode::PcmKind;
 use cadence_audio::engine::{Engine, EngineConfig, LoadParams, SourceSpec};
+use cadence_audio::resample::StreamingResampler;
 use cadence_audio::sink::{DeviceCaps, Negotiated, NullCaps, resolve_positions};
 use common::{decode_all, fixtures_dir, longest_zero_run};
 use serde_json::Value;
@@ -67,10 +68,19 @@ fn is_method(v: &Value, m: &str) -> bool {
 
 #[test]
 fn gapless_prefetched_boundary_is_sample_contiguous() {
+    assert_gapless_pair("gapless-b.flac");
+}
+
+#[test]
+fn normal_playback_keeps_the_stream_open_across_sample_rates() {
+    assert_gapless_pair("tone-330-24bit96k.flac");
+}
+
+fn assert_gapless_pair(successor: &str) {
     let dir = fixtures_dir();
     let a = dir.join("gapless-a.flac");
-    let b = dir.join("gapless-b.flac");
-    let dump = std::env::temp_dir().join(format!("cadence-gapless-{}.f32le", std::process::id()));
+    let b = dir.join(successor);
+    let dump = std::env::temp_dir().join(format!("cadence-gapless-{}-{successor}.f32le", std::process::id()));
     let _ = std::fs::remove_file(&dump);
 
     let rate = 44100u32;
@@ -108,6 +118,7 @@ fn gapless_prefetched_boundary_is_sample_contiguous() {
     for (i, v) in evs.iter().enumerate() {
         if is_method(v, "event.trackEnded") && v["params"]["queueId"].as_str() == Some("qa") {
             assert_eq!(v["params"]["gapless"], Value::Bool(true), "qa end not gapless");
+            assert_eq!(v["params"]["continues"], Value::Bool(true));
             ended_a = Some(i);
         }
         if is_method(v, "event.trackStarted") && v["params"]["queueId"].as_str() == Some("qb") {
@@ -144,7 +155,14 @@ fn gapless_prefetched_boundary_is_sample_contiguous() {
         .and_then(|v| v["params"]["channels"].as_u64())
         .unwrap_or(1) as u32;
     let (dec_a, _) = decode_all(&a, Some(out_ch)).unwrap();
-    let (dec_b, _) = decode_all(&b, Some(out_ch)).unwrap();
+    let (mut dec_b, source_rate) = decode_all(&b, Some(out_ch)).unwrap();
+    if source_rate != rate {
+        let mut resampler = StreamingResampler::new(source_rate, rate, out_ch as usize).unwrap();
+        let mut resampled = Vec::new();
+        resampler.push(&dec_b, &mut resampled).unwrap();
+        resampler.finish(&mut resampled).unwrap();
+        dec_b = resampled;
+    }
 
     // The rendered stream must equal decode(a) ++ decode(b) sample-exactly.
     let expected: Vec<f32> = dec_a.iter().chain(dec_b.iter()).copied().collect();
@@ -168,6 +186,50 @@ fn gapless_prefetched_boundary_is_sample_contiguous() {
         .map(|(x, y)| (x - y).abs())
         .fold(0f32, f32::max);
     assert_eq!(max_diff, 0.0, "rendered stream diverges from a||b");
+    std::fs::remove_file(dump).unwrap();
+}
+
+#[test]
+fn decoder_failure_drains_buffered_audio_and_keeps_the_queue_from_advancing() {
+    let dir = fixtures_dir();
+    let temp = std::env::temp_dir().join(format!("cadence-decode-error-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let damaged = temp.join("damaged.flac");
+    let source = std::fs::read(dir.join("gapless-a.flac")).unwrap();
+    std::fs::write(&damaged, &source[..source.len() / 2]).unwrap();
+    let (engine, events) = make_engine(temp.join("audio.f32le"), 44_100);
+    engine.load(LoadParams {
+        queue_id: "damaged".into(),
+        generation_id: 7,
+        source: SourceSpec::File { path: damaged },
+        start_paused: true,
+        position_ms: 0,
+        replay_gain_db: None,
+    }).unwrap();
+    let next = dir.join("gapless-b.flac");
+    engine.prefetch("next", next.to_str().unwrap(), 7, None).unwrap();
+    engine.play(7).unwrap();
+
+    assert!(wait_for(
+        &events,
+        |e| is_method(e, "event.state") && e["params"]["state"] == "error",
+        Duration::from_secs(5),
+    ));
+    engine.shutdown();
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|e| {
+        is_method(e, "event.error") && e["params"]["queueId"] == "damaged"
+            && e["params"]["generationId"] == 7
+    }));
+    assert!(!events.iter().any(|e| {
+        is_method(e, "event.trackEnded")
+            || is_method(e, "event.trackStarted") && e["params"]["queueId"] == "next"
+    }));
+    assert!(std::fs::read(temp.join("audio.f32le"))
+        .unwrap()
+        .chunks_exact(4)
+        .any(|bytes| bytes != [0, 0, 0, 0]));
+    std::fs::remove_dir_all(temp).unwrap();
 }
 
 #[test]
@@ -176,16 +238,17 @@ fn natural_end_without_prefetch_reports_gapless_false() {
     let a = dir.join("tone-440.flac");
     let dump = std::env::temp_dir().join(format!("cadence-end-{}.f32le", std::process::id()));
     let (engine, events) = make_engine(dump, 44100);
-    engine
+    let loaded = engine
         .load(LoadParams {
             queue_id: "qa".into(),
             generation_id: 1,
             source: SourceSpec::File { path: a },
             start_paused: false,
-            position_ms: 0,
+            position_ms: 1000,
             replay_gain_db: None,
         })
         .unwrap();
+    assert_eq!(loaded["durationMs"], Value::from(3000));
     let ended = wait_for(
         &events,
         |v| is_method(v, "event.trackEnded"),
@@ -195,6 +258,7 @@ fn natural_end_without_prefetch_reports_gapless_false() {
     let evs = events.lock().unwrap();
     let e = evs.iter().find(|v| is_method(v, "event.trackEnded")).unwrap();
     assert_eq!(e["params"]["gapless"], Value::Bool(false));
+    assert_eq!(e["params"]["continues"], Value::Bool(false));
     // terminal state must be stopped
     let stopped = evs
         .iter()

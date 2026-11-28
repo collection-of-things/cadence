@@ -163,15 +163,15 @@ describe("apple route x coordinator", () => {
     expect(r.page.evals.some(expression => expression.startsWith("window.__cadenceCtl.play("))).toBe(true);
   });
 
-  it("advances a restored-near-tail Apple item after an incoming prepare fails", async () => {
+  it("advances an Apple item on its confirmed completion after incoming prepare fails", async () => {
     const r = rig();
     await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a"), fakeItem("b")], startIndex: 0 });
-    await r.coordinator.handleCommand({ kind: "seek", positionMs: 179_000 });
     r.local.failPrepare = new Error("output unavailable");
     await r.coordinator.handleCommand({ kind: "next" });
     r.local.failPrepare = null;
     r.tick(1_500);
-    r.emitPage("playerState", { state: "ended", ended: true, isAuthorized: true, positionMs: 180_000, durationMs: 180_000, nowPlayingId: "a" });
+    r.emitPage("playerState", { playbackAttempt: 1, state: "ended", ended: true, isAuthorized: true,
+      positionMs: 5_000, durationMs: 5_000, nowPlayingId: "a", queuePos: 0 });
     await r.drain();
     expect(r.events.filter(event => event.kind === "trackEnded")).toHaveLength(1);
     expect(r.coordinator.getSnapshot().current?.track.id).toBe("b");
@@ -183,7 +183,8 @@ describe("apple route x coordinator", () => {
     await r.coordinator.handleCommand({ kind: "setQueue", items: [appleItem("a"), appleItem("b")], startIndex: 0 });
     await r.drain();
     r.tick(180_000);
-    r.emitPage("nowPlaying", { id: "b", queuePos: 1 });
+    r.emitPage("playerState", { playbackAttempt: 1, state: "playing", ended: false, isAuthorized: true,
+      positionMs: 100, durationMs: 180_000, nowPlayingId: "b", queuePos: 1 });
     await r.drain();
     expect(r.coordinator.getSnapshot().current?.track.id).toBe("b");
     expect(r.page.evals.filter(expr => expr.startsWith("window.__cadenceCtl.play("))).toHaveLength(1);

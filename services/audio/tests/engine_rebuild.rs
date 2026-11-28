@@ -66,12 +66,6 @@ fn null_sink_threads() -> usize {
         .unwrap_or(0)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn null_sink_threads() -> usize {
-    // Can't inspect threads portably; rebuild completion is the real check.
-    1
-}
-
 fn load_track(engine: &Arc<Engine>, gen: u64) {
     let a = fixtures_dir().join("gapless-a.flac");
     engine
@@ -113,10 +107,14 @@ fn repeated_stream_rebuilds_do_not_deadlock_or_leak_threads() {
     worker.join().unwrap();
 
     // Give any straggler a moment, then prove old pull threads were joined.
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(null_sink_threads(), 1, "zombie null-sink pull thread(s)");
+    #[cfg(target_os = "linux")]
+    {
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(null_sink_threads(), 1, "zombie null-sink pull thread(s)");
+    }
 
     engine.shutdown();
+    #[cfg(target_os = "linux")]
     assert_eq!(null_sink_threads(), 0, "sink thread survived shutdown");
 }
 

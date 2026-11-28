@@ -22,7 +22,7 @@ interface Controller {
   getState(): PlayerState;
 }
 
-class FakeMedia {
+class FakeMedia extends EventTarget {
   paused = true;
   ended = false;
   currentTime = 0;
@@ -30,7 +30,7 @@ class FakeMedia {
   readyState = 4;
   volume = 1;
   volumeAtPlay = 1;
-  constructor(private fire: (type: string, target: unknown) => void) {}
+  constructor(private fire: (type: string, target: FakeMedia) => void) { super(); }
   async play(): Promise<void> {
     this.volumeAtPlay = this.volume;
     this.paused = false;
@@ -46,10 +46,14 @@ class FakeMedia {
 /** Minimal music.youtube.com stand-in: one <video>, #movie_player, SPA router. */
 function fakePage(opts: { routerWorks?: boolean; ytcfg?: Record<string, unknown> } = {}) {
   const listeners = new Map<string, ((e: { target: unknown }) => void)[]>();
-  const fire = (type: string, target: unknown): void => {
-    for (const fn of listeners.get(type) ?? []) fn({ target });
+  const fire = (type: string, target: FakeMedia): void => {
+    if (target === activeVideo) {
+      for (const fn of listeners.get(type) ?? []) fn({ target });
+    }
+    target.dispatchEvent(new Event(type));
   };
   const video = new FakeMedia(fire);
+  let activeVideo: FakeMedia | null = video;
   let id = "A";
   const classes = new Set<string>();
   const stateListeners: ((s: number) => void)[] = [];
@@ -73,7 +77,7 @@ function fakePage(opts: { routerWorks?: boolean; ytcfg?: Record<string, unknown>
     window: {} as Record<string, unknown>,
     document: {
       querySelector: (sel: string) =>
-        sel === "video" ? video : sel === "#movie_player" ? player : sel === "ytmusic-app" ? app : null,
+        sel === "video" ? activeVideo : sel === "#movie_player" ? player : sel === "ytmusic-app" ? app : null,
       addEventListener: (type: string, fn: (e: { target: unknown }) => void) => {
         listeners.set(type, [...(listeners.get(type) ?? []), fn]);
       },
@@ -101,6 +105,8 @@ function fakePage(opts: { routerWorks?: boolean; ytcfg?: Record<string, unknown>
     tick: () => intervals.forEach((fn) => fn()),
     fire,
     setId: (next: string) => { id = next; },
+    detachVideo: () => { activeVideo = null; },
+    replaceVideo: () => (activeVideo = new FakeMedia(fire)),
     setAd: (on: boolean) => { if (on) classes.add("ad-showing"); else classes.delete("ad-showing"); },
     stateChange: (s: number) => stateListeners.forEach((fn) => fn(s)),
     endedCount: () => emits.filter((e, i) => e.state === "ended" && emits[i - 1]?.state !== "ended").length,
@@ -143,6 +149,23 @@ describe("ytm-controller", () => {
     expect(page.video.paused).toBe(false);
     expect(page.ctl.getState()).toMatchObject({ state: "playing", videoId: "B", generationId: 2 });
     expect(page.endedCount()).toBe(0);
+  });
+
+  it("holds autoplay when a detached video fires ended before its replacement is attached", async () => {
+    const page = fakePage();
+    await page.ctl.play("A", 0, 1, 1);
+    page.video.currentTime = 199.5;
+    page.tick();
+    page.setId("SITE-AUTOPLAY");
+    page.detachVideo();
+    page.stateChange(0);
+    page.video.ended = true;
+    page.fire("ended", page.video);
+    expect(page.endedCount()).toBe(1);
+    const next = page.replaceVideo();
+    await next.play();
+    expect(next.paused).toBe(true);
+    expect(page.endedCount()).toBe(1);
   });
 
   it("sets the requested volume before a fresh document starts playback", async () => {
@@ -213,7 +236,7 @@ describe("ytm-controller", () => {
     expect(page.ctl.getState().state).toBe("playing");
   });
 
-  it("treats a track change near the end as autoplay, mid-track as a redirect", async () => {
+  it("keeps playing through an ID change near the end until the player reports completion", async () => {
     const page = fakePage();
     await page.ctl.play("A", 0, 1, 1);
     page.video.currentTime = 60;
@@ -225,8 +248,13 @@ describe("ytm-controller", () => {
 
     page.video.currentTime = 198;
     page.tick();
-    page.setId("RADIO");
+    page.setId("A3");
     page.tick();
+    expect(page.ctl.getState()).toMatchObject({ state: "playing", expectedVideoId: "A3" });
+    expect(page.video.paused).toBe(false);
+    expect(page.endedCount()).toBe(0);
+
+    page.stateChange(0);
     expect(page.endedCount()).toBe(1);
     expect(page.video.paused).toBe(true);
   });

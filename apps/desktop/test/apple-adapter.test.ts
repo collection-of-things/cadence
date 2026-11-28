@@ -16,6 +16,7 @@ class FakeSession {
   async eval(expr: string, timeoutMs?: number): Promise<unknown> {
     this.evals.push(expr);
     this.timeouts.set(expr, timeoutMs);
+    if (expr.includes("clearPlayLater()")) return { removed: true };
     return true;
   }
   async prepare(): Promise<void> {}
@@ -72,9 +73,19 @@ function makeAdapter() {
   // Wire the fake: replace session + record emitted events.
   (adapter as any).session = sess;
   (adapter as any).installed = true;
+  (adapter as any).activePlaybackAttempt = 0;
   sess.onEvent = (e) => (adapter as any).onPageEvent(e.name, e.data);
   adapter.onEvent((e) => events.push(e));
   return { adapter, sess, events };
+}
+
+function mirrored(queueId: string, providerId: string) {
+  return { queueId, providerId, requestedId: providerId, station: false, armed: true };
+}
+
+function playerState(overrides: Record<string, unknown> = {}) {
+  return { playbackAttempt: 0, state: "playing", isAuthorized: true, nowPlayingId: "s1",
+    queuePos: 0, positionMs: 0, durationMs: 180_000, ended: false, ...overrides };
 }
 
 const track = (id: string, uri?: string) =>
@@ -144,38 +155,43 @@ describe("apple adapter page events", () => {
 
   it("ignores station ended/nowPlaying changes inside a stream", () => {
     (adapter as any).current = { queueId: "q1", providerId: "st1", station: true };
-    sess.emit("playerState", { state: "ended", ended: true, isAuthorized: true, positionMs: 0 });
-    sess.emit("nowPlaying", { id: "song-in-stream-1" });
-    sess.emit("nowPlaying", { id: "song-in-stream-2" });
+    sess.emit("playerState", playerState({ state: "ended", ended: true, nowPlayingId: "song-in-stream-1" }));
+    sess.emit("playerState", playerState({ nowPlayingId: "song-in-stream-2" }));
     expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
     expect(events.filter((e) => e.kind === "started")).toHaveLength(0);
   });
 
   it("ended on a real track emits ended; transient stopped does not", () => {
     (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
-    sess.emit("playerState", { state: "stopped", ended: false, isAuthorized: true, positionMs: 0 });
+    sess.emit("playerState", playerState({ state: "stopped" }));
     expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
-    sess.emit("playerState", { state: "ended", ended: true, isAuthorized: true, positionMs: 0 });
+    const completion = playerState({ state: "ended", ended: true, positionMs: 180_000 });
+    sess.emit("playerState", { ...completion, playbackAttempt: -1 });
+    expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
+    sess.emit("playerState", completion);
+    sess.emit("playerState", completion);
     const ended = events.filter((e) => e.kind === "ended");
     expect(ended).toHaveLength(1);
     expect((ended[0] as { queueId?: string }).queueId).toBe("q1");
   });
 
-  it("unknown nowPlaying needs two sightings before ended + pause", () => {
+  it("an unfamiliar ID never turns into end or pause for the current slot", () => {
     (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
-    (adapter as any).mirrored = [{ queueId: "q2", providerId: "s2", station: false }];
-    sess.emit("nowPlaying", { id: "ghost-item" });
-    // First sighting: hold — a transient boundary id must not kill the lease.
-    expect(events.filter((e) => e.kind === "ended")).toHaveLength(0);
-    sess.emit("nowPlaying", { id: "ghost-item" });
-    expect(events.some((e) => e.kind === "ended" && (e as { queueId?: string }).queueId === "q1")).toBe(true);
-    expect(sess.evals.some((e) => e.includes("pause()"))).toBe(true);
+    (adapter as any).successor = mirrored("q2", "s2");
+    const unknown = playerState({ nowPlayingId: "ghost-item", positionMs: 178_000 });
+    sess.emit("playerState", unknown);
+    sess.emit("playerState", unknown);
+    expect(events.some((e) => e.kind === "ended")).toBe(false);
+    expect(sess.evals.some((e) => e.includes("pause()"))).toBe(false);
   });
 
   it("mirrored successor promotion emits ended+started", () => {
     (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
-    (adapter as any).mirrored = [{ queueId: "q2", providerId: "s2", station: false }];
-    sess.emit("nowPlaying", { id: "s2" });
+    (adapter as any).successor = mirrored("q2", "s2");
+    sess.emit("playerState", playerState());
+    sess.emit("playerState", playerState({ state: "buffering", nowPlayingId: "s2", queuePos: 1 }));
+    expect(events.some((e) => e.kind === "ended" || e.kind === "started")).toBe(false);
+    sess.emit("playerState", playerState({ nowPlayingId: "s2", queuePos: 1 }));
     const kinds = events.map((e) => e.kind);
     expect(kinds).toContain("ended");
     expect(kinds).toContain("started");
@@ -196,55 +212,83 @@ describe("apple adapter page events", () => {
 
   it("same song at a new queue position promotes the duplicate mirror", () => {
     (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
-    (adapter as any).mirrored = [{ queueId: "q2", providerId: "s1", station: false }];
-    sess.emit("nowPlaying", { id: "s1", queuePos: 1 });
+    (adapter as any).successor = mirrored("q2", "s1");
+    sess.emit("playerState", playerState());
+    sess.emit("playerState", playerState());
+    expect(events.some((e) => e.kind === "started")).toBe(false);
+    sess.emit("playerState", playerState({ queuePos: 1 }));
     const started = events.find((e) => e.kind === "started") as { queueId?: string };
     expect(started?.queueId).toBe("q2");
+    sess.emit("playerState", playerState({ state: "ended", ended: true, queuePos: 0 }));
+    expect(events.filter((e) => e.kind === "ended")).toHaveLength(1);
     // Without queuePos there's no way to tell a replay from a promotion.
-    (adapter as any).mirrored = [{ queueId: "q3", providerId: "s1", station: false }];
-    const before = events.length;
-    sess.emit("nowPlaying", { id: "s1" });
-    expect(events.length).toBe(before);
+    (adapter as any).successor = mirrored("q3", "s1");
+    sess.emit("playerState", playerState({ queuePos: -1 }));
+    expect(events.filter((e) => e.kind === "started")).toHaveLength(1);
+  });
+
+  it("adopts a successor by the ID MusicKit assigned to its queue entry", async () => {
+    (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
+    const evalPage = sess.eval.bind(sess);
+    sess.eval = (expr: string) => expr.includes("playLater(") ? Promise.resolve("catalog-id") : evalPage(expr);
+    sess.emit("playerState", playerState());
+    await adapter.prefetch(item("q2", "library-id", "am:library-song:library-id"));
+    sess.emit("playerState", playerState({ nowPlayingId: "catalog-id", queuePos: 1 }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "started", queueId: "q2", promoted: true }));
+  });
+
+  it("keeps tracking a successor that reaches MusicKit's playhead during cancellation", async () => {
+    (adapter as any).current = { queueId: "q1", providerId: "s1", station: false };
+    (adapter as any).successor = mirrored("q2", "s2");
+    sess.emit("playerState", playerState());
+    sess.eval = async () => ({ removed: false, state: playerState({ state: "buffering", nowPlayingId: "s2", queuePos: 1 }) });
+    await adapter.clearPrefetch();
+    expect(events.filter((event) => event.kind === "started")).toHaveLength(0);
+
+    sess.emit("playerState", playerState({ nowPlayingId: "s2", queuePos: 1 }));
+    sess.emit("playerState", playerState({ state: "ended", ended: true, nowPlayingId: "s2", queuePos: 1 }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "started", queueId: "q2", promoted: true }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "ended", queueId: "q2" }));
   });
 
   it("prefetch never mirrors stations", async () => {
     await adapter.prefetch(item("q2", "ra1", "am:station:ra1"));
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
-    expect((adapter as any).mirrored).toHaveLength(0);
+    expect((adapter as any).successor).toBeNull();
   });
 
   it("prefetch clears a replaced successor before mirroring", async () => {
-    (adapter as any).mirrored = [{ queueId: "qA", providerId: "sA", station: false }];
+    (adapter as any).successor = mirrored("qA", "sA");
     await adapter.prefetch(item("qB", "sB"));
     expect(sess.evals.some((e) => e.includes("clearPlayLater()"))).toBe(true);
-    expect((adapter as any).mirrored[0]?.providerId).toBe("sB");
+    expect((adapter as any).successor?.providerId).toBe("sB");
   });
 
   it("prefetch re-points a same-song mirror at the new queueId", async () => {
-    (adapter as any).mirrored = [{ queueId: "q1", providerId: "sB", station: false }];
+    (adapter as any).successor = mirrored("q1", "sB");
     await adapter.prefetch(item("q2", "sB"));
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
-    expect((adapter as any).mirrored[0]?.queueId).toBe("q2");
+    expect((adapter as any).successor?.queueId).toBe("q2");
   });
 
   it("prefetch skips mirroring while a station is playing", async () => {
     (adapter as any).current = { queueId: "qSt", providerId: "ra1", station: true };
     await adapter.prefetch(item("q2", "sB"));
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
-    expect((adapter as any).mirrored).toHaveLength(0);
+    expect((adapter as any).successor).toBeNull();
   });
 
   it("prefetch to a station still clears the previous mirror", async () => {
-    (adapter as any).mirrored = [{ queueId: "qA", providerId: "sA", station: false }];
+    (adapter as any).successor = mirrored("qA", "sA");
     await adapter.prefetch(item("qSt", "ra1", "am:station:ra1"));
     expect(sess.evals.some((e) => e.includes("clearPlayLater()"))).toBe(true);
     expect(sess.evals.some((e) => e.includes("playLater"))).toBe(false);
-    expect((adapter as any).mirrored).toHaveLength(0);
+    expect((adapter as any).successor).toBeNull();
   });
 
   it("a mirrored next uses skipTo, not a stream reload", async () => {
     (adapter as any).current = { queueId: "q1", providerId: "sA", station: false };
-    (adapter as any).mirrored = [{ queueId: "q2", providerId: "sB", station: false }];
+    (adapter as any).successor = mirrored("q2", "sB");
     await adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });
     expect(sess.evals.some((e) => e.includes("skipTo"))).toBe(true);
     expect(sess.evals.some((e) => e.includes("__cadenceCtl.play("))).toBe(false);
@@ -279,7 +323,7 @@ describe("apple adapter page events", () => {
 
   it("reuses the prefetched song when a manual selection creates fresh queue ids", async () => {
     (adapter as unknown as { current: unknown }).current = { queueId: "old-a", providerId: "sA", station: false };
-    (adapter as unknown as { mirrored: unknown[] }).mirrored = [{ queueId: "old-b", providerId: "sB", station: false }];
+    (adapter as any).successor = mirrored("old-b", "sB");
     await adapter.play(item("new-b", "sB"), { generationId: 3, route: "apple-musickit", queueId: "new-b", issuedAtMs: 0 }, {});
     expect(sess.evals.some(e => e.includes("skipTo"))).toBe(true);
     expect(sess.evals.some(e => e.includes("__cadenceCtl.play("))).toBe(false);
@@ -308,7 +352,7 @@ describe("apple adapter page events", () => {
         ? new Promise((r) => { release = () => r(true); })
         : Promise.resolve(true);
     };
-    (adapter as any).mirrored = [{ queueId: "qB", providerId: "sB", station: false }];
+    (adapter as any).successor = mirrored("qB", "sB");
     const pre = adapter.prefetch(item("q3", "sC")); // slow clearPlayLater holds the chain
     const play = adapter.play(item("q2", "sB"), { generationId: 3, route: "apple-musickit", queueId: "q2", issuedAtMs: 0 }, { positionMs: 0 });
     await adapter.signOut();
