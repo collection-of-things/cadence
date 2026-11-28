@@ -255,8 +255,8 @@ export interface RouteAdapter {
   stop(lease: PlaybackLease): Promise<void>;
   seek(lease: PlaybackLease, positionMs: number): Promise<void>;
   setVolume(volume: number): Promise<void>;
-  /** Best-effort prefetch of a successor for gapless-style handoff. */
-  prefetch?(item: QueueItem): Promise<void>;
+  /** Best-effort prefetch. Returns false if no automatic handoff was armed. */
+  prefetch?(item: QueueItem): Promise<void | boolean>;
   /** Cancel an installed prefetch — queue edits make a successor stale. */
   clearPrefetch?(): Promise<void>;
   /** Release idle engine resources without discarding the login session. */
@@ -296,7 +296,7 @@ export type AdapterEvent =
       promoted?: boolean;
     }
   | { kind: "position"; positionMs: number; atMs: number; generationId: number }
-  | { kind: "state"; status: PlaybackStatus; generationId: number }
+  | { kind: "state"; status: PlaybackStatus; generationId: number; terminal?: boolean }
   | {
       kind: "ended";
       generationId: number;
@@ -304,6 +304,8 @@ export type AdapterEvent =
       queueId?: string;
       /** true when the engine started the successor seamlessly itself. */
       gapless?: boolean;
+      /** When supplied, the engine has resolved who owns the next start. */
+      continues?: boolean;
     }
   | { kind: "queueChanged"; generationId: number; providerQueue?: unknown }
   /** The provider stopped playback unconditionally (sign-out, teardown) —

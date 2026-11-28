@@ -49,7 +49,7 @@ describe("gapless promotion", () => {
     expect(local.calls).toContain(`prefetch:${q2}`);
 
     // Engine: seamless boundary — a ended, then b started by the engine.
-    local.emitAdapterEvent({ kind: "ended", generationId: gen, gapless: true });
+    local.emitAdapterEvent({ kind: "ended", generationId: gen, gapless: true, continues: true });
     local.emitAdapterEvent({ kind: "started", generationId: gen, queueId: q2, promoted: true });
     await flush();
 
@@ -79,6 +79,29 @@ describe("gapless promotion", () => {
     await new Promise((r) => setTimeout(r, 700));
     expect(local.playedItems.length).toBe(2);
     expect(local.playedItems[1]!.queueId).toBe(q2);
+    coordinator.dispose();
+  });
+
+  it("starts the successor immediately when the engine ends without one", async () => {
+    const { coordinator, local } = rig();
+    await coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a"), fakeItem("b")], startIndex: 0 });
+    const [first, next] = coordinator.getQueue().items;
+    expect(local.calls).toContain(`prefetch:${next!.queueId}`);
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, queueId: first!.queueId, continues: false });
+    await coordinator.handleCommand({ kind: "setVolume", volume: 0.5 });
+    expect(local.playedItems.map(item => item.queueId)).toEqual([first!.queueId, next!.queueId]);
+    coordinator.dispose();
+  });
+
+  it("reopens the current track after a decoder error", async () => {
+    const { coordinator, local } = rig();
+    await coordinator.handleCommand({ kind: "setQueue", items: [fakeItem("a"), fakeItem("b")], startIndex: 0 });
+    const queueId = coordinator.getSnapshot().current!.queueId;
+    local.emitAdapterEvent({ kind: "position", generationId: 1, positionMs: 2500, atMs: Date.now() });
+    local.emitAdapterEvent({ kind: "state", generationId: 1, status: "error", terminal: true });
+    expect(coordinator.getSnapshot()).toMatchObject({ status: "error", lease: null });
+    await coordinator.handleCommand({ kind: "play" });
+    expect(local.playedItems[1]).toMatchObject({ queueId, generationId: 2, positionMs: 2500 });
     coordinator.dispose();
   });
 
@@ -117,7 +140,7 @@ describe("gapless promotion", () => {
     });
     await flush();
     const q2 = coordinator.getQueue().items[1]!.queueId;
-    local.emitAdapterEvent({ kind: "ended", generationId: 1, gapless: false });
+    local.emitAdapterEvent({ kind: "ended", generationId: 1, gapless: false, continues: true });
     local.emitAdapterEvent({ kind: "started", generationId: 1, queueId: q2, promoted: true });
     await flush();
     expect(local.playedItems.length).toBe(1);

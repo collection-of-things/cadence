@@ -445,10 +445,20 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
 
   // --- queue bookkeeping -------------------------------------------------
   // We mirror the coordinator's intent minimally: the mk queue always holds
-  // [current, ...mirrored successors]. 'appended' tracks ids we pushed via
-  // playLater so refresh calls can dedupe/replace instead of piling up.
-  let appended = [];
+  // [current, successor]. Keep the inserted queue slot so edits remove only
+  // that entry, even when the provider has resolved it to a different ID.
+  let appended = null;
   let changingQueue = false;
+  let playbackAttempt = 0;
+  let lastPlaying = null;
+  let fullTailSince = null;
+
+  function beginQueueChange(attempt) {
+    playbackAttempt = attempt;
+    lastPlaying = null;
+    fullTailSince = null;
+    changingQueue = true;
+  }
 
   function queueInfo() {
     const q = mk.queue;
@@ -522,8 +532,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
         }
         // A refusal that landed during the last wait still belongs to this start.
         if (fail) throw new Error(mediaErrorMessage(fail));
-        // Slow networks: don't fail a start that may still begin; a later
-        // media error is reported as an event.
+        throw new Error('MusicKit did not confirm that playback started.');
       } finally {
         stop();
       }
@@ -551,15 +560,15 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     await start.confirm(isTarget);
   }
 
-  async function setQueueAndPlay(spec, positionMs) {
-    changingQueue = true;
+  async function setQueueAndPlay(spec, positionMs, attempt) {
+    beginQueueChange(attempt);
     try {
       // Stop the old stream immediately, before any asynchronous account or
       // queue work. Loading the replacement must never replay its old tail.
       await mk.pause();
       await requireFullPlayback();
       const arg = itemSpecToQueueArg(spec);
-      appended = [];
+      appended = null;
       if (spec.type === 'station') {
         try { await mk.setQueue(arg); }
         catch (e) {
@@ -578,7 +587,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       if (typeof mk.autoplayEnabled !== 'undefined') mk.autoplayEnabled = false;
       applyOutputVolume();
       await readyGraph();
-      await confirmStart(() => mk.play());
+      await confirmStart(() => mk.play(), () => spec.type !== 'song' ||
+        String(mk.nowPlayingItem && mk.nowPlayingItem.id) === String(spec.id));
       // Seek after loading the stream, including zero. Seeking before play
       // can target the previous item; skipping zero retains its old position.
       const targetSeconds = Math.max(0, positionMs || 0) / 1000;
@@ -588,11 +598,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     } finally {
       changingQueue = false;
     }
-    post(true);
-    return true;
+    return post(true);
   }
 
   async function appendSpec(spec) {
+    const position = queueInfo().position + 1;
     const arg = itemSpecToQueueArg(spec);
     if (typeof mk.playLater === 'function') {
       await mk.playLater(arg);
@@ -601,7 +611,9 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     } else {
       throw new Error('no queue-append primitive on this MusicKit build');
     }
-    appended.push({ id: spec.id, type: spec.type });
+    const resolved = mk.queue?.items?.[position];
+    appended = { requestedId: spec.id, id: resolved ? String(resolved.id) : String(spec.id), position };
+    return appended.id;
   }
 
   function playParamsKind(item) {
@@ -610,8 +622,6 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
   }
 
   let last = '';
-  let lastNowPlayingId = null;
-  let lastNowPlayingPos = -1;
   let previewError = '';
   function post(force) {
     const item = mk.nowPlayingItem;
@@ -619,9 +629,11 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     const qi = queueInfo();
     const streamDuration = Math.round((mk.currentPlaybackDuration || 0) * 1000);
     const catalogDuration = item && item.attributes && Number(item.attributes.durationInMillis) || 0;
-    const dur = catalogDuration || streamDuration;
+    const dur = streamDuration || catalogDuration;
     const posMs = Math.round((mk.currentPlaybackTime || 0) * 1000);
-    const clipped = !changingQueue && catalogDuration > 0 && streamDuration > 0 &&
+    const element = findElement();
+    const preview = mk.previewOnly === true || /\/preview(?:[./]|$)/i.test(element?.currentSrc || '');
+    const clipped = !changingQueue && preview && catalogDuration > 0 && streamDuration > 0 &&
       streamDuration + 2000 < catalogDuration &&
       (st === STATES.playing || st === STATES.ended || st === STATES.completed);
     if (clipped) {
@@ -632,15 +644,29 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
         emit('error', { message: 'Apple Music returned a preview instead of the full song. Playback stopped; try signing in again.' });
       }
     } else if (!changingQueue && st === STATES.playing) previewError = '';
-    // Only MusicKit's terminal states mean the track ended — a transient
-    // 'stopped' (mid-setQueue, unauthorize, stall) must not advance intent.
-    // Lingering 'ended' states post-transition are stale unless the position
-    // is actually at the tail — a real end has already played the track out.
-    // At the end of a provider queue MusicKit can clear the item and reset
-    // its position and duration before reporting completion.
-    const naturalEnd =
-      !changingQueue && !clipped && (st === STATES.ended || st === STATES.completed) &&
-      (!item ? true : dur === 0 ? false : posMs >= dur - 1500);
+    const slot = item ? String(item.id) + ':' + qi.position : null;
+    const playing = !changingQueue && !clipped && st === STATES.playing;
+    if (playing && slot !== null) lastPlaying = { slot, posMs, streamDuration };
+    // MusicKit can linger in a terminal state while the next item loads.
+    // Bind completion to the slot that played and its actual stream clock.
+    const atEnd = streamDuration > 0 && posMs >= streamDuration;
+    const terminal = st === STATES.ended || st === STATES.completed || element?.ended === true;
+    const stillPlaying = playing || st === STATES.waiting || st === STATES.stalled;
+    if (!changingQueue && !clipped && stillPlaying && atEnd && slot !== null) {
+      if (fullTailSince?.slot !== slot) fullTailSince = { slot, at: Date.now() };
+    } else {
+      fullTailSince = null;
+    }
+    // Some streams stay in Playing at their final sample. Give MusicKit
+    // time to advance itself once its clock has reached the full duration.
+    const exhausted = fullTailSince !== null && Date.now() - fullTailSince.at >= 2500;
+    const clockAtTail = (duration, position) => duration > 0 && position > 0 && position >= duration - 1000;
+    const atTerminalTail = terminal && (clockAtTail(streamDuration, posMs) ||
+      (posMs === 0 && clockAtTail(lastPlaying?.streamDuration, lastPlaying?.posMs)));
+    const naturalEnd = !changingQueue && !clipped && lastPlaying !== null && (
+      (slot === lastPlaying.slot && (exhausted || atTerminalTail)) ||
+      (slot === null && st === STATES.completed)
+    );
     const s = {
       state: clipped ? 'paused' : changingQueue ? 'buffering' : st === STATES.playing ? 'playing'
         : st === STATES.paused ? 'paused'
@@ -650,6 +676,7 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
         : st === STATES.ended || st === STATES.completed ? 'ended' : 'idle',
       positionMs: posMs,
       durationMs: dur,
+      playbackAttempt,
       isAuthorized: !!mk.isAuthorized,
       // Selection diagnostics only; these do not measure delivered media.
       requestedBitrateKbps: requestedBitrate,
@@ -671,17 +698,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     };
     const j = JSON.stringify(s);
     if (force || j !== last) { last = j; emit('playerState', s); }
-    // Emit on item-id change OR queue-position change — consecutive copies
-    // of the same song share an id but advance the position.
-    if (item && (String(item.id) !== lastNowPlayingId || qi.position !== lastNowPlayingPos)) {
-      lastNowPlayingId = item ? String(item.id) : lastNowPlayingId;
-      lastNowPlayingPos = qi.position;
-      // A mirrored item that MusicKit promoted is no longer a successor —
-      // consume it so clearPlayLater can't remove the now-current item.
-      appended = appended.filter(a => String(a.id) !== String(item.id));
-      emit('nowPlaying', { id: s.nowPlayingId, kind: s.nowPlayingKind, queuePos: s.queuePos });
-    }
-    if (!item) lastNowPlayingId = null;
+    if (playing && appended && qi.position >= appended.position) appended = null;
+    return s;
   }
 
   mk.addEventListener('playbackStateDidChange', () => { applyOutputVolume(); watchGraph(); post(true); });
@@ -703,23 +721,25 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     // --- playback ---
     play: setQueueAndPlay,
     // Skip inside the mirrored queue (manual next landing on a prefetch).
-    async skipTo(spec) {
-      await requireFullPlayback();
+    async skipTo(spec, attempt, expectedId = String(spec.id)) {
       const qi = queueInfo();
-      if (qi.nextItemId === String(spec.id)) {
+      if (qi.nextItemId !== expectedId) return setQueueAndPlay(spec, 0, attempt);
+      beginQueueChange(attempt);
+      try {
+        await requireFullPlayback();
         const from = qi.position;
         // The queue slot moves before the stream does: confirm the requested
         // item itself is the one now playing.
         await confirmStart(() => mk.skipToNextItem(), () =>
-          queueInfo().position > from && String(mk.nowPlayingItem && mk.nowPlayingItem.id) === String(spec.id));
+          queueInfo().position > from && String(mk.nowPlayingItem && mk.nowPlayingItem.id) === expectedId);
+      } finally {
+        changingQueue = false;
       }
-      else { await setQueueAndPlay(spec, 0); }
       applyOutputVolume();
       ensureGraph();
-      post(true);
-      return true;
+      return post(true);
     },
-    pause() { mk.pause(); post(true); return true; },
+    async pause() { await mk.pause(); post(true); return true; },
     async resume() {
       await requireFullPlayback();
       applyOutputVolume();
@@ -729,6 +749,8 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
       return true;
     },
     async seek(ms) {
+      fullTailSince = null;
+      lastPlaying = null;
       const sequence = ++seekSequence;
       const fading = mk.playbackState === STATES.playing || seekGain < 1;
       if (fading && seekGain > 0) await fadeSeek(seekGain, 0, sequence);
@@ -759,32 +781,25 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     },
     // --- queue mirror ---
     async playLater(spec) {
-      // Dedupe: a successor refresh for the same id is a no-op.
-      if (appended.some(a => a.id === spec.id)) return true;
-      await appendSpec(spec);
+      const id = appended?.requestedId === spec.id ? appended.id : await appendSpec(spec);
       post(true);
-      return true;
+      return id;
     },
     async clearPlayLater() {
-      // Remove the mirrored successors from MusicKit's own queue too — a
-      // stale playLater item would otherwise play at the boundary.
-      const ids = new Set(appended.map(a => String(a.id)));
-      appended = [];
+      // A boundary can win the race with removal. Keep the entry known
+      // until it is gone or has reached the playhead.
+      const entry = appended;
       const q = mk.queue;
-      const items = (q && q.items) || [];
-      const pos = q && typeof q.position === 'number' ? q.position : -1;
-      for (let i = items.length - 1; i >= 0; i--) {
-        // Duplicate songs share ids — only ever remove mirrored successors,
-        // i.e. items strictly after the playhead.
-        if (i <= pos || !ids.has(String(items[i].id))) continue;
-        try {
-          if (typeof mk.removeItem === 'function') await mk.removeItem(i);
-          else items.splice(i, 1);
-        } catch (e) {}
+      if (entry && q && entry.position > q.position && String(q.items?.[entry.position]?.id) === entry.id) {
+        if (typeof mk.removeItem === 'function') await mk.removeItem(entry.position);
+        else q.items.splice(entry.position, 1);
+        if (typeof mk.updateQueue === 'function') mk.updateQueue();
       }
-      try { if (typeof mk.updateQueue === 'function') mk.updateQueue(); } catch (e) {}
-      post(true);
-      return true;
+      const after = mk.queue;
+      const removed = !entry || (!!after && entry.position > after.position &&
+        String(after.items?.[entry.position]?.id) !== entry.id);
+      if (removed && appended === entry) appended = null;
+      return { removed, state: post(true) };
     },
     // --- auth ---
     async authorize() {
@@ -794,12 +809,6 @@ export const MUSICKIT_CONTROLLER_JS = String.raw`
     async unauthorize() {
       if (typeof mk.unauthorize === 'function') return mk.unauthorize();
       return false;
-    },
-    // Read-back probe — the adapter uses it to confirm an unrecognized
-    // nowPlaying item is still current before acting on it.
-    npId() {
-      const item = mk.nowPlayingItem;
-      return { id: item ? String(item.id) : null, pos: queueInfo().position };
     },
     // Best-effort click on the site's own sign-in affordance.
     clickSignIn() {

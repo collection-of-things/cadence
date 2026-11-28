@@ -107,7 +107,7 @@ export class LocalRouteAdapter
       visuals: { kind: "pcm-fft" },
       notes: [
         "FLAC, WAV, MP3, M4A/ALAC, AAC, OGG and Opus decode inside the Cadence PCM graph.",
-        "Gapless depends on prefetch and matching stream formats; reported per-boundary.",
+        "Prefetched tracks can play continuously on the same output stream. Format changes in fidelity mode may require reopening the stream.",
       ],
     };
   }
@@ -301,6 +301,9 @@ export class LocalRouteAdapter
         return;
       }
       case "event.state": {
+        // The load RPC owns its failures, including retries after a rebuild.
+        if (e.params.state === "error" && this.loadingQueueId !== null &&
+            e.params.generationId === this.lastLoadGeneration) return;
         this.emit({
           kind: "state",
           status: mapEngineState(e.params.state),
@@ -311,13 +314,13 @@ export class LocalRouteAdapter
       case "event.trackEnded": {
         if (!this.knownQueueIds.has(e.params.queueId)) return; // another route's stream
         if (e.params.gapless) this.observedGapless = true;
-        const ended: AdapterEvent = {
+        this.emit({
           kind: "ended",
           generationId: e.params.generationId,
+          queueId: e.params.queueId,
           gapless: e.params.gapless,
-        };
-        if (e.params.queueId !== undefined) (ended as { queueId?: string }).queueId = e.params.queueId;
-        this.emit(ended);
+          ...(e.params.continues !== undefined ? { continues: e.params.continues } : {}),
+        });
         return;
       }
       case "event.buffering": {
@@ -330,9 +333,13 @@ export class LocalRouteAdapter
         return;
       }
       case "event.error": {
+        if (e.params.generationId !== this.lastLoadGeneration) return;
         // The in-flight load's own rejection reports this failure.
-        if (e.params.queueId !== undefined && e.params.queueId === this.loadingQueueId) return;
+        if (!e.params.terminal && e.params.queueId !== undefined && e.params.queueId === this.loadingQueueId) return;
         this.emit({ kind: "error", message: e.params.message, retriable: e.params.retriable });
+        if (e.params.terminal) {
+          this.emit({ kind: "state", status: "error", generationId: e.params.generationId, terminal: true });
+        }
         return;
       }
       case "event.prefetchReady":

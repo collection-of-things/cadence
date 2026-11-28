@@ -650,6 +650,7 @@ export class Coordinator {
     // provisional the baseline still described the OUTGOING lease's start.
     this.handledEnded.clear();
     this.lease = lease;
+    this.lastError = undefined;
     this.leaseStartPositionMs = opts.positionMs ?? 0;
     // The outgoing lease may have reported buffering during prepare.
     if (route === "youtube-music") this.status = "loading";
@@ -716,7 +717,6 @@ export class Coordinator {
     // whatever level the user last set on this route.
     this.volume = this.volumeByRoute.get(route) ?? this.volume;
     this.applyPlayingDefault(lease);
-    this.lastError = undefined;
     this.setQueueOwner(this.ownerFor(route));
     await this.applyEffectiveVolume();
     this.emitSnapshot();
@@ -776,7 +776,7 @@ export class Coordinator {
     if (next === undefined || next.track.route !== adapter.route) return;
     const issuedGen = this.lease?.generationId;
     try {
-      await adapter.prefetch(next);
+      if (await adapter.prefetch(next) === false) return;
       // The belief is only sound while it still describes the live
       // successor: a handoff or promotion interleaving with the prefetch
       // call must not leave a stale pendingPrefetch behind.
@@ -910,6 +910,14 @@ export class Coordinator {
         return;
       }
       case "state": {
+        if (e.status === "error" && e.terminal) {
+          // The native pipeline is gone. Keep the queue and position so play
+          // can open a fresh decoder instead of resuming an empty stream.
+          this.clearPromotionWait();
+          this.pendingPrefetch = null;
+          this.lease = null;
+          this.activeAdapter = null;
+        }
         if (e.status !== this.status) {
           this.status = e.status;
           this.emitSnapshot();
@@ -922,17 +930,15 @@ export class Coordinator {
         // fan-in across adapters sharing the graph). Ended events carry the
         // ended track's queueId — the same track ending twice under the same
         // generation is always a duplicate.
-        // Stale-boundary guard: an item cannot have physically ended before
-        // its playback position has elapsed. Provider engines fire lingering
-        // end-state events across queue transitions — suppress them by up to
-        // 10s rather than killing a fresh lease.
-        {
+        // librespot's stderr end events can arrive without track identity.
+        // Routes with track-scoped completions can end even shortly after
+        // play (a short song or a seek into the tail).
+        if (route === "spotify-librespot") {
           const leaseAgeMs = this.now() - this.lease.issuedAtMs;
           const leaseItem = this.queue.items.find((it) => it.queueId === this.lease?.queueId);
           const durMs = leaseItem?.track.durationMs ?? 0;
           if (
             (e.queueId ?? this.lease.queueId) === this.lease.queueId &&
-            this.lease.route !== "local" &&
             durMs > 0 &&
             leaseAgeMs >= 0 &&
             leaseAgeMs < 10_000 &&
@@ -946,6 +952,7 @@ export class Coordinator {
         this.handledEnded.add(endedKey);
         const queueId = e.queueId ?? this.lease.queueId;
         this.emit({ kind: "trackEnded", queueId, generationId: e.generationId });
+        if (e.continues === true) return;
         // Advance follows the item that ENDED, not currentIndex — a start
         // already in flight may have moved the index provisionally. If the
         // event's queueId doesn't resolve to a queue item, the lease's item
@@ -974,7 +981,7 @@ export class Coordinator {
         // self-promoted `started` a short window before driving the advance
         // ourselves — a redundant load here would restart a track already
         // playing, which is exactly the seam the engine exists to remove.
-        if (this.pendingPrefetch !== null) {
+        if (e.continues === undefined && this.pendingPrefetch !== null) {
           // The link recomputes the successor of the ended item when it
           // runs — the timer only validates that the ended lease still
           // stands before queueing it.

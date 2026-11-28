@@ -75,7 +75,13 @@ export type AudioRpcEvent =
   | { method: "event.position"; params: { generationId: number; positionMs: number; durationMs: number; atMs: number } }
   | {
       method: "event.trackEnded";
-      params: { generationId: number; queueId: string; /** true when the next prefetched track started seamlessly */ gapless: boolean };
+      params: {
+        generationId: number;
+        queueId: string;
+        gapless: boolean;
+        /** The engine already committed the successor and will report trackStarted. */
+        continues?: boolean;
+      };
     }
   | { method: "event.trackStarted"; params: { generationId: number; queueId: string; durationMs: number; gapless: boolean } }
   /** Compact FFT bands (~0.5 log-spaced bins), emitted ~20-30Hz while playing. */
@@ -93,7 +99,7 @@ export type AudioRpcEvent =
     }
   | { method: "event.buffering"; params: { generationId: number; queueId: string } }
   | { method: "event.prefetchReady"; params: { generationId: number; queueId: string } }
-  | { method: "event.error"; params: { generationId: number; queueId?: string; message: string; retriable: boolean } };
+  | { method: "event.error"; params: { generationId: number; queueId?: string; message: string; retriable: boolean; terminal?: boolean } };
 
 /** Band count the service emits in event.fft (log-spaced 20Hz..20kHz). */
 export const FFT_BANDS = 48;
