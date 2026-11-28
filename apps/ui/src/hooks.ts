@@ -15,15 +15,21 @@ export function prefersReducedMotion(): boolean {
   return typeof matchMedia !== 'undefined' && matchMedia(QUERY).matches;
 }
 
-export function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(prefersReducedMotion);
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => typeof matchMedia !== 'undefined' && matchMedia(query).matches);
   useEffect(() => {
-    const mq = matchMedia(QUERY);
-    const on = () => setReduced(mq.matches);
+    if (typeof matchMedia === 'undefined') return;
+    const mq = matchMedia(query);
+    const on = () => setMatches(mq.matches);
+    on();
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
-  }, []);
-  return reduced;
+  }, [query]);
+  return matches;
+}
+
+export function useReducedMotion(): boolean {
+  return useMediaQuery(QUERY);
 }
 
 /** Position of the playhead right now, interpolated between coordinator events. */

@@ -50,13 +50,20 @@ export class MockCadenceApi implements CadenceApi {
   ];
 
   constructor() {
-    const worstCase = typeof location !== 'undefined' && new URLSearchParams(location.search).get('cadence_mock') === 'worst';
+    const mockMode = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('cadence_mock') : null;
+    const worstCase = mockMode === 'worst';
     const { tracks, albums } = makeLibrary(worstCase);
     this.tracks = tracks;
     this.albums = albums;
     this.caps = makeCapabilities();
 
-    const initial = [tracks[0]!, tracks[8]!, tracks[9]!, tracks[17]!, tracks[24]!, tracks[31]!, tracks[32]!, tracks[5]!];
+    const demo = [tracks[0]!, tracks[8]!, tracks[9]!, tracks[17]!, tracks[24]!, tracks[31]!, tracks[32]!, tracks[5]!];
+    const worst = [tracks[0]!, tracks[1]!, tracks[2]!, tracks[3]!, tracks[4]!, tracks[5]!, tracks[6]!, tracks[8]!];
+    const initial =
+      mockMode === 'empty' ? [] :
+      mockMode === 'one' ? [tracks[0]!] :
+      mockMode === 'many' ? Array.from({ length: 1000 }, (_, i) => tracks[i % tracks.length]!) :
+      worstCase ? worst : demo;
     this.queue = {
       owner: 'coordinator',
       items: initial.map((track, i) => ({
@@ -64,18 +71,18 @@ export class MockCadenceApi implements CadenceApi {
         track,
         origin: { kind: 'manual' as const },
       })),
-      currentIndex: 0,
+      currentIndex: initial.length > 0 ? 0 : -1,
       shuffle: false,
       repeat: 'off',
     };
-    const current = this.queue.items[0]!;
+    const current = this.queue.items[0] ?? null;
     this.snapshot = {
-      status: 'paused',
-      lease: { generationId: this.generation, route: current.track.route, queueId: current.queueId, issuedAtMs: Date.now() },
+      status: current ? 'paused' : 'stopped',
+      lease: current ? { generationId: this.generation, route: current.track.route, queueId: current.queueId, issuedAtMs: Date.now() } : null,
       current,
-      positionMs: 47_000,
+      positionMs: current ? 47_000 : 0,
       positionAtMs: Date.now(),
-      durationMs: current.track.durationMs,
+      durationMs: current?.track.durationMs ?? 0,
       volume: 0.8,
       muted: false,
       output: {

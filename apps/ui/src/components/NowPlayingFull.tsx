@@ -60,7 +60,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
     appEl?.setAttribute('inert', '');
     const key = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
-      const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
+      const visible = (el: HTMLElement) => el.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible';
       const controls: HTMLElement[] = [];
       dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
         .forEach((el) => visible(el) && controls.push(el));
@@ -152,7 +152,7 @@ export function NowPlayingFull({ onClose, location, onNavigate, panelShown }: No
       {column === 'queue' && (
         <div className="npf-lyrics npf-queue">
           <h2 className="npf-col-title">Up Next</h2>
-          <QueuePanel />
+          <QueuePanel large />
         </div>
       )}
     </section>

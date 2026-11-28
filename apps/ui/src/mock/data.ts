@@ -176,6 +176,12 @@ function applyWorstCase(tracks: TrackRef[], albums: LibraryAlbum[]): void {
       ? [{ name: WORST.artist }, { name: 'Featuring Another Person' }, { name: 'And One More' }]
       : [{ name: WORST.artist }];
     track.title = WORST.titles[i % WORST.titles.length]!;
+    if (i === 1) track.durationMs = 4_000;
+    if (i === 2) track.durationMs = 12_420_000;
+    if (i === 3) {
+      track.artists = [];
+      delete track.artwork;
+    }
     i += 1;
   }
 }

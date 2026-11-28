@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { QueueItem } from '@cadence/protocol';
 import { session } from '../session';
-import { useUi } from '../hooks';
+import { useMediaQuery, useUi } from '../hooks';
 import { displayOrder } from '../store';
 import { withoutMotion } from '../instant';
 import { useEscapeLayer } from '../layers';
-import { CloseIcon, DownIcon, UpIcon } from '../icons';
+import { CloseIcon, DownIcon, NoteIcon, UpIcon } from '../icons';
 import { artistsLine, formatTime } from '../format';
 import { RouteBadge } from './RouteBadge';
 
@@ -16,7 +16,14 @@ function moveAndRefocus(button: HTMLElement, from: number, to: number): void {
   requestAnimationFrame(() => (button.isConnected ? button : button.closest<HTMLElement>('.q-row'))?.focus());
 }
 
-function QueueRow({ item, index, current }: { item: QueueItem; index: number; current: boolean }) {
+function estimateQueueRowSize(large: boolean): number {
+  const fallback = large ? 80 : 64;
+  if (typeof document === 'undefined') return fallback;
+  const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return Number.isFinite(rootPx) ? rootPx * (large ? 5 : 4) : fallback;
+}
+
+function QueueRow({ item, index, current, showRoute }: { item: QueueItem; index: number; current: boolean; showRoute: boolean }) {
   const shuffle = useUi((s) => s.queue.shuffle);
   const playing = useUi((s) => s.snapshot.status === 'playing');
   const count = useUi((s) => s.queue.items.length);
@@ -55,12 +62,18 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
       <span className={`q-eq ${current && playing ? 'on' : ''}`} aria-hidden="true">
         <i /><i /><i />
       </span>
-      {t.artwork ? <img className="q-art" src={t.artwork.url} alt="" width={34} height={34} loading="lazy" decoding="async" /> : <span className="q-art" />}
+      {t.artwork ? (
+        <img className="q-art" src={t.artwork.url} alt="" width={44} height={44} loading="lazy" decoding="async" draggable={false} />
+      ) : (
+        <span className="q-art q-art-empty">
+          <NoteIcon size={19} />
+        </span>
+      )}
       <span className="q-tt">
         <span className="q-title" title={t.title}>{t.title}</span>
         <span className="q-artist" title={artistsLine(t.artists)}>{artistsLine(t.artists)}</span>
       </span>
-      <RouteBadge route={t.route} />
+      {showRoute && <RouteBadge route={t.route} />}
       <span className="q-dur">{formatTime(t.durationMs)}</span>
       <span className="q-acts" onClick={(e) => e.stopPropagation()}>
         <button
@@ -94,15 +107,25 @@ function QueueRow({ item, index, current }: { item: QueueItem; index: number; cu
  * mounted only while shown (the side panel's Up Next tab, or Now Playing's
  * right column), and owns Escape while mounted.
  */
-export function QueuePanel() {
+export function QueuePanel({ large = false }: { large?: boolean }) {
   const queue = useUi((s) => s.queue);
   const currentQid = useUi((s) => s.snapshot.current?.queueId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const order = displayOrder(queue);
+  const showRoutes = new Set(queue.items.map((item) => item.track.route)).size > 1;
+  const ownerLabel = queue.owner === 'provider'
+    ? 'Playing from the provider queue'
+    : queue.shuffle
+      ? 'Shuffled'
+      : 'Play order';
+  const compact = useMediaQuery('(max-width: 760px)');
+  const roomy = large && !compact;
+  const rowEstimate = estimateQueueRowSize(roomy);
   const virtualizer = useVirtualizer({
     count: order.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 56,
+    getItemKey: (index) => queue.items[order[index]!]?.queueId ?? index,
+    estimateSize: () => rowEstimate,
     overscan: 10,
   });
 
@@ -124,10 +147,17 @@ export function QueuePanel() {
   });
 
   return (
-    <aside className="queue open" aria-label="Queue">
-      <span className="q-owner">{queue.owner === 'provider' ? 'Playing from the provider queue' : `${order.length} ${order.length === 1 ? 'song' : 'songs'}`}</span>
+    <aside className={`queue open ${roomy ? 'queue-lg' : ''}`} aria-label="Queue">
+      <div className="q-owner">
+        <span className="q-owner-label">{ownerLabel}</span>
+        <span className="q-count">{order.length} {order.length === 1 ? 'song' : 'songs'}</span>
+      </div>
       {order.length === 0 ? (
-        <div className="q-empty">Queue is empty.</div>
+        <div className="q-empty">
+          <span className="q-empty-icon" aria-hidden="true"><NoteIcon size={22} /></span>
+          <strong>Queue is empty</strong>
+          <span>Music you play will show up here.</span>
+        </div>
       ) : (
         <div className="q-scroll" ref={scrollRef}>
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
@@ -135,8 +165,14 @@ export function QueuePanel() {
               const idx = order[vi.index]!;
               const item = queue.items[idx]!;
               return (
-                <div key={item.queueId} className="q-row-wrap" style={{ transform: `translateY(${vi.start}px)` }}>
-                  <QueueRow item={item} index={idx} current={item.queueId === currentQid} />
+                <div
+                  key={item.queueId}
+                  ref={virtualizer.measureElement}
+                  data-index={vi.index}
+                  className={`q-row-wrap ${vi.index % 2 ? 'is-odd' : ''}`}
+                  style={{ transform: `translateY(${vi.start}px)` }}
+                >
+                  <QueueRow item={item} index={idx} current={item.queueId === currentQid} showRoute={showRoutes} />
                 </div>
               );
             })}
