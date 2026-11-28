@@ -131,10 +131,11 @@ function createWindow(): BrowserWindow {
     ...(supportsAcrylic() ? { backgroundMaterial: "acrylic" as const } : { backgroundColor: "#1b1a19" }),
     // Frameless chrome: the renderer's top bar is the title bar. Windows and
     // Linux draw native window controls over its right edge (the UI reads
-    // env(titlebar-area-*) to keep clear); macOS keeps inset traffic lights.
+    // env(titlebar-area-*) to keep clear); macOS traffic lights align with the
+    // renderer controls (the accessibility frames land one point up/left).
     titleBarStyle: "hidden",
     ...(process.platform === "darwin"
-      ? { trafficLightPosition: { x: 18, y: 20 } }
+      ? { trafficLightPosition: { x: 10, y: 25 } }
       : { titleBarOverlay: { color: "#00000000", symbolColor: "#e9e9ee", height: 48 } }),
     webPreferences: {
       preload: join(distDir, "preload.cjs"),
